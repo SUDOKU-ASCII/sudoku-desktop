@@ -26,13 +26,23 @@ func (b *Backend) ensureCoreBinariesLocked() error {
 
 	sudokuMissing := fileMissing(sudokuBin)
 	hevMissing := fileMissing(hevBin)
-	if sudokuMissing || hevMissing {
-		// Try to install from bundled runtime directory.
-		_ = b.installBundledRuntimeDir(filepath.Dir(sudokuBin))
-		// In case user configured different directories for the two binaries.
-		if filepath.Dir(hevBin) != filepath.Dir(sudokuBin) {
-			_ = b.installBundledRuntimeDir(filepath.Dir(hevBin))
+
+	hevDepMissing := missingHevRuntimeDeps(hevBin)
+
+	installed := map[string]bool{}
+	installDir := func(dir string) {
+		if dir == "" || installed[dir] {
+			return
 		}
+		installed[dir] = true
+		_ = b.installBundledRuntimeDir(dir)
+	}
+
+	if sudokuMissing {
+		installDir(filepath.Dir(sudokuBin))
+	}
+	if hevMissing || len(hevDepMissing) > 0 {
+		installDir(filepath.Dir(hevBin))
 	}
 
 	if fileMissing(sudokuBin) {
@@ -40,6 +50,9 @@ func (b *Backend) ensureCoreBinariesLocked() error {
 	}
 	if fileMissing(hevBin) {
 		return fmt.Errorf("hev binary not found: %s", hevBin)
+	}
+	if missing := missingHevRuntimeDeps(hevBin); len(missing) > 0 {
+		return fmt.Errorf("hev runtime dependencies missing in %s: %s", filepath.Dir(hevBin), strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -91,6 +104,24 @@ func bundledFileMode(name string) os.FileMode {
 		return 0o755
 	}
 	return 0o644
+}
+
+func missingHevRuntimeDeps(hevBin string) []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	hevDir := filepath.Dir(hevBin)
+	if strings.TrimSpace(hevDir) == "" {
+		return []string{"wintun.dll", "msys-2.0.dll"}
+	}
+	deps := []string{"wintun.dll", "msys-2.0.dll"}
+	missing := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		if fileMissing(filepath.Join(hevDir, dep)) {
+			missing = append(missing, dep)
+		}
+	}
+	return missing
 }
 
 func findBundledRuntimePlatformDir() (string, error) {

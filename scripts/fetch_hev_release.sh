@@ -76,4 +76,13 @@ fi
 chmod +x "$OUT_DIR/hev-socks5-tunnel" 2>/dev/null || true
 chmod +x "$OUT_DIR/hev-socks5-tunnel.exe" 2>/dev/null || true
 
+if [[ "${GOOS}" == "windows" ]]; then
+  for dep in "hev-socks5-tunnel.exe" "wintun.dll" "msys-2.0.dll"; do
+    if [[ ! -f "$OUT_DIR/$dep" ]]; then
+      echo "Missing Windows dependency after extraction: ${OUT_DIR}/${dep}" >&2
+      exit 4
+    fi
+  done
+fi
+
 echo "[ok] HEV ready at ${OUT_DIR}"

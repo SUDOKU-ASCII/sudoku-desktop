@@ -330,13 +330,18 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		b.addLog("info", "tun", fmt.Sprintf("starting hev with config %s", hevCfgPath))
 		hevCmd := b.cfg.Core.HevBinary
 		hevArgs := []string{hevCfgPath}
+		hevWorkDir := b.cfg.Core.WorkingDir
+		if runtime.GOOS == "windows" {
+			// Ensure Windows DLL dependencies (wintun.dll/msys-2.0.dll) can be resolved reliably.
+			hevWorkDir = filepath.Dir(b.cfg.Core.HevBinary)
+		}
 		if runtime.GOOS == "linux" && os.Geteuid() != 0 {
 			if _, err := exec.LookPath("pkexec"); err == nil {
 				hevCmd = "pkexec"
 				hevArgs = []string{b.cfg.Core.HevBinary, hevCfgPath}
 			}
 		}
-		if err := b.tunProc.Start(hevCmd, hevArgs, nil, b.cfg.Core.WorkingDir, b.onTunLog); err != nil {
+		if err := b.tunProc.Start(hevCmd, hevArgs, nil, hevWorkDir, b.onTunLog); err != nil {
 			_ = b.coreProc.Stop(3 * time.Second)
 			b.state.CoreRunning = false
 			b.state.Running = false
