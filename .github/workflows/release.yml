@@ -124,6 +124,30 @@ jobs:
           mkdir -p dist
           tar -czf "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku-desktop" "runtime"
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare dist folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -maxdepth 2 -type f -print0 | while IFS= read -r -d '' f; do
+            cp -f "$f" dist/
+          done
+
       - name: Generate checksums
         shell: bash
         run: |
@@ -133,8 +157,6 @@ jobs:
           from pathlib import Path
 
           dist = Path("dist")
-          dist.mkdir(parents=True, exist_ok=True)
-
           files = []
           for p in dist.iterdir():
             if not p.is_file():
@@ -187,23 +209,8 @@ jobs:
         with:
           subject-path: dist/*
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/*
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: dist/*
           generate_release_notes: true
