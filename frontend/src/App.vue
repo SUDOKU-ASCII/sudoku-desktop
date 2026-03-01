@@ -70,6 +70,12 @@ const currentTab = ref<TabKey>('dashboard')
 const navMain = navItems.filter((x) => x.section === 'main')
 const navExtra = navItems.filter((x) => x.section === 'extra')
 
+const sidebarCollapsed = ref(localStorage.getItem('ui.sidebarCollapsed') === '1')
+watch(sidebarCollapsed, (v) => localStorage.setItem('ui.sidebarCollapsed', v ? '1' : '0'))
+const toggleSidebar = () => {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
 const busy = ref(false)
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
@@ -532,18 +538,47 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell" :data-theme="config.ui.theme">
-    <aside class="sidebar brutal-card">
+    <aside class="sidebar brutal-card" :class="{ collapsed: sidebarCollapsed }">
       <div class="brand">
         <img class="brand-logo" :src="logoUrl" alt="" />
-        <div class="brand-text">
+        <div v-if="!sidebarCollapsed" class="brand-text">
           <div class="brand-title">{{ t('appTitle') }}</div>
           <div class="brand-sub">{{ t('subtitle') }}</div>
         </div>
+        <button class="iconbtn" type="button" @click="toggleSidebar" :title="sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              v-if="sidebarCollapsed"
+              d="M9 18l6-6-6-6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              v-else
+              d="M15 18l-6-6 6-6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
       </div>
 
       <nav class="nav">
         <div class="nav-group">
-          <button v-for="item in navMain" :key="item.key" class="navbtn" :class="{ active: currentTab === item.key }" @click="currentTab = item.key">
+          <button
+            v-for="item in navMain"
+            :key="item.key"
+            class="navbtn"
+            :class="{ active: currentTab === item.key }"
+            :title="sidebarCollapsed ? t(item.key) : undefined"
+            @click="currentTab = item.key"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
                 v-for="(d, idx) in item.icon"
@@ -556,14 +591,21 @@ onUnmounted(() => {
                 stroke-linejoin="round"
               />
             </svg>
-            <span>{{ t(item.key) }}</span>
+            <span v-if="!sidebarCollapsed">{{ t(item.key) }}</span>
           </button>
         </div>
 
         <div class="nav-divider" />
 
         <div class="nav-group">
-          <button v-for="item in navExtra" :key="item.key" class="navbtn" :class="{ active: currentTab === item.key }" @click="currentTab = item.key">
+          <button
+            v-for="item in navExtra"
+            :key="item.key"
+            class="navbtn"
+            :class="{ active: currentTab === item.key }"
+            :title="sidebarCollapsed ? t(item.key) : undefined"
+            @click="currentTab = item.key"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
                 v-for="(d, idx) in item.icon"
@@ -576,7 +618,7 @@ onUnmounted(() => {
                 stroke-linejoin="round"
               />
             </svg>
-            <span>{{ t(item.key) }}</span>
+            <span v-if="!sidebarCollapsed">{{ t(item.key) }}</span>
           </button>
         </div>
       </nav>
@@ -584,10 +626,10 @@ onUnmounted(() => {
       <div class="sidebar-foot">
         <div class="statusbox compact" :class="state.running ? 'ok' : 'off'">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
-          <span>{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+          <span v-if="!sidebarCollapsed">{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
         </div>
-        <small class="sidebar-node">{{ t('runningNode') }}: {{ state.activeNodeName || '-' }}</small>
-        <div class="sidebar-pills">
+        <small v-if="!sidebarCollapsed" class="sidebar-node">{{ t('runningNode') }}: {{ state.activeNodeName || '-' }}</small>
+        <div v-if="!sidebarCollapsed" class="sidebar-pills">
           <span class="pill mini" :class="state.coreRunning ? 'ok' : 'off'">CORE</span>
           <span class="pill mini" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>
           <span class="pill mini" :class="state.reverseRunning ? 'ok' : 'off'">REV</span>
@@ -992,13 +1034,12 @@ body,
 }
 
 .app-shell {
-  max-width: 1480px;
-  margin: 0 auto;
-  padding: 16px;
-  display: grid;
+  width: 100vw;
+  height: 100dvh;
+  padding: 14px;
+  display: flex;
   gap: 14px;
-  grid-template-columns: 280px minmax(0, 1fr);
-  align-items: start;
+  overflow: hidden;
 }
 
 .brutal-card {
@@ -1009,20 +1050,59 @@ body,
 }
 
 .sidebar {
-  padding: 14px;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 14px;
-  position: sticky;
-  top: 16px;
-  height: calc(100vh - 32px);
-  overflow: auto;
+  width: 268px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+  flex: 0 0 auto;
+  transition: width 0.18s ease, padding 0.18s ease;
+}
+
+.sidebar.collapsed {
+  width: 78px;
+  padding: 12px 10px;
 }
 
 .brand {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.sidebar.collapsed .brand {
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar.collapsed .iconbtn {
+  margin-left: 0;
+}
+
+.iconbtn {
+  margin-left: auto;
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.iconbtn:hover {
+  transform: translateY(-2px);
+}
+
+.iconbtn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .brand-logo {
@@ -1050,6 +1130,9 @@ body,
   display: grid;
   gap: 10px;
   align-content: start;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .nav-group {
@@ -1094,6 +1177,11 @@ body,
   color: var(--paper);
 }
 
+.sidebar.collapsed .navbtn {
+  justify-content: center;
+  padding: 10px;
+}
+
 .sidebar-foot {
   display: grid;
   gap: 8px;
@@ -1111,17 +1199,26 @@ body,
 }
 
 .content {
-  display: grid;
-  gap: 14px;
+  flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .topbar {
   padding: 14px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--paper-soft) 78%, transparent);
 }
 
 .pagehead h2 {
@@ -1181,7 +1278,6 @@ body,
   fill: var(--bad);
 }
 
-.actions,
 .row {
   display: flex;
   gap: 8px;
@@ -1218,30 +1314,8 @@ body,
   color: var(--bad);
 }
 
-.tabs {
-  padding: 8px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.tabbtn {
-  border: 3px solid var(--ink);
-  background: transparent;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.tabbtn.active {
-  background: var(--ink);
-  color: var(--paper);
-}
-
 .panel {
   padding: 16px;
-  min-height: 560px;
   animation: pop 0.2s ease;
 }
 
@@ -1574,16 +1648,28 @@ textarea {
 
 @media (max-width: 980px) {
   .app-shell {
-    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100dvh;
+    overflow: auto;
+    flex-direction: column;
   }
 
   .sidebar {
-    position: relative;
-    top: 0;
+    width: 100%;
     height: auto;
   }
 
+  .sidebar.collapsed {
+    width: 100%;
+  }
+
+  .content {
+    height: auto;
+    overflow: visible;
+  }
+
   .topbar {
+    position: relative;
     flex-direction: column;
     align-items: flex-start;
   }

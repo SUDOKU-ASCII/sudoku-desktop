@@ -76,6 +76,8 @@ const messages = {
     reverseForwarder: '反向转发器',
     dialUrl: 'Dial URL',
     insecure: '跳过 TLS 校验',
+    collapseSidebar: '收起侧栏',
+    expandSidebar: '展开侧栏',
 
     sudokuGame: '数独',
     sudokuGameSubtitle: '4×4 与 9×9 生成式数独小游戏',
@@ -185,6 +187,8 @@ const messages = {
     reverseForwarder: 'Reverse forwarder',
     dialUrl: 'Dial URL',
     insecure: 'Insecure',
+    collapseSidebar: 'Collapse sidebar',
+    expandSidebar: 'Expand sidebar',
 
     sudokuGame: 'Sudoku',
     sudokuGameSubtitle: 'Generated 4×4 and 9×9 mini game',
@@ -294,6 +298,8 @@ const messages = {
     reverseForwarder: 'Reverse forwarder',
     dialUrl: 'Dial URL',
     insecure: 'Insecure',
+    collapseSidebar: 'Свернуть боковую панель',
+    expandSidebar: 'Развернуть боковую панель',
 
     sudokuGame: 'Судоку',
     sudokuGameSubtitle: 'Генерируемая мини-игра 4×4 и 9×9',
