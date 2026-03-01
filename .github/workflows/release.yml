@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 jobs:
   build:
@@ -121,6 +123,69 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           tar -czf "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku-desktop" "runtime"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          dist = Path("dist")
+          dist.mkdir(parents=True, exist_ok=True)
+
+          files = []
+          for p in dist.iterdir():
+            if not p.is_file():
+              continue
+            if p.name == "SHA256SUMS.txt":
+              continue
+            if p.suffix in (".sig", ".pub", ".pem", ".crt", ".cer"):
+              continue
+            files.append(p)
+
+          lines = []
+          for p in sorted(files, key=lambda x: x.name):
+            h = hashlib.sha256(p.read_bytes()).hexdigest()
+            lines.append(f"{h}  {p.name}")
+
+          (dist / "SHA256SUMS.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          print(dist / "SHA256SUMS.txt")
+          PY
+
+      - name: Install cosign
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign checksums (cosign)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("KEYSTORE_BASE64", "").strip()
+          if not raw:
+            raise SystemExit("KEYSTORE_BASE64 is empty")
+          Path("cosign.key").write_bytes(base64.b64decode(raw))
+          PY
+
+          export COSIGN_PASSWORD="${KEYSTORE_PASSWORD}"
+          cosign public-key --key cosign.key > dist/cosign.pub
+          cosign sign-blob --yes --key cosign.key --output-signature dist/SHA256SUMS.txt.sig dist/SHA256SUMS.txt
+          rm -f cosign.key
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

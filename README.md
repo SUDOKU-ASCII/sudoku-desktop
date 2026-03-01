@@ -96,6 +96,48 @@ wails dev
 make build
 ```
 
+## CI 发版与签名
+
+推送 `v` 开头的 tag（例如 `v0.1.0`）会触发 GitHub Actions 跨平台构建，并自动创建 GitHub Release。
+
+Release 会包含：
+
+- 对应平台的压缩包（macOS `.zip`、Windows `.zip`、Linux `.tar.gz`）
+- `SHA256SUMS.txt` 校验文件
+- 构建来源证明（GitHub Attestations）
+
+如需对校验文件做稳定签名（可用于离线校验），请在本地生成 `cosign` 密钥并配置仓库 Secrets：
+
+1. 生成密钥对（会提示你输入密码）
+
+```bash
+cosign generate-key-pair
+```
+
+2. 生成 `KEYSTORE_BASE64`（复制输出到 GitHub 仓库 Secrets）
+
+```bash
+python3 scripts/print_file_base64.py cosign.key
+```
+
+3. 在 GitHub 仓库 Secrets 中设置：
+
+- `KEYSTORE_BASE64`：上一步输出
+- `KEYSTORE_PASSWORD`：生成密钥时输入的密码
+
+CI 会自动在 Release 中额外上传：
+
+- `cosign.pub`
+- `SHA256SUMS.txt.sig`
+
+校验示例：
+
+```bash
+cosign verify-blob --key cosign.pub --signature SHA256SUMS.txt.sig SHA256SUMS.txt
+```
+
+注意：上述签名用于发布资产完整性校验，不等同于 macOS/Windows 的系统级代码签名（后者需要 Apple Developer ID / Authenticode 证书）。
+
 ## 权限说明（重要）
 
 启用 TUN 时需要管理员权限（路由与网卡配置）。
@@ -120,4 +162,4 @@ Windows 打包版本默认请求管理员权限启动（UAC）。Linux/macOS 在
 
 - 当前 DIRECT/PROXY 流量拆分为估算值（依据路由决策统计，而非内核逐字节记账）。
 - Sudoku 内核本身本地监听策略决定 LAN 实际暴露，若需严格限制请配合系统防火墙。
- - 历史用量仅统计应用运行期间的增量（不包含应用未运行时段）。
+- 历史用量仅统计应用运行期间的增量（不包含应用未运行时段）。
