@@ -1,0 +1,146 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            platform: darwin/amd64
+            artifact: darwin-amd64
+          - runner: macos-14
+            platform: darwin/arm64
+            artifact: darwin-arm64
+          - runner: windows-latest
+            platform: windows/amd64
+            artifact: windows-amd64
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            artifact: linux-amd64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Prepare core binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLATFORM="${{ matrix.platform }}"
+          export GOOS="${PLATFORM%/*}"
+          export GOARCH="${PLATFORM#*/}"
+          ./scripts/build_sudoku_target.sh
+          ./scripts/fetch_hev_release.sh
+
+      - name: Build app
+        shell: bash
+        run: |
+          set -euo pipefail
+          wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku-desktop
+          PLATFORM="${{ matrix.platform }}" ./scripts/bundle_runtime_into_build.sh
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "build/bin/sudoku-desktop.app" "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python - <<'PY'
+          import os
+          import zipfile
+          from pathlib import Path
+
+          version = os.environ["GITHUB_REF_NAME"]
+          artifact = os.environ["ARTIFACT"]
+          root = Path("build/bin")
+          out = Path("dist") / f"sudoku-desktop_{version}_{artifact}.zip"
+
+          with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.write(root / "sudoku-desktop.exe", arcname="sudoku-desktop.exe")
+            for p in (root / "runtime").rglob("*"):
+              if p.is_file():
+                z.write(p, arcname=str(p.relative_to(root)))
+          print(out)
+          PY
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -czf "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku-desktop" "runtime"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

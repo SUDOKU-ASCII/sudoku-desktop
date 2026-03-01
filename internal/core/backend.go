@@ -239,6 +239,11 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	if b.state.Running {
 		return nil
 	}
+	if err := b.ensureCoreBinariesLocked(); err != nil {
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		return err
+	}
 	node := b.findNode(b.cfg.ActiveNodeID)
 	if node == nil {
 		return errors.New("no active node")
@@ -357,6 +362,11 @@ func (b *Backend) StartReverseForwarder() error {
 	defer b.mu.Unlock()
 	if b.revProc.IsRunning() {
 		return nil
+	}
+	if err := b.ensureCoreBinariesLocked(); err != nil {
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		return err
 	}
 	if strings.TrimSpace(b.cfg.ReverseForward.DialURL) == "" {
 		return errors.New("reverse dial URL is empty")
@@ -826,15 +836,7 @@ func (b *Backend) BuildInfo() map[string]string {
 }
 
 func (b *Backend) EnsureCoreBinaries() error {
-	b.mu.RLock()
-	sudokuBin := b.cfg.Core.SudokuBinary
-	hevBin := b.cfg.Core.HevBinary
-	b.mu.RUnlock()
-	if _, err := os.Stat(sudokuBin); err != nil {
-		return fmt.Errorf("sudoku binary not found: %s", sudokuBin)
-	}
-	if _, err := os.Stat(hevBin); err != nil {
-		return fmt.Errorf("hev binary not found: %s", hevBin)
-	}
-	return nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ensureCoreBinariesLocked()
 }

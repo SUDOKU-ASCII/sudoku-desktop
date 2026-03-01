@@ -54,6 +54,12 @@ npm install
 cd ..
 ```
 
+也可以使用 Makefile（推荐）：
+
+```bash
+make dev
+```
+
 2. 构建 `sudoku` 多平台二进制
 
 ```bash
@@ -83,6 +89,12 @@ wails dev
 ```
 
 该脚本默认只打当前主机平台；跨平台产物建议在对应系统环境分别执行（Windows / macOS amd64 / macOS arm64 / Linux）。
+
+本地一键构建当前平台（包含内核二进制并自动打包进产物）：
+
+```bash
+make build
+```
 
 ## 权限说明（重要）
 
