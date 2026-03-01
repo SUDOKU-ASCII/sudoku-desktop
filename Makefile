@@ -1,4 +1,4 @@
-APP_NAME := sudoku-desktop
+APP_NAME := 4x4-sudoku
 WAILS := wails
 NPM_INSTALL ?= npm install
 

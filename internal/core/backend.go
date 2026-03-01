@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -52,7 +53,14 @@ type Backend struct {
 }
 
 func NewBackend() (*Backend, error) {
-	store, err := NewStore("sudoku-desktop")
+	const newStoreName = "4x4-sudoku"
+	const oldStoreName = "sudoku-desktop"
+
+	if err := migrateStoreIfNeeded(oldStoreName, newStoreName); err != nil {
+		return nil, err
+	}
+
+	store, err := NewStore(newStoreName)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +91,56 @@ func NewBackend() (*Backend, error) {
 		b.state.ActiveNodeName = node.Name
 	}
 	return b, nil
+}
+
+func migrateStoreIfNeeded(oldStoreName, newStoreName string) error {
+	cfgRoot, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("resolve user config dir: %w", err)
+	}
+	oldRoot := filepath.Join(cfgRoot, oldStoreName)
+	oldConfig := filepath.Join(oldRoot, "config.json")
+	newRoot := filepath.Join(cfgRoot, newStoreName)
+	newConfig := filepath.Join(newRoot, "config.json")
+
+	if _, err := os.Stat(newConfig); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat new config: %w", err)
+	}
+	if _, err := os.Stat(oldConfig); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat old config: %w", err)
+	}
+
+	oldStore, err := NewStore(oldStoreName)
+	if err != nil {
+		return err
+	}
+	cfg, err := oldStore.Load()
+	if err != nil {
+		return err
+	}
+
+	cfg.Core.SudokuBinary = ""
+	cfg.Core.HevBinary = ""
+	cfg.Core.WorkingDir = ""
+
+	newStore, err := NewStore(newStoreName)
+	if err != nil {
+		return err
+	}
+	if err := newStore.Save(cfg); err != nil {
+		return err
+	}
+
+	if raw, err := os.ReadFile(oldStore.UsageHistoryPath()); err == nil {
+		_ = os.WriteFile(newStore.UsageHistoryPath(), raw, 0o644)
+	}
+
+	return nil
 }
 
 func (b *Backend) Startup(ctx context.Context) {

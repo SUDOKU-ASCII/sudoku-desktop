@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { EventsOff, EventsOn } from '../wailsjs/runtime/runtime'
 import TrafficChart from './components/TrafficChart.vue'
 import UsageHistoryChart from './components/UsageHistoryChart.vue'
+import SudokuGame from './components/SudokuGame.vue'
 import { backendApi } from './api'
 import { useI18n } from './i18n'
 import type {
@@ -19,7 +20,7 @@ import type {
 
 const { locale, t } = useI18n()
 
-const tabs = ['dashboard', 'nodes', 'routing', 'tun', 'forwards', 'reverse', 'logs'] as const
+const tabs = ['dashboard', 'game', 'nodes', 'routing', 'tun', 'forwards', 'reverse', 'logs'] as const
 const currentTab = ref<(typeof tabs)[number]>('dashboard')
 
 const busy = ref(false)
@@ -508,7 +509,7 @@ onUnmounted(() => {
 
     <section v-if="notice" class="notice" :class="noticeType">{{ notice }}</section>
 
-    <main class="panel brutal-card" v-if="currentTab === 'dashboard'">
+    <main class="panel brutal-card" v-show="currentTab === 'dashboard'">
       <div class="metrics-grid">
         <article class="metric">
           <h3>{{ t('runningNode') }}</h3>
@@ -590,7 +591,7 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <main class="panel brutal-card" v-else-if="currentTab === 'nodes'">
+    <main class="panel brutal-card" v-show="currentTab === 'nodes'">
       <div class="node-layout">
         <aside class="node-list">
           <div class="row">
@@ -645,7 +646,7 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <main class="panel brutal-card" v-else-if="currentTab === 'routing'">
+    <main class="panel brutal-card" v-show="currentTab === 'routing'">
       <div class="form-grid">
         <label>{{ t('proxyMode') }}
           <select v-model="config.routing.proxyMode">
@@ -665,7 +666,7 @@ onUnmounted(() => {
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
     </main>
 
-    <main class="panel brutal-card" v-else-if="currentTab === 'tun'">
+    <main class="panel brutal-card" v-show="currentTab === 'tun'">
       <div class="form-grid">
         <label>{{ t('tunEnabled') }}<input type="checkbox" v-model="config.tun.enabled" /></label>
         <label>Interface<input v-model="config.tun.interfaceName" /></label>
@@ -699,7 +700,7 @@ onUnmounted(() => {
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
     </main>
 
-    <main class="panel brutal-card" v-else-if="currentTab === 'forwards'">
+    <main class="panel brutal-card" v-show="currentTab === 'forwards'">
       <div class="row">
         <button class="btn" @click="addPortForward">{{ t('addForward') }}</button>
         <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
@@ -722,7 +723,7 @@ onUnmounted(() => {
       <p class="hint">{{ t('forwardHint') }}</p>
     </main>
 
-    <main class="panel brutal-card" v-else-if="currentTab === 'reverse'">
+    <main class="panel brutal-card" v-show="currentTab === 'reverse'">
       <h3 class="section-title">{{ t('reverseClient') }}</h3>
       <div class="form-grid">
         <label>{{ t('reverseClientId') }}<input v-model="config.reverseClient.clientId" placeholder="client-id" /></label>
@@ -768,7 +769,11 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <main class="panel brutal-card" v-else>
+    <main class="panel brutal-card" v-show="currentTab === 'game'">
+      <SudokuGame />
+    </main>
+
+    <main class="panel brutal-card" v-show="currentTab === 'logs'">
       <div class="row">
         <label>{{ t('level') }}
           <select v-model="logLevelFilter">

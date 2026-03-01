@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku-desktop
+          wails build -clean -s -platform "${{ matrix.platform }}" -o 4x4-sudoku
           PLATFORM="${{ matrix.platform }}" ./scripts/bundle_runtime_into_build.sh
 
       - name: Package (macOS)
@@ -88,7 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "build/bin/sudoku-desktop.app" "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/bin/4x4-sudoku.app" "dist/4x4-sudoku_${{ github.ref_name }}_${{ matrix.artifact }}.zip"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -104,10 +104,10 @@ jobs:
           version = os.environ["GITHUB_REF_NAME"]
           artifact = os.environ["ARTIFACT"]
           root = Path("build/bin")
-          out = Path("dist") / f"sudoku-desktop_{version}_{artifact}.zip"
+          out = Path("dist") / f"4x4-sudoku_{version}_{artifact}.zip"
 
           with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            z.write(root / "sudoku-desktop.exe", arcname="sudoku-desktop.exe")
+            z.write(root / "4x4-sudoku.exe", arcname="4x4-sudoku.exe")
             for p in (root / "runtime").rglob("*"):
               if p.is_file():
                 z.write(p, arcname=str(p.relative_to(root)))
@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          tar -czf "dist/sudoku-desktop_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku-desktop" "runtime"
+          tar -czf "dist/4x4-sudoku_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "4x4-sudoku" "runtime"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

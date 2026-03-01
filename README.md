@@ -1,4 +1,4 @@
-# Sudoku Desktop (Wails + Vue3 + TypeScript)
+# 4x4 sudoku (Wails + Vue3 + TypeScript)
 
 跨平台桌面代理客户端，内核使用 [SUDOKU-ASCII/sudoku](https://github.com/SUDOKU-ASCII/sudoku)，TUN 使用 [heiher/hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)。
 
@@ -28,7 +28,8 @@
   - Neo-brutalism 风格
   - 亮/暗色自动适配（可手动覆盖）
   - 中/英/俄多语言（可随系统或手动）
-  - 页面：Dashboard / Nodes / Routing / TUN / Forwards / Reverse / Logs
+  - 页面：Dashboard / Game / Nodes / Routing / TUN / Forwards / Reverse / Logs
+  - 内置数独小游戏：4×4 / 9×9，支持难度选择与提示
 
 ## 目录说明
 
@@ -152,11 +153,11 @@ Windows 打包版本默认请求管理员权限启动（UAC）。Linux/macOS 在
 
 应用配置：
 
-- `$(UserConfigDir)/sudoku-desktop/config.json`
+- `$(UserConfigDir)/4x4-sudoku/config.json`
 
 运行时文件：
 
-- `$(UserConfigDir)/sudoku-desktop/runtime/`
+- `$(UserConfigDir)/4x4-sudoku/runtime/`
 
 ## 已知限制
 

@@ -24,3 +24,5 @@ frontend/package.json.md5
 Thumbs.db
 .idea/
 .vscode/
+cosign.key
+cosign.pub

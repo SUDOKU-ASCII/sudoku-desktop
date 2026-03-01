@@ -17,7 +17,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:     "Sudoku Desktop",
+		Title:     "4x4 sudoku",
 		Width:     1320,
 		Height:    860,
 		MinWidth:  1100,

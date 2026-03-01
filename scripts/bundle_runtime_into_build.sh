@@ -4,6 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+APP_NAME="${APP_NAME:-}"
+if [[ -z "${APP_NAME}" ]]; then
+  PYTHON="${PYTHON:-python3}"
+  if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    PYTHON="python"
+  fi
+
+  APP_NAME="$(
+    "$PYTHON" - <<'PY'
+import json
+from pathlib import Path
+
+p = Path("wails.json")
+data = json.loads(p.read_text(encoding="utf-8"))
+print(data.get("outputfilename", "app"))
+PY
+  )"
+fi
+
 PLATFORM="${PLATFORM:-$(go env GOOS)/$(go env GOARCH)}"
 GOOS="${PLATFORM%/*}"
 GOARCH="${PLATFORM#*/}"
@@ -17,7 +36,7 @@ fi
 
 BUILD_BIN="${ROOT_DIR}/build/bin"
 if [[ "$GOOS" == "darwin" ]]; then
-  APP_PATH="${BUILD_BIN}/sudoku-desktop.app"
+  APP_PATH="${BUILD_BIN}/${APP_NAME}.app"
   if [[ ! -d "$APP_PATH" ]]; then
     echo "Missing app bundle: ${APP_PATH}" >&2
     exit 3
@@ -31,4 +50,3 @@ mkdir -p "$DEST_DIR"
 cp -f "${SRC_DIR}/"* "$DEST_DIR/"
 
 echo "[ok] Bundled runtime binaries -> ${DEST_DIR}"
-
