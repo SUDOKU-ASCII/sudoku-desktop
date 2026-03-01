@@ -20,8 +20,55 @@ import type {
 
 const { locale, t } = useI18n()
 
-const tabs = ['dashboard', 'game', 'nodes', 'routing', 'tun', 'forwards', 'reverse', 'logs'] as const
-const currentTab = ref<(typeof tabs)[number]>('dashboard')
+const logoUrl = new URL('./assets/images/logo-universal.png', import.meta.url).href
+
+const navItems = [
+  {
+    key: 'dashboard',
+    section: 'main',
+    icon: ['M3 10.5L12 3l9 7.5', 'M5 10v11h5v-6h4v6h5V10'],
+  },
+  {
+    key: 'nodes',
+    section: 'main',
+    icon: ['M6 6h12v4H6z', 'M6 14h12v4H6z', 'M9 8h.01', 'M9 16h.01'],
+  },
+  {
+    key: 'routing',
+    section: 'main',
+    icon: ['M7 7h8', 'M7 17h8', 'M7 7l-3 3 3 3', 'M17 17l3-3-3-3'],
+  },
+  {
+    key: 'tun',
+    section: 'main',
+    icon: ['M4 12h16', 'M6 8h12', 'M6 16h12', 'M12 4v16'],
+  },
+  {
+    key: 'forwards',
+    section: 'main',
+    icon: ['M5 12h14', 'M13 5l7 7-7 7'],
+  },
+  {
+    key: 'reverse',
+    section: 'main',
+    icon: ['M7 7l-4 4 4 4', 'M3 11h12', 'M17 17l4-4-4-4', 'M9 13h12'],
+  },
+  {
+    key: 'logs',
+    section: 'main',
+    icon: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
+  },
+  {
+    key: 'game',
+    section: 'extra',
+    icon: ['M4 4h16v16H4z', 'M4 12h16', 'M12 4v16'],
+  },
+] as const
+
+type TabKey = (typeof navItems)[number]['key']
+const currentTab = ref<TabKey>('dashboard')
+const navMain = navItems.filter((x) => x.section === 'main')
+const navExtra = navItems.filter((x) => x.section === 'extra')
 
 const busy = ref(false)
 const notice = ref('')
@@ -485,31 +532,116 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell" :data-theme="config.ui.theme">
-    <header class="topbar brutal-card">
-      <div class="titlebox">
-        <h1>{{ t('appTitle') }}</h1>
-        <p>{{ t('subtitle') }}</p>
+    <aside class="sidebar brutal-card">
+      <div class="brand">
+        <img class="brand-logo" :src="logoUrl" alt="" />
+        <div class="brand-text">
+          <div class="brand-title">{{ t('appTitle') }}</div>
+          <div class="brand-sub">{{ t('subtitle') }}</div>
+        </div>
       </div>
-      <div class="statusbox" :class="state.running ? 'ok' : 'off'">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
-        <span>{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+
+      <nav class="nav">
+        <div class="nav-group">
+          <button v-for="item in navMain" :key="item.key" class="navbtn" :class="{ active: currentTab === item.key }" @click="currentTab = item.key">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                v-for="(d, idx) in item.icon"
+                :key="idx"
+                :d="d"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>{{ t(item.key) }}</span>
+          </button>
+        </div>
+
+        <div class="nav-divider" />
+
+        <div class="nav-group">
+          <button v-for="item in navExtra" :key="item.key" class="navbtn" :class="{ active: currentTab === item.key }" @click="currentTab = item.key">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                v-for="(d, idx) in item.icon"
+                :key="idx"
+                :d="d"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>{{ t(item.key) }}</span>
+          </button>
+        </div>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="statusbox compact" :class="state.running ? 'ok' : 'off'">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
+          <span>{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+        </div>
+        <small class="sidebar-node">{{ t('runningNode') }}: {{ state.activeNodeName || '-' }}</small>
+        <div class="sidebar-pills">
+          <span class="pill mini" :class="state.coreRunning ? 'ok' : 'off'">CORE</span>
+          <span class="pill mini" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>
+          <span class="pill mini" :class="state.reverseRunning ? 'ok' : 'off'">REV</span>
+        </div>
       </div>
-      <div class="actions">
-        <button class="btn" :disabled="busy || state.running" @click="startProxy">{{ t('start') }}</button>
-        <button class="btn" :disabled="busy || !state.running" @click="stopProxy">{{ t('stop') }}</button>
-        <button class="btn" :disabled="busy || !state.running" @click="restartProxy">{{ t('restart') }}</button>
-      </div>
-    </header>
+    </aside>
 
-    <nav class="tabs brutal-card">
-      <button v-for="tab in tabs" :key="tab" class="tabbtn" :class="{ active: currentTab === tab }" @click="currentTab = tab">
-        {{ t(tab) }}
-      </button>
-    </nav>
+    <div class="content">
+      <header class="topbar brutal-card">
+        <div class="pagehead">
+          <h2>{{ t(currentTab) }}</h2>
+          <p>{{ state.activeNodeName || '-' }}</p>
+        </div>
+        <div class="topbar-right">
+          <div class="topbar-pills">
+            <span class="pill mini" :class="state.running ? 'ok' : 'off'">{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+            <span class="pill mini" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>
+          </div>
+        </div>
+      </header>
 
-    <section v-if="notice" class="notice" :class="noticeType">{{ notice }}</section>
+      <section v-if="notice" class="notice" :class="noticeType">{{ notice }}</section>
 
-    <main class="panel brutal-card" v-show="currentTab === 'dashboard'">
+      <main class="panel brutal-card" v-show="currentTab === 'dashboard'">
+      <section class="overview-controls">
+        <div class="overview-left">
+          <div class="overview-title">
+            <h3>{{ t('dashboard') }}</h3>
+            <p>{{ t('runningNode') }}: <strong>{{ state.activeNodeName || '-' }}</strong></p>
+          </div>
+
+          <div class="overview-settings">
+            <label class="compact">
+              <span>{{ t('runningNode') }}</span>
+              <select v-model="config.activeNodeId" :disabled="busy || config.nodes.length === 0" @change="switchNode(config.activeNodeId)">
+                <option v-for="n in config.nodes" :key="n.id" :value="n.id">{{ n.name || n.serverAddress }}</option>
+              </select>
+            </label>
+
+            <label class="check">
+              <input type="checkbox" v-model="config.tun.enabled" />
+              <span>{{ t('tunEnabled') }}</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="overview-actions">
+          <button class="btn" :disabled="busy || state.running" @click="startProxy">{{ t('start') }}</button>
+          <button class="btn" :disabled="busy || !state.running" @click="stopProxy">{{ t('stop') }}</button>
+          <button class="btn" :disabled="busy || !state.running" @click="restartProxy">{{ t('restart') }}</button>
+          <button class="btn" :disabled="busy" @click="saveConfig">{{ t('apply') }}</button>
+        </div>
+      </section>
+
       <div class="metrics-grid">
         <article class="metric">
           <h3>{{ t('runningNode') }}</h3>
@@ -589,9 +721,9 @@ onUnmounted(() => {
           </tbody>
         </table>
       </div>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'nodes'">
+      <main class="panel brutal-card" v-show="currentTab === 'nodes'">
       <div class="node-layout">
         <aside class="node-list">
           <div class="row">
@@ -644,9 +776,9 @@ onUnmounted(() => {
           <button class="btn" @click="importShortlink">{{ t('importShortlink') }}</button>
         </section>
       </div>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'routing'">
+      <main class="panel brutal-card" v-show="currentTab === 'routing'">
       <div class="form-grid">
         <label>{{ t('proxyMode') }}
           <select v-model="config.routing.proxyMode">
@@ -664,9 +796,9 @@ onUnmounted(() => {
         </label>
       </div>
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'tun'">
+      <main class="panel brutal-card" v-show="currentTab === 'tun'">
       <div class="form-grid">
         <label>{{ t('tunEnabled') }}<input type="checkbox" v-model="config.tun.enabled" /></label>
         <label>Interface<input v-model="config.tun.interfaceName" /></label>
@@ -698,9 +830,9 @@ onUnmounted(() => {
       </div>
       <p class="hint">{{ t('lanHint') }}</p>
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'forwards'">
+      <main class="panel brutal-card" v-show="currentTab === 'forwards'">
       <div class="row">
         <button class="btn" @click="addPortForward">{{ t('addForward') }}</button>
         <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
@@ -721,9 +853,9 @@ onUnmounted(() => {
         <p v-if="config.portForwards.length === 0">{{ t('none') }}</p>
       </div>
       <p class="hint">{{ t('forwardHint') }}</p>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'reverse'">
+      <main class="panel brutal-card" v-show="currentTab === 'reverse'">
       <h3 class="section-title">{{ t('reverseClient') }}</h3>
       <div class="form-grid">
         <label>{{ t('reverseClientId') }}<input v-model="config.reverseClient.clientId" placeholder="client-id" /></label>
@@ -767,13 +899,13 @@ onUnmounted(() => {
         <button class="btn" :disabled="state.reverseRunning" @click="startReverse">{{ t('reverseStart') }}</button>
         <button class="btn" :disabled="!state.reverseRunning" @click="stopReverse">{{ t('reverseStop') }}</button>
       </div>
-    </main>
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'game'">
-      <SudokuGame />
-    </main>
+      <main class="panel brutal-card" v-if="currentTab === 'game'">
+        <SudokuGame />
+      </main>
 
-    <main class="panel brutal-card" v-show="currentTab === 'logs'">
+      <main class="panel brutal-card" v-show="currentTab === 'logs'">
       <div class="row">
         <label>{{ t('level') }}
           <select v-model="logLevelFilter">
@@ -793,11 +925,12 @@ onUnmounted(() => {
         </article>
         <p v-if="filteredLogs.length === 0">{{ t('none') }}</p>
       </div>
-    </main>
+      </main>
 
-    <footer class="footbar">
-      <span>{{ state.lastError || state.routeSetupError }}</span>
-    </footer>
+      <footer class="footbar">
+        <span>{{ state.lastError || state.routeSetupError }}</span>
+      </footer>
+    </div>
   </div>
 </template>
 
@@ -859,11 +992,13 @@ body,
 }
 
 .app-shell {
-  max-width: 1360px;
+  max-width: 1480px;
   margin: 0 auto;
   padding: 16px;
   display: grid;
   gap: 14px;
+  grid-template-columns: 280px minmax(0, 1fr);
+  align-items: start;
 }
 
 .brutal-card {
@@ -873,22 +1008,140 @@ body,
   box-shadow: var(--shadow);
 }
 
-.topbar {
-  padding: 16px;
+.sidebar {
+  padding: 14px;
   display: grid;
-  grid-template-columns: 1.8fr 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  gap: 14px;
+  position: sticky;
+  top: 16px;
+  height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.brand {
+  display: flex;
   gap: 12px;
   align-items: center;
 }
 
-.titlebox h1 {
-  margin: 0;
-  font-size: clamp(24px, 3vw, 34px);
+.brand-logo {
+  width: 44px;
+  height: 44px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: var(--paper);
+  flex: 0 0 auto;
 }
 
-.titlebox p {
-  margin: 4px 0 0;
-  opacity: 0.85;
+.brand-title {
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+.brand-sub {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.nav {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.nav-group {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-divider {
+  height: 1px;
+  background: var(--ink);
+  opacity: 0.2;
+}
+
+.navbtn {
+  width: 100%;
+  border: 3px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 10px 12px;
+  font-weight: 900;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  transition: transform 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.navbtn svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.navbtn:hover {
+  transform: translateY(-2px);
+}
+
+.navbtn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.sidebar-foot {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-node {
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.sidebar-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.content {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.topbar {
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.pagehead h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.2px;
+}
+
+.pagehead p {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.topbar-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .statusbox {
@@ -899,6 +1152,12 @@ body,
   border: 3px solid var(--ink);
   border-radius: 12px;
   font-weight: 700;
+}
+
+.statusbox.compact {
+  padding: 8px 10px;
+  border-width: 2px;
+  font-size: 12px;
 }
 
 .statusbox svg {
@@ -1011,6 +1270,74 @@ body,
   background: #ffe0dc;
 }
 
+.overview-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--paper);
+  margin-bottom: 14px;
+}
+
+.overview-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.overview-title h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0.2px;
+}
+
+.overview-title p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.overview-settings {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+label.compact {
+  gap: 4px;
+  font-size: 12px;
+}
+
+label.compact span {
+  opacity: 0.8;
+}
+
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--paper-soft);
+}
+
+.overview-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .metrics-grid {
   display: grid;
   gap: 10px;
@@ -1089,6 +1416,20 @@ th {
   padding: 2px 7px;
 }
 
+.pill.mini {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+.pill.ok {
+  color: var(--ok);
+}
+
+.pill.off {
+  color: var(--bad);
+}
+
 .pill.proxy {
   color: var(--accent-c);
 }
@@ -1148,7 +1489,7 @@ label {
   font-size: 13px;
 }
 
-input,
+input:not([type='checkbox']):not([type='radio']),
 textarea,
 select {
   width: 100%;
@@ -1158,6 +1499,14 @@ select {
   color: var(--ink);
   padding: 7px 10px;
   font: inherit;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--ink);
 }
 
 textarea {
@@ -1224,8 +1573,19 @@ textarea {
 }
 
 @media (max-width: 980px) {
-  .topbar {
+  .app-shell {
     grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: relative;
+    top: 0;
+    height: auto;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .node-layout {
