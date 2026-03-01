@@ -1,5 +1,6 @@
 APP_NAME := sudoku-desktop
 WAILS := wails
+NPM_INSTALL ?= npm install
 
 PLATFORM ?= $(shell go env GOOS)/$(shell go env GOARCH)
 GOOS := $(word 1,$(subst /, ,$(PLATFORM)))
@@ -18,7 +19,7 @@ help:
 	@echo "  make frontend   npm ci + npm run build"
 
 frontend:
-	cd frontend && npm ci && npm run build
+	cd frontend && $(NPM_INSTALL) && npm run build
 
 core: core-sudoku core-hev
 
@@ -37,4 +38,3 @@ build: frontend core
 
 bundle: core
 	PLATFORM=$(PLATFORM) ./scripts/bundle_runtime_into_build.sh
-
