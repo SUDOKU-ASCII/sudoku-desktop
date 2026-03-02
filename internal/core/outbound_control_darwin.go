@@ -46,7 +46,20 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 		var inner error
 		if err := c.Control(func(fd uintptr) {
 			fdInt := int(fd)
-			isV6 := strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":")
+			isV6 := strings.HasSuffix(network, "6")
+			if !isV6 {
+				host := address
+				if h, _, err := net.SplitHostPort(address); err == nil && strings.TrimSpace(h) != "" {
+					host = h
+				}
+				host = strings.TrimPrefix(host, "[")
+				host = strings.TrimSuffix(host, "]")
+				if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+					isV6 = true
+				} else if strings.Count(host, ":") > 1 {
+					isV6 = true
+				}
+			}
 
 			// Prefer binding to the physical interface when available. This avoids "can't assign requested address"
 			// issues that can happen when binding a specific source IP on some macOS networks.
