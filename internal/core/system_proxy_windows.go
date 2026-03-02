@@ -25,19 +25,6 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 	}
 
 	applyErr := func() error {
-		if cfg.ProxyMode == "pac" && strings.TrimSpace(cfg.PACURL) != "" {
-			if err := windowsWriteProxySettings(windowsProxySnapshot{
-				ProxyEnable:   0,
-				ProxyServer:   "",
-				AutoConfigURL: strings.TrimSpace(cfg.PACURL),
-				ProxyOverride: snap.ProxyOverride,
-			}); err != nil {
-				return err
-			}
-			_ = windowsRefreshInternetSettings()
-			return nil
-		}
-
 		if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
 			return errors.New("invalid local port")
 		}

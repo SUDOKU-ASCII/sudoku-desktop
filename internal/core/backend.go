@@ -558,13 +558,8 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		if err := waitForTCPReady(startCtx, socksAddr, 5*time.Second); err != nil {
 			b.addLog("warn", "proxy", fmt.Sprintf("core proxy not ready on %s; skip setting system proxy: %v", socksAddr, err))
 		} else {
-			b.mu.RLock()
-			pacURL := b.pacURL
-			b.mu.RUnlock()
 			restore, err := applySystemProxy(systemProxyConfig{
-				ProxyMode: routingCfg.ProxyMode,
 				LocalPort: localPort,
-				PACURL:    pacURL,
 				Logf: func(line string) {
 					b.addLog("info", "proxy", line)
 				},

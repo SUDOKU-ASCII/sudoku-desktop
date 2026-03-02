@@ -38,14 +38,6 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 	}
 
 	applyErr := func() error {
-		if cfg.ProxyMode == "pac" && strings.TrimSpace(cfg.PACURL) != "" {
-			if err := gsettingsSet("org.gnome.system.proxy", "mode", "'auto'"); err != nil {
-				return err
-			}
-			_ = gsettingsSet("org.gnome.system.proxy", "autoconfig-url", quoteGSettingsString(strings.TrimSpace(cfg.PACURL)))
-			return nil
-		}
-
 		if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
 			return errors.New("invalid local port")
 		}

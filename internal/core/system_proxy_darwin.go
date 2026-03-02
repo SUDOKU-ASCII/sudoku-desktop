@@ -54,17 +54,6 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 	logf := cfg.Logf
 
 	applyErr := func() error {
-		if cfg.ProxyMode == "pac" && strings.TrimSpace(cfg.PACURL) != "" {
-			if err := darwinNS(logf, "networksetup", "-setautoproxyurl", svc, strings.TrimSpace(cfg.PACURL)); err != nil {
-				return err
-			}
-			_ = darwinNS(logf, "networksetup", "-setautoproxystate", svc, "on")
-			_ = darwinNS(logf, "networksetup", "-setwebproxystate", svc, "off")
-			_ = darwinNS(logf, "networksetup", "-setsecurewebproxystate", svc, "off")
-			_ = darwinNS(logf, "networksetup", "-setsocksfirewallproxystate", svc, "off")
-			return nil
-		}
-
 		if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
 			return fmt.Errorf("invalid local port: %d", cfg.LocalPort)
 		}
