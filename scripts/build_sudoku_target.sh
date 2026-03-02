@@ -120,6 +120,40 @@ path.write_text(data[:start] + func_text + data[end:], encoding="utf-8")
 print("[patch] updated", path)
 PY
 
+# Patch SOCKS5 UDP associate DIRECT path to avoid TUN self-loop for outbound UDP.
+SUDOKU_DIR="${SUDOKU_DIR}" python3 - <<'PY'
+from __future__ import annotations
+
+import os
+import pathlib
+
+root = pathlib.Path(os.environ["SUDOKU_DIR"])
+path = root / "internal/app/client_socks5.go"
+data = path.read_text(encoding="utf-8")
+
+if "udpWriteTo(" in data:
+    raise SystemExit(0)
+
+before = data
+
+data = data.replace(
+    "s.udpConn.WriteToUDP(payload, directAddr)",
+    "udpWriteTo(s.udpConn, payload, directAddr, true)",
+    1,
+)
+data = data.replace(
+    "s.udpConn.WriteToUDP(resp, clientAddr)",
+    "udpWriteTo(s.udpConn, resp, clientAddr, false)",
+    2,
+)
+
+if data == before:
+    raise SystemExit("failed to patch client_socks5.go (upstream changed?)")
+
+path.write_text(data, encoding="utf-8")
+print("[patch] updated", path)
+PY
+
 echo "[build] sudoku ${GOOS}/${GOARCH} (ref=${SUDOKU_REF}) -> ${out}"
 (
   cd "${SUDOKU_DIR}"
