@@ -451,6 +451,10 @@ func newDoHClient(host string, path string, bootstrap []string, dial func(ctx co
 	}
 
 	tr := &http.Transport{
+		// Ignore environment proxy vars (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY).
+		// Those are frequently set on developer machines and would unintentionally route DoH
+		// through some other local proxy (often dead), making the whole system DNS break.
+		Proxy: nil,
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
 		},
