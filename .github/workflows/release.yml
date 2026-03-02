@@ -16,7 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS 统一使用 macos-latest，Wails 支持原生交叉编译
           - runner: macos-latest
             platform: darwin/amd64
             artifact: darwin-amd64
@@ -26,7 +25,6 @@ jobs:
           - runner: windows-latest
             platform: windows/amd64
             artifact: windows-amd64
-          # Linux 降级为 22.04，确保原生自带 webkit2gtk-4.0
           - runner: ubuntu-22.04
             platform: linux/amd64
             artifact: linux-amd64
@@ -77,12 +75,16 @@ jobs:
           ./scripts/build_sudoku_target.sh
           ./scripts/fetch_hev_release.sh
 
+      # 在这里区分 Windows 和其他系统，为 Windows 添加 .exe 后缀
       - name: Build app
         shell: bash
-        # 注意这里的 -o 参数改成了 sudoku4x4
         run: |
           set -euo pipefail
-          wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku4x4
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku4x4.exe
+          else
+            wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku4x4
+          fi
           PLATFORM="${{ matrix.platform }}" ./scripts/bundle_runtime_into_build.sh
 
       - name: Package (macOS)
@@ -110,7 +112,6 @@ jobs:
           out = Path("dist") / f"sudoku4x4_{version}_{artifact}.zip"
 
           with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            # 同样修改为 sudoku4x4.exe
             z.write(root / "sudoku4x4.exe", arcname="sudoku4x4.exe")
             for p in (root / "runtime").rglob("*"):
               if p.is_file():
@@ -126,7 +127,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # 修改文件名为 sudoku4x4
           tar -czf "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku4x4" "runtime"
 
       - name: Upload artifact
