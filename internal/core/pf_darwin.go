@@ -44,34 +44,37 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 	var b strings.Builder
 	b.WriteString("pfctl -q -e >/dev/null 2>&1 || true; ")
 	b.WriteString("pfctl -a " + shellQuote(anchor) + " -F all >/dev/null 2>&1 || true; ")
-	b.WriteString("cfg=''; ")
+	// pf requires rule order: options, normalization, queueing, translation, filtering.
+	// Keep those sections separate so we never emit e.g. rdr rules after pass/block rules.
+	b.WriteString("cfg_opt=''; cfg_trans=''; cfg_flt=''; ")
 
 	if bypassV4File != "" && tunIfExpr != "" && defaultIf != "" && gw4 != "" {
 		b.WriteString("if [ -f " + shellQuote(bypassV4File) + " ]; then ")
-		b.WriteString("cfg=\"${cfg}table <" + darwinPFTableCN4 + "> persist\\n\"; ")
-		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet to <" + darwinPFTableCN4 + "> keep state\\n\"; ")
+		b.WriteString("cfg_opt=\"${cfg_opt}table <" + darwinPFTableCN4 + "> persist\\n\"; ")
+		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet to <" + darwinPFTableCN4 + "> keep state\\n\"; ")
 		b.WriteString("fi; ")
 	}
 	if bypassV6File != "" && tunIfExpr != "" && defaultIf != "" && gw6 != "" {
 		b.WriteString("if [ -f " + shellQuote(bypassV6File) + " ]; then ")
-		b.WriteString("cfg=\"${cfg}table <" + darwinPFTableCN6 + "> persist\\n\"; ")
-		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw6 + ") inet6 to <" + darwinPFTableCN6 + "> keep state\\n\"; ")
+		b.WriteString("cfg_opt=\"${cfg_opt}table <" + darwinPFTableCN6 + "> persist\\n\"; ")
+		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw6 + ") inet6 to <" + darwinPFTableCN6 + "> keep state\\n\"; ")
 		b.WriteString("fi; ")
+	}
+	if dnsProxyPort > 0 {
+		b.WriteString("cfg_trans=\"${cfg_trans}rdr pass on lo0 inet proto { udp tcp } from any to " + localDNSServerIPv4 + " port 53 -> " + localDNSServerIPv4 + " port " + fmt.Sprintf("%d", dnsProxyPort) + "\\n\"; ")
 	}
 	if dnsProxyPort > 0 && tunIfExpr != "" && defaultIf != "" && gw4 != "" {
 		// Ensure DNS proxy upstream IPs can always reach the physical gateway even after the global
 		// default route switches to the TUN. This is especially important for DoH bootstrap IPs.
-		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto tcp to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 443 keep state\\n\"; ")
-		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto { udp tcp } to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 53 keep state\\n\"; ")
+		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto tcp to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 443 keep state\\n\"; ")
+		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto { udp tcp } to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 53 keep state\\n\"; ")
 	}
 	if blockQUIC {
-		b.WriteString("cfg=\"${cfg}block drop out proto udp to any port 443\\n\"; ")
-	}
-	if dnsProxyPort > 0 {
-		b.WriteString("cfg=\"${cfg}rdr pass on lo0 inet proto { udp tcp } from any to " + localDNSServerIPv4 + " port 53 -> " + localDNSServerIPv4 + " port " + fmt.Sprintf("%d", dnsProxyPort) + "\\n\"; ")
+		b.WriteString("cfg_flt=\"${cfg_flt}block drop out proto udp to any port 443\\n\"; ")
 	}
 
 	// Keep stdout quiet but allow pfctl stderr through (useful when startup fails).
+	b.WriteString("cfg=\"${cfg_opt}${cfg_trans}${cfg_flt}\"; ")
 	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null; fi; ")
 	if dnsProxyPort > 0 {
 		// Validate that the local DNS proxy works, and that pf rdr makes 127.0.0.1:53 reach it.
