@@ -39,10 +39,12 @@ func (b *Backend) ensureCoreBinariesLocked() error {
 		_ = b.installBundledRuntimeDir(dir)
 	}
 
-	if sudokuMissing {
+	// If binaries live under the app runtime dir, keep them updated from bundled runtime.
+	// This is important in dev builds and when users upgrade without deleting their runtime dir.
+	if sudokuMissing || isWithinDir(sudokuBin, b.store.RuntimeDir()) {
 		installDir(filepath.Dir(sudokuBin))
 	}
-	if hevMissing || len(hevDepMissing) > 0 {
+	if hevMissing || len(hevDepMissing) > 0 || isWithinDir(hevBin, b.store.RuntimeDir()) {
 		installDir(filepath.Dir(hevBin))
 	}
 
@@ -56,6 +58,23 @@ func (b *Backend) ensureCoreBinariesLocked() error {
 		return fmt.Errorf("hev runtime dependencies missing in %s: %s", filepath.Dir(hevBin), strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func isWithinDir(path string, dir string) bool {
+	path = strings.TrimSpace(path)
+	dir = strings.TrimSpace(dir)
+	if path == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func fileMissing(path string) bool {

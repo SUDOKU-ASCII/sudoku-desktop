@@ -230,6 +230,7 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	if pfSetCmd != "" {
 		setPFSnippet = ensureShellStmt(pfSetCmd)
 	}
+	guardOKPath := pidFile + ".start_ok"
 
 	inner := fmt.Sprintf(
 		"set -e; cd %s && umask 022 && ("+
@@ -238,21 +239,24 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" sleep 0.2;"+
 			" pid=0; for i in $(seq 1 50); do p=$(launchctl list | awk -v label=%s '$3==label {print $1; exit}'); case \"$p\" in (''|'-'|*[!0-9]*) p=0 ;; esac; if [ \"$p\" -gt 0 ]; then pid=$p; break; fi; sleep 0.1; done;"+
 			" echo ${pid:-0} > %s;"+
+			" guard_ok=%s; rm -f \"$guard_ok\" >/dev/null 2>&1 || true;"+
 			" trap \"launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s\" EXIT;"+
+			" ( sleep 35; if [ ! -f \"$guard_ok\" ]; then echo '__SUDOKU_GUARD__=revert'; launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s; fi ) >/dev/null 2>&1 &"+
 			" tun_if=''; for i in $(seq 1 120); do tun_if=$(%s); [ -n \"$tun_if\" ] && break; sleep 0.1; done;"+
 			" if [ -z \"$tun_if\" ]; then echo '__SUDOKU_HEV_PID__='${pid:-0}; echo '__SUDOKU_TUN_IF__='; exit 22; fi;"+
 			" echo '__SUDOKU_STEP__=routes';"+
 			" %s"+
+			" %s"+
+			" echo '__SUDOKU_STEP__=pf';"+
 			" %s"+
 			" echo '__SUDOKU_STEP__=default_route';"+
 			" route -n change default -interface \"$tun_if\" || ("+
 			" route -n delete default >/dev/null 2>&1 || true; "+
 			" route -n add default -interface \"$tun_if\");"+
 			" route -n change -inet6 default -interface \"$tun_if\" || true;"+
-			" echo '__SUDOKU_STEP__=pf';"+
-			" %s"+
 			" echo '__SUDOKU_STEP__=dns';"+
 			" %s"+
+			" touch \"$guard_ok\" >/dev/null 2>&1 || true;"+
 			" echo '__SUDOKU_HEV_PID__='${pid:-0};"+
 			" echo '__SUDOKU_TUN_IF__='${tun_if};"+
 			" trap - EXIT;"+
@@ -266,6 +270,10 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		strings.Join(quotedArgs, " "),
 		shellQuote(label),
 		shellQuote(pidFile),
+		shellQuote(guardOKPath),
+		shellQuote(label),
+		escapeForDoubleQuotes(pidFile),
+		escapeForDoubleQuotes(restoreSnippet),
 		shellQuote(label),
 		escapeForDoubleQuotes(pidFile),
 		escapeForDoubleQuotes(restoreSnippet),

@@ -287,6 +287,9 @@ func (b *Backend) GetConfig() AppConfig {
 
 func (b *Backend) SaveConfig(next AppConfig) error {
 	b.mu.Lock()
+	prev := cloneConfig(b.cfg)
+	wasRunning := b.state.Running
+	wasTun := b.state.TunRunning
 	normalizeConfig(&next, b.store.RuntimeDir())
 	if err := b.store.Save(&next); err != nil {
 		b.mu.Unlock()
@@ -303,7 +306,50 @@ func (b *Backend) SaveConfig(next AppConfig) error {
 
 	// Apply may emit logs; do it outside b.mu to avoid self-deadlock via b.addLog.
 	b.pfMgr.Apply(portForwards)
+
+	if wasRunning && prev != nil && configChangeRequiresRestart(*prev, next) {
+		b.addLog("info", "app", "config changed; restarting proxy to apply runtime settings")
+		go func(withTun bool) {
+			_ = b.RestartProxy(StartRequest{WithTun: withTun})
+		}(wasTun)
+	}
 	return nil
+}
+
+func configChangeRequiresRestart(prev AppConfig, next AppConfig) bool {
+	if strings.TrimSpace(prev.ActiveNodeID) != strings.TrimSpace(next.ActiveNodeID) {
+		return true
+	}
+	if strings.ToLower(strings.TrimSpace(prev.Routing.ProxyMode)) != strings.ToLower(strings.TrimSpace(next.Routing.ProxyMode)) {
+		return true
+	}
+	if prev.Routing.CustomRulesEnabled != next.Routing.CustomRulesEnabled ||
+		strings.TrimSpace(prev.Routing.CustomRules) != strings.TrimSpace(next.Routing.CustomRules) {
+		return true
+	}
+	if strings.Join(prev.Routing.RuleURLs, "\n") != strings.Join(next.Routing.RuleURLs, "\n") {
+		return true
+	}
+
+	// TUN/runtime behavior.
+	if prev.Tun.MapDNSEnabled != next.Tun.MapDNSEnabled ||
+		strings.TrimSpace(prev.Tun.MapDNSAddress) != strings.TrimSpace(next.Tun.MapDNSAddress) ||
+		prev.Tun.MapDNSPort != next.Tun.MapDNSPort ||
+		prev.Tun.BlockQUIC != next.Tun.BlockQUIC {
+		return true
+	}
+	if strings.TrimSpace(prev.Tun.InterfaceName) != strings.TrimSpace(next.Tun.InterfaceName) ||
+		strings.TrimSpace(prev.Tun.IPv4) != strings.TrimSpace(next.Tun.IPv4) {
+		return true
+	}
+
+	// Core settings that affect listeners/logging.
+	if prev.Core.LocalPort != next.Core.LocalPort ||
+		strings.TrimSpace(prev.Core.LogLevel) != strings.TrimSpace(next.Core.LogLevel) ||
+		strings.TrimSpace(prev.Core.WorkingDir) != strings.TrimSpace(next.Core.WorkingDir) {
+		return true
+	}
+	return false
 }
 
 func (b *Backend) UpsertNode(node NodeConfig) (NodeConfig, error) {
@@ -473,7 +519,11 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			}
 		case "darwin":
 			if _, ifName, derr := darwinDefaultRoute(); derr == nil && strings.TrimSpace(ifName) != "" {
-				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+strings.TrimSpace(ifName))
+				ifName = strings.TrimSpace(ifName)
+				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
+				if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
+					coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
+				}
 			}
 		case "windows":
 			if ifIndex, werr := windowsDefaultInterfaceIndex(); werr == nil && ifIndex > 0 {
@@ -538,26 +588,6 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		// queries to HEV MapDNS for FakeIP mapping.
 		effectiveDNS := localDNSServerIPv4
 
-		// Prepare CN domain rules via the running core SOCKS5 (so fetching works even on restrictive networks).
-		var cnRules *cnRuleSet
-		if strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" {
-			socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
-			if werr := waitForTCPReady(startCtx, socksAddr, 2*time.Second); werr != nil {
-				b.addLog("warn", "rule", fmt.Sprintf("core SOCKS5 not ready on %s; skipping PAC rules fetch: %v", socksAddr, werr))
-			} else if httpc, herr := newHTTPClientViaSOCKS5(socksAddr, 20*time.Second); herr == nil {
-				cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, httpc, func(line string) {
-					b.addLog("info", "rule", line)
-				})
-			} else {
-				b.addLog("warn", "rule", fmt.Sprintf("init SOCKS5 http client failed: %v", herr))
-			}
-		}
-
-		mapDNSAddr := ""
-		if strings.TrimSpace(tunCfg.MapDNSAddress) != "" && tunCfg.MapDNSPort > 0 {
-			mapDNSAddr = net.JoinHostPort(strings.TrimSpace(tunCfg.MapDNSAddress), fmt.Sprintf("%d", tunCfg.MapDNSPort))
-		}
-
 		// Ensure DNS proxy upstream (DoH/plain DNS) bypasses the TUN on all platforms.
 		// Otherwise, "direct" domains may resolve from the proxy egress IP and return unreachable/incorrect
 		// answers (breaking split routing and sometimes making the whole network look down).
@@ -573,6 +603,9 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		case "darwin":
 			if _, ifName, err := darwinDefaultRoute(); err == nil && strings.TrimSpace(ifName) != "" {
 				bypassCfg.DarwinInterface = strings.TrimSpace(ifName)
+				if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
+					bypassCfg.DarwinSourceIP = strings.TrimSpace(ip4)
+				}
 			}
 		case "windows":
 			if ifIndex, err := windowsDefaultInterfaceIndex(); err == nil && ifIndex > 0 {
@@ -581,10 +614,50 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		}
 		directDialer := newOutboundBypassDialer(3*time.Second, bypassCfg)
 
+		// Prepare CN domain rules via the running core SOCKS5 (so fetching works even on restrictive networks).
+		var cnRules *cnRuleSet
+		if strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" {
+			socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+			if werr := waitForTCPReady(startCtx, socksAddr, 6*time.Second); werr != nil {
+				b.addLog("warn", "rule", fmt.Sprintf("core SOCKS5 not ready on %s; skipping PAC rules fetch: %v", socksAddr, werr))
+			} else {
+				if httpc, herr := newHTTPClientViaSOCKS5(socksAddr, 20*time.Second); herr == nil {
+					cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, httpc, func(line string) {
+						b.addLog("info", "rule", line)
+					})
+				} else {
+					b.addLog("warn", "rule", fmt.Sprintf("init SOCKS5 http client failed: %v", herr))
+				}
+			}
+			// Fallback: attempt direct fetch (pre-TUN) to avoid starting with zero rules.
+			if cnRules == nil || (len(cnRules.domainExact) == 0 && len(cnRules.domainSuffix) == 0) {
+				tr := &http.Transport{DialContext: directDialer.DialContext}
+				cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, &http.Client{Timeout: 20 * time.Second, Transport: tr}, func(line string) {
+					b.addLog("info", "rule", line)
+				})
+			}
+			if cnRules != nil && len(cnRules.domainExact) == 0 && len(cnRules.domainSuffix) == 0 {
+				cnRules = nil
+			}
+		}
+
+		mapDNSAddr := ""
+		if strings.TrimSpace(tunCfg.MapDNSAddress) != "" && tunCfg.MapDNSPort > 0 {
+			mapDNSAddr = net.JoinHostPort(strings.TrimSpace(tunCfg.MapDNSAddress), fmt.Sprintf("%d", tunCfg.MapDNSPort))
+		}
+
+		mapDNSEnabled := tunCfg.MapDNSEnabled && mapDNSAddr != ""
+		if mapDNSEnabled && strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" && cnRules == nil {
+			// In PAC mode, MapDNS without any CN-domain rules effectively forces everything into FakeIP,
+			// which tends to break domestic access hard. Keep the network usable and log a clear warning.
+			mapDNSEnabled = false
+			b.addLog("warn", "dns", "PAC rules are empty; disabling MapDNS for this run to avoid FakeIP breaking DIRECT traffic")
+		}
+
 		dnsProxy := newDNSProxyServer(dnsProxyConfig{
 			ProxyMode:     routingCfg.ProxyMode,
 			CNRules:       cnRules,
-			MapDNSEnabled: tunCfg.MapDNSEnabled && mapDNSAddr != "",
+			MapDNSEnabled: mapDNSEnabled,
 			MapDNSAddr:    mapDNSAddr,
 			DirectDial:    directDialer.DialContext,
 			Logf: func(line string) {

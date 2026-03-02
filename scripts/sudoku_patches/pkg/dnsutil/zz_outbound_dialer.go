@@ -66,6 +66,12 @@ func outboundDialerControl() func(network, address string, c syscall.RawConn) er
 			if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 				return nil
 			}
+			if ip := net.ParseIP(host); ip != nil {
+				// Local/private destinations don't need the bypass and may break when force-bound.
+				if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+					return nil
+				}
+			}
 			return base(network, address, c)
 		}
 	})

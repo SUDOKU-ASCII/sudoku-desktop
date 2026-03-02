@@ -9,6 +9,7 @@ import (
 
 type outboundBypassConfig struct {
 	DarwinInterface string
+	DarwinSourceIP  string
 	LinuxMark       int
 	LinuxSourceIP   string
 	WindowsIfIndex  int
