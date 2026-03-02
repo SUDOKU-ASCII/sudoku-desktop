@@ -441,7 +441,9 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 	if firewallRule == "" {
 		firewallRule = "4x4-sudoku Block QUIC (UDP/443)"
 	}
-	ps := buildWindowsRouteScript(false, ctx.ServerIP, ctx.BypassV4Path, ctx.BypassV6Path, firewallRule, tun.BlockQUIC, ctx.TunIndex, tun.MapDNSEnabled, strings.TrimSpace(tun.MapDNSAddress), ctx.WindowsDNSBackup)
+	// Restore DNS whenever we backed it up during start (we always do so in TUN mode).
+	mapDNSEnabled := strings.TrimSpace(ctx.WindowsDNSBackup) != ""
+	ps := buildWindowsRouteScript(false, ctx.ServerIP, ctx.BypassV4Path, ctx.BypassV6Path, firewallRule, tun.BlockQUIC, ctx.TunIndex, mapDNSEnabled, localDNSServerIPv4, ctx.WindowsDNSBackup)
 	_ = runCmdsWindowsAdmin(logf, ps)
 }
 

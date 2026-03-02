@@ -20,7 +20,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var routeLineRegex = regexp.MustCompile(`(?i)\[(tcp|udp)\]\s+([^\s]+)\s+-->\s+([^\s]+).*using\s+(direct|proxy)`) //nolint:lll
+var routeLineRegex = regexp.MustCompile(`(?i)\[(tcp|udp)\]\s+([^\s]+)\s+-->\s+([^\s]+).*using\s+(direct|proxy)`)                          //nolint:lll
 var coreTrafficLineRegex = regexp.MustCompile(`__SUDOKU_TRAFFIC__\s+direct_tx=(\d+)\s+direct_rx=(\d+)\s+proxy_tx=(\d+)\s+proxy_rx=(\d+)`) //nolint:lll
 
 type Backend struct {
@@ -530,10 +530,65 @@ func (b *Backend) StartProxy(req StartRequest) error {
 
 		bypass := tunBypass{}
 
-		effectiveDNS := ""
-		if tunCfg.MapDNSEnabled && strings.TrimSpace(tunCfg.MapDNSAddress) != "" {
-			effectiveDNS = strings.TrimSpace(tunCfg.MapDNSAddress)
+		// Always serve DNS locally in TUN mode to avoid:
+		// - DNS poisoning when MapDNS is disabled (foreign sites unreachable)
+		// - FakeIP -> forced PROXY for CN domains when MapDNS is enabled (domestic sites unreachable)
+		//
+		// The local DNS proxy uses DoH for "direct" domains, and (optionally) forwards other
+		// queries to HEV MapDNS for FakeIP mapping.
+		effectiveDNS := localDNSServerIPv4
+
+		// Prepare CN domain rules via the running core SOCKS5 (so fetching works even on restrictive networks).
+		var cnRules *cnRuleSet
+		if strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" {
+			if httpc, herr := newHTTPClientViaSOCKS5(net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort)), 20*time.Second); herr == nil {
+				cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, httpc, func(line string) {
+					b.addLog("info", "rule", line)
+				})
+			} else {
+				b.addLog("warn", "dns", fmt.Sprintf("init socks5 http client failed: %v", herr))
+			}
 		}
+
+		mapDNSAddr := ""
+		if strings.TrimSpace(tunCfg.MapDNSAddress) != "" && tunCfg.MapDNSPort > 0 {
+			mapDNSAddr = net.JoinHostPort(strings.TrimSpace(tunCfg.MapDNSAddress), fmt.Sprintf("%d", tunCfg.MapDNSPort))
+		}
+		dnsProxy := newDNSProxyServer(dnsProxyConfig{
+			ProxyMode:     routingCfg.ProxyMode,
+			CNRules:       cnRules,
+			MapDNSEnabled: tunCfg.MapDNSEnabled && mapDNSAddr != "",
+			MapDNSAddr:    mapDNSAddr,
+			Logf: func(line string) {
+				b.addLog("info", "dns", line)
+			},
+		})
+		if err := dnsProxy.Start(); err != nil {
+			_ = b.coreProc.Stop(3 * time.Second)
+			b.mu.Lock()
+			b.state.CoreRunning = false
+			b.state.Running = false
+			b.state.LastError = err.Error()
+			b.emitStateLocked()
+			b.mu.Unlock()
+			return fmt.Errorf("start dns proxy: %w", err)
+		}
+		b.mu.Lock()
+		b.dnsProxy = dnsProxy
+		b.mu.Unlock()
+		dnsProxyOK := false
+		defer func() {
+			if dnsProxyOK {
+				return
+			}
+			b.mu.Lock()
+			dp := b.dnsProxy
+			if dp == dnsProxy {
+				b.dnsProxy = nil
+			}
+			b.mu.Unlock()
+			dnsProxy.Stop()
+		}()
 
 		b.addLog("info", "tun", fmt.Sprintf("starting hev with config %s", hevCfgPath))
 		hevCmd := hevBin
@@ -592,17 +647,21 @@ func (b *Backend) StartProxy(req StartRequest) error {
 						}
 						b.addLog("info", "dns", fmt.Sprintf("set system DNS for %s to %s (restore on stop)", dnsService, effectiveDNS))
 					} else if derr != nil {
-						b.addLog("warn", "dns", fmt.Sprintf("mapdns enabled but unable to resolve network service for %s: %v", ifName, derr))
+						b.addLog("warn", "dns", fmt.Sprintf("unable to resolve network service for %s: %v", ifName, derr))
 					}
 				}
 
 				pfSetCmd := ""
 				pfRestoreCmd := ""
 				pfAnchor := ""
-				if tunCfg.BlockQUIC {
+				dnsProxyPort := 0
+				if effectiveDNS == localDNSServerIPv4 {
+					dnsProxyPort = localDNSProxyListenPort()
+				}
+				if tunCfg.BlockQUIC || dnsProxyPort > 0 {
 					pfAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
 					gw6, _, _ := darwinDefaultRouteIPv6()
-					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, "", "", true, 0)
+					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, "", "", tunCfg.BlockQUIC, dnsProxyPort)
 					pfRestoreCmd = darwinBuildPFRestoreCmd(pfAnchor)
 					if tunCfg.BlockQUIC {
 						b.addLog("info", "pf", "blocking QUIC: drop outbound UDP/443 via pf")
@@ -730,11 +789,10 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		routeCtx := preRouteCtx
 		if !routeAlreadySetup {
 			var routeErr error
-			if effectiveDNS != "" {
-				tunCfg.MapDNSEnabled = true
-				tunCfg.MapDNSAddress = effectiveDNS
-			}
-			routeCtx, routeErr = setupRoutes(nodeCopy, tunCfg, routingCfg, bypass, func(line string) {
+			routeTunCfg := tunCfg
+			routeTunCfg.MapDNSEnabled = true
+			routeTunCfg.MapDNSAddress = effectiveDNS
+			routeCtx, routeErr = setupRoutes(nodeCopy, routeTunCfg, routingCfg, bypass, func(line string) {
 				b.addLog("info", "route", line)
 			})
 			if routeErr != nil {
@@ -754,12 +812,12 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		}
 		b.mu.Lock()
 		b.routeState = routeCtx
-		b.dnsProxy = nil
 		b.state.TunRunning = true
 		b.state.NeedsAdmin = false
 		b.state.RouteSetupError = ""
 		b.emitStateLocked()
 		b.mu.Unlock()
+		dnsProxyOK = true
 	}
 
 	// Apply port forwards outside b.mu to avoid self-deadlock via b.addLog.

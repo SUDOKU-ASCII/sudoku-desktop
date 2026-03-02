@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ type ruleSetYAML struct {
 	Payload []string `yaml:"payload"`
 }
 
-func prepareCNRules(ctx context.Context, store *Store, cfg *AppConfig, logf func(string)) (*cnRuleSet, error) {
+func prepareCNRules(ctx context.Context, store *Store, cfg *AppConfig, client *http.Client, logf func(string)) (*cnRuleSet, error) {
 	if store == nil || cfg == nil {
 		return nil, fmt.Errorf("nil store/cfg")
 	}
@@ -60,7 +61,7 @@ func prepareCNRules(ctx context.Context, store *Store, cfg *AppConfig, logf func
 		case "global", "direct":
 			continue
 		}
-		rawPath, err := fetchCached(ctx, u, cacheDir, maxCacheAge)
+		rawPath, err := fetchCachedWithClient(ctx, u, cacheDir, maxCacheAge, client)
 		if err != nil {
 			// Keep going; partial rules are still useful.
 			if logf != nil {

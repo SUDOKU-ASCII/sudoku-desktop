@@ -121,6 +121,10 @@ func findChnCIDRURLs(urls []string) (v4 string, v6 string) {
 }
 
 func fetchCached(ctx context.Context, url string, cacheDir string, maxAge time.Duration) (string, error) {
+	return fetchCachedWithClient(ctx, url, cacheDir, maxAge, nil)
+}
+
+func fetchCachedWithClient(ctx context.Context, url string, cacheDir string, maxAge time.Duration, client *http.Client) (string, error) {
 	sum := sha256.Sum256([]byte(url))
 	name := hex.EncodeToString(sum[:]) + ".yaml"
 	path := filepath.Join(cacheDir, name)
@@ -134,7 +138,9 @@ func fetchCached(ctx context.Context, url string, cacheDir string, maxAge time.D
 		return "", err
 	}
 	req.Header.Set("User-Agent", "sudoku-desktop/1.0")
-	client := &http.Client{Timeout: 15 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// If we have any cache, fall back.
