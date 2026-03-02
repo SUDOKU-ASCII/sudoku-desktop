@@ -75,6 +75,44 @@ if [[ -d "${PATCH_DIR}" ]]; then
   )
 fi
 
+# Patch core outbound TCP dialing to bypass TUN self-loop.
+SUDOKU_DIR="${SUDOKU_DIR}" python3 - <<'PY'
+from __future__ import annotations
+
+import os
+import pathlib
+
+root = pathlib.Path(os.environ["SUDOKU_DIR"])
+
+def patch_file(path: pathlib.Path, needle: str, repl: str) -> None:
+    data = path.read_text(encoding="utf-8")
+    if repl in data:
+        return
+    if needle not in data:
+        raise SystemExit(f"patch failed: needle not found in {path}")
+    path.write_text(data.replace(needle, repl), encoding="utf-8")
+    print("[patch] updated", path)
+
+# internal/tunnel/dialer.go: server TCP conn must bypass TUN once default route switches to utunX.
+patch_file(
+    root / "internal" / "tunnel" / "dialer.go",
+    'rawRemote, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)\n',
+    'rawRemote, err := dnsutil.OutboundDialer(5*time.Second).Dial("tcp", serverAddr)\n',
+)
+
+# pkg/obfs/httpmask: HTTP tunnel dials must also bypass TUN.
+for rel in ["pkg/obfs/httpmask/tunnel_dial.go", "pkg/obfs/httpmask/tunnel_ws.go"]:
+    p = root / rel
+    data = p.read_text(encoding="utf-8")
+    if "var d net.Dialer" not in data:
+        raise SystemExit(f"patch failed: net.Dialer not found in {p}")
+    data = data.replace("var d net.Dialer", "d := dnsutil.OutboundDialer(0)")
+    if "github.com/saba-futai/sudoku/pkg/dnsutil" not in data:
+        data = data.replace('import (\n', 'import (\n\t"github.com/saba-futai/sudoku/pkg/dnsutil"\n', 1)
+    p.write_text(data, encoding="utf-8")
+    print("[patch] updated", p)
+PY
+
 # Patch dialTarget() to wrap conns for traffic stats (direct/proxy).
 SUDOKU_DIR="${SUDOKU_DIR}" python3 - <<'PY'
 from __future__ import annotations
