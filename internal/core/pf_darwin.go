@@ -77,8 +77,12 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 	b.WriteString("cfg=\"${cfg_opt}${cfg_trans}${cfg_flt}\"; ")
 	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null; fi; ")
 	if dnsProxyPort > 0 {
-		// Validate that the local DNS proxy works, and that pf rdr makes 127.0.0.1:53 reach it.
-		// If this fails, we prefer to abort startup before the caller points system DNS at 127.0.0.1.
+		// Best-effort validation that:
+		// - the local DNS proxy works (127.0.0.1:dnsProxyPort)
+		// - pf rdr makes 127.0.0.1:53 reach it
+		//
+		// This MUST NOT fail startup, because transient upstream slowness (DoH handshake, captive portals,
+		// packet loss) would otherwise prevent TUN from starting and can leave the machine in a bad state.
 		//
 		// Note: dig isn't guaranteed, but ships on macOS by default. nslookup can't specify a custom port,
 		// so when dig isn't available we only do a best-effort 127.0.0.1:53 check.
@@ -86,20 +90,20 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		b.WriteString("if command -v dig >/dev/null 2>&1; then ")
 		b.WriteString("echo '__SUDOKU_STEP__=dns_proxy_selftest'; ")
 		b.WriteString("ok=0; for i in $(seq 1 10); do ")
-		b.WriteString("dig +time=1 +tries=1 @" + localDNSServerIPv4 + " -p " + fmt.Sprintf("%d", dnsProxyPort) + " www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
+		b.WriteString("dig +time=2 +tries=1 @" + localDNSServerIPv4 + " -p " + fmt.Sprintf("%d", dnsProxyPort) + " www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
 		b.WriteString("sleep 0.2; ")
 		b.WriteString("done; ")
-		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_proxy_unreachable'; exit 23; fi; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_WARN__=dns_proxy_selftest_failed'; fi; ")
 		b.WriteString("echo '__SUDOKU_STEP__=dns_rdr_selftest'; ")
 		b.WriteString("ok=0; for i in $(seq 1 10); do ")
-		b.WriteString("dig +time=1 +tries=1 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
+		b.WriteString("dig +time=2 +tries=1 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
 		b.WriteString("sleep 0.2; ")
 		b.WriteString("done; ")
-		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_rdr_failed'; exit 24; fi; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_WARN__=dns_rdr_selftest_failed'; fi; ")
 		b.WriteString("elif command -v nslookup >/dev/null 2>&1; then ")
 		b.WriteString("echo '__SUDOKU_STEP__=dns_rdr_selftest'; ")
 		b.WriteString("ok=0; for i in $(seq 1 10); do nslookup www.baidu.com " + localDNSServerIPv4 + " >/dev/null 2>&1 && ok=1 && break; sleep 0.2; done; ")
-		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_rdr_failed'; exit 24; fi; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_WARN__=dns_rdr_selftest_failed'; fi; ")
 		b.WriteString("fi; ")
 	}
 

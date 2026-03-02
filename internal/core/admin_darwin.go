@@ -207,7 +207,12 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 
 	restoreSnippet := ""
 	// If we fail after touching routes, try to restore the default route and clean up the server host route.
-	restoreSnippet = "; " + shellJoin("route", "-n", "change", "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || true"
+	// Be robust: `route change` can fail on macOS when multiple default routes exist; fall back to delete+add.
+	restoreSnippet = "; (" +
+		shellJoin("route", "-n", "change", "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || (" +
+		shellJoin("route", "-n", "delete", "default") + " >/dev/null 2>&1 || true; " +
+		shellJoin("route", "-n", "add", "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || true" +
+		"))"
 	if strings.TrimSpace(serverIP) != "" {
 		restoreSnippet += "; " + shellJoin("route", "-n", "delete", "-host", strings.TrimSpace(serverIP)) + " >/dev/null 2>&1 || true"
 	}
