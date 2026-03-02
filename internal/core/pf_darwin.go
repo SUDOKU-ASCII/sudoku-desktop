@@ -70,7 +70,7 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		// Validate that the system DNS server (127.0.0.1:53) actually works after installing rdr rules.
 		// If this fails, we prefer to abort startup and let the caller restore DNS/routes, rather than
 		// leaving the machine with a broken resolver.
-		b.WriteString("if command -v dig >/dev/null 2>&1; then dig +time=2 +tries=2 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A >/dev/null 2>&1; ")
+		b.WriteString("if command -v dig >/dev/null 2>&1; then dig +time=2 +tries=2 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A +short 2>/dev/null | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' >/dev/null; ")
 		b.WriteString("elif command -v nslookup >/dev/null 2>&1; then nslookup www.baidu.com " + localDNSServerIPv4 + " >/dev/null 2>&1; ")
 		b.WriteString("fi; ")
 	}

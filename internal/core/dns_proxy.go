@@ -36,6 +36,7 @@ type dnsProxyConfig struct {
 	MapDNSEnabled bool
 	MapDNSAddr    string
 	AlwaysDirect  []string
+	DirectDial    func(ctx context.Context, network, addr string) (net.Conn, error)
 	Logf          func(string)
 }
 
@@ -66,8 +67,8 @@ func newDNSProxyServer(cfg dnsProxyConfig) *dnsProxyServer {
 		cache:  map[string]dnsCacheEntry{},
 	}
 	s.doh = []*dohClient{
-		newDoHClient("dns.alidns.com", "/dns-query", []string{"223.5.5.5", "223.6.6.6"}),
-		newDoHClient("doh.pub", "/dns-query", []string{"119.29.29.29", "119.28.28.28"}),
+		newDoHClient("dns.alidns.com", "/dns-query", []string{"223.5.5.5", "223.6.6.6"}, cfg.DirectDial),
+		newDoHClient("doh.pub", "/dns-query", []string{"119.29.29.29", "119.28.28.28"}, cfg.DirectDial),
 	}
 	return s
 }
@@ -311,7 +312,7 @@ func (s *dnsProxyServer) forwardDirect(req []byte) []byte {
 	// Note: in FakeIP router environments (e.g. OpenClash), port-53 may be hijacked and return
 	// bogus answers (198.18.0.0/15 etc). Detect and ignore those to avoid breaking DIRECT dials.
 	for _, server := range []string{"223.5.5.5:53", "119.29.29.29:53"} {
-		resp, _ := dnsExchangeUDP(server, req, 800*time.Millisecond)
+		resp, _ := dnsExchangeUDPWithDial(s.cfg.DirectDial, server, req, 800*time.Millisecond)
 		if len(resp) > 0 && !dnsResponseLooksHijacked(resp) {
 			return resp
 		}
@@ -395,11 +396,20 @@ func (s *dnsProxyServer) buildSERVFAILWithID(id uint16) []byte {
 }
 
 func dnsExchangeUDP(server string, req []byte, timeout time.Duration) ([]byte, error) {
+	return dnsExchangeUDPWithDial(nil, server, req, timeout)
+}
+
+func dnsExchangeUDPWithDial(dial func(ctx context.Context, network, addr string) (net.Conn, error), server string, req []byte, timeout time.Duration) ([]byte, error) {
 	server = strings.TrimSpace(server)
 	if server == "" {
 		return nil, errors.New("empty dns server")
 	}
-	conn, err := net.DialTimeout("udp", server, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	conn, err := dial(ctx, "udp", server)
 	if err != nil {
 		return nil, err
 	}
@@ -422,9 +432,10 @@ type dohClient struct {
 	bootstrap []string
 	next      uint32
 	client    *http.Client
+	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
-func newDoHClient(host string, path string, bootstrap []string) *dohClient {
+func newDoHClient(host string, path string, bootstrap []string, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *dohClient {
 	host = strings.TrimSpace(host)
 	path = strings.TrimSpace(path)
 	bootstrap = filterIPs(bootstrap)
@@ -436,6 +447,7 @@ func newDoHClient(host string, path string, bootstrap []string) *dohClient {
 		host:      host,
 		path:      path,
 		bootstrap: bootstrap,
+		dial:      dial,
 	}
 
 	tr := &http.Transport{
@@ -443,16 +455,20 @@ func newDoHClient(host string, path string, bootstrap []string) *dohClient {
 			ServerName: host,
 		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := c.dial
+			if dialer == nil {
+				dialer = (&net.Dialer{}).DialContext
+			}
 			h, port, err := net.SplitHostPort(addr)
 			if err != nil {
-				return (&net.Dialer{}).DialContext(ctx, network, addr)
+				return dialer(ctx, network, addr)
 			}
 			if strings.EqualFold(h, host) {
 				idx := atomic.AddUint32(&c.next, 1)
 				ip := c.bootstrap[int(idx)%len(c.bootstrap)]
-				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip, port))
+				return dialer(ctx, network, net.JoinHostPort(ip, port))
 			}
-			return (&net.Dialer{}).DialContext(ctx, network, addr)
+			return dialer(ctx, network, addr)
 		},
 	}
 	c.client = &http.Client{

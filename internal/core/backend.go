@@ -554,11 +554,36 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		if strings.TrimSpace(tunCfg.MapDNSAddress) != "" && tunCfg.MapDNSPort > 0 {
 			mapDNSAddr = net.JoinHostPort(strings.TrimSpace(tunCfg.MapDNSAddress), fmt.Sprintf("%d", tunCfg.MapDNSPort))
 		}
+
+		// Ensure DNS proxy upstream (DoH/plain DNS) bypasses the TUN on all platforms.
+		// Otherwise, "direct" domains may resolve from the proxy egress IP and return unreachable/incorrect
+		// answers (breaking split routing and sometimes making the whole network look down).
+		bypassCfg := outboundBypassConfig{}
+		switch runtime.GOOS {
+		case "linux":
+			if tunCfg.SocksMark > 0 {
+				bypassCfg.LinuxMark = tunCfg.SocksMark
+			}
+			if srcIP, err := linuxDefaultOutboundIPv4(); err == nil && strings.TrimSpace(srcIP) != "" {
+				bypassCfg.LinuxSourceIP = strings.TrimSpace(srcIP)
+			}
+		case "darwin":
+			if _, ifName, err := darwinDefaultRoute(); err == nil && strings.TrimSpace(ifName) != "" {
+				bypassCfg.DarwinInterface = strings.TrimSpace(ifName)
+			}
+		case "windows":
+			if ifIndex, err := windowsDefaultInterfaceIndex(); err == nil && ifIndex > 0 {
+				bypassCfg.WindowsIfIndex = ifIndex
+			}
+		}
+		directDialer := newOutboundBypassDialer(3*time.Second, bypassCfg)
+
 		dnsProxy := newDNSProxyServer(dnsProxyConfig{
 			ProxyMode:     routingCfg.ProxyMode,
 			CNRules:       cnRules,
 			MapDNSEnabled: tunCfg.MapDNSEnabled && mapDNSAddr != "",
 			MapDNSAddr:    mapDNSAddr,
+			DirectDial:    directDialer.DialContext,
 			Logf: func(line string) {
 				b.addLog("info", "dns", line)
 			},
