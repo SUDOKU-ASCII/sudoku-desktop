@@ -45,6 +45,7 @@ type Backend struct {
 	revProc             *ManagedProcess
 	routeState          *routeContext
 	pfMgr               *portForwardManager
+	sysProxyRestore     func() error
 
 	logs             []LogEntry
 	connections      map[string]*ActiveConnection
@@ -552,6 +553,33 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		return err
 	}
 
+	if !withTun && strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) != "direct" {
+		socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+		if err := waitForTCPReady(startCtx, socksAddr, 5*time.Second); err != nil {
+			b.addLog("warn", "proxy", fmt.Sprintf("core proxy not ready on %s; skip setting system proxy: %v", socksAddr, err))
+		} else {
+			b.mu.RLock()
+			pacURL := b.pacURL
+			b.mu.RUnlock()
+			restore, err := applySystemProxy(systemProxyConfig{
+				ProxyMode: routingCfg.ProxyMode,
+				LocalPort: localPort,
+				PACURL:    pacURL,
+				Logf: func(line string) {
+					b.addLog("info", "proxy", line)
+				},
+			})
+			if err != nil {
+				b.addLog("warn", "proxy", fmt.Sprintf("set system proxy failed: %v", err))
+			} else if restore != nil {
+				b.mu.Lock()
+				b.sysProxyRestore = restore
+				b.mu.Unlock()
+				b.addLog("info", "proxy", "system proxy configured")
+			}
+		}
+	}
+
 	b.mu.Lock()
 	b.trafficCache = trafficSampleState{}
 	b.connections = map[string]*ActiveConnection{}
@@ -1006,6 +1034,20 @@ func (b *Backend) StopProxy() error {
 	b.cancelStart()
 	b.opMu.Lock()
 	defer b.opMu.Unlock()
+
+	// Restore system proxy as early as possible to avoid leaving the machine offline.
+	var restoreSysProxy func() error
+	b.mu.Lock()
+	restoreSysProxy = b.sysProxyRestore
+	b.sysProxyRestore = nil
+	b.mu.Unlock()
+	if restoreSysProxy != nil {
+		if err := restoreSysProxy(); err != nil {
+			b.addLog("warn", "proxy", fmt.Sprintf("restore system proxy failed: %v", err))
+		} else {
+			b.addLog("info", "proxy", "restored system proxy settings")
+		}
+	}
 
 	b.mu.Lock()
 	routeState := b.routeState
