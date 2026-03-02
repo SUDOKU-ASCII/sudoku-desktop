@@ -133,6 +133,10 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # 将 secrets 注入到 job 级别的 env 中
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -176,16 +180,15 @@ jobs:
           print(dist / "SHA256SUMS.txt")
           PY
 
+      # 使用 env 替代直接使用 secrets
       - name: Install cosign
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KEYSTORE_BASE64 != ''
         uses: sigstore/cosign-installer@v3
 
+      # 使用 env 替代直接使用 secrets
       - name: Sign checksums (cosign)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KEYSTORE_BASE64 != ''
         shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
           python - <<'PY'
