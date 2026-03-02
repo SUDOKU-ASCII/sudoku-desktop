@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -85,7 +86,10 @@ func (b *Backend) installBundledRuntimeDir(destDir string) error {
 		srcPath := filepath.Join(srcDir, name)
 		dstPath := filepath.Join(destDir, name)
 		if !fileMissing(dstPath) {
-			continue
+			same, err := filesLookIdentical(srcPath, dstPath)
+			if err == nil && same {
+				continue
+			}
 		}
 		mode := bundledFileMode(name)
 		if err := copyFileAtomic(srcPath, dstPath, mode); err != nil {
@@ -93,6 +97,43 @@ func (b *Backend) installBundledRuntimeDir(destDir string) error {
 		}
 	}
 	return nil
+}
+
+func filesLookIdentical(srcPath, dstPath string) (bool, error) {
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return false, err
+	}
+	dstInfo, err := os.Stat(dstPath)
+	if err != nil {
+		return false, err
+	}
+	if srcInfo.Size() != dstInfo.Size() {
+		return false, nil
+	}
+	srcHash, err := fileSHA256(srcPath)
+	if err != nil {
+		return false, err
+	}
+	dstHash, err := fileSHA256(dstPath)
+	if err != nil {
+		return false, err
+	}
+	return srcHash == dstHash, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func bundledFileMode(name string) os.FileMode {

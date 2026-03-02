@@ -65,7 +65,15 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		b.WriteString("cfg=\"${cfg}rdr pass on lo0 inet proto { udp tcp } from any to " + localDNSServerIPv4 + " port 53 -> " + localDNSServerIPv4 + " port " + fmt.Sprintf("%d", dnsProxyPort) + "\\n\"; ")
 	}
 
-	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null 2>&1 || true; fi; ")
+	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null 2>&1; fi; ")
+	if dnsProxyPort > 0 {
+		// Validate that the system DNS server (127.0.0.1:53) actually works after installing rdr rules.
+		// If this fails, we prefer to abort startup and let the caller restore DNS/routes, rather than
+		// leaving the machine with a broken resolver.
+		b.WriteString("if command -v dig >/dev/null 2>&1; then dig +time=2 +tries=2 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A >/dev/null 2>&1; ")
+		b.WriteString("elif command -v nslookup >/dev/null 2>&1; then nslookup www.baidu.com " + localDNSServerIPv4 + " >/dev/null 2>&1; ")
+		b.WriteString("fi; ")
+	}
 
 	if bypassV4File != "" {
 		b.WriteString("if [ -f " + shellQuote(bypassV4File) + " ]; then pfctl -a " + shellQuote(anchor) + " -t " + darwinPFTableCN4 + " -T replace -f " + shellQuote(bypassV4File) + " >/dev/null 2>&1 || true; fi; ")
