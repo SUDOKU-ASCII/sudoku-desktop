@@ -30,6 +30,10 @@ type chnCIDRYaml struct {
 }
 
 func prepareTunBypass(ctx context.Context, store *Store, cfg *AppConfig, logf func(string)) (tunBypass, error) {
+	return prepareTunBypassWithClient(ctx, store, cfg, nil, logf)
+}
+
+func prepareTunBypassWithClient(ctx context.Context, store *Store, cfg *AppConfig, client *http.Client, logf func(string)) (tunBypass, error) {
 	if store == nil || cfg == nil {
 		return tunBypass{}, errors.New("nil store/cfg")
 	}
@@ -59,7 +63,7 @@ func prepareTunBypass(ctx context.Context, store *Store, cfg *AppConfig, logf fu
 	out := tunBypass{}
 
 	if v4URL != "" {
-		rawPath, err := fetchCached(ctx, v4URL, cacheDir, maxCacheAge)
+		rawPath, err := fetchCachedWithClient(ctx, v4URL, cacheDir, maxCacheAge, client)
 		if err != nil {
 			return tunBypass{}, err
 		}
@@ -79,7 +83,7 @@ func prepareTunBypass(ctx context.Context, store *Store, cfg *AppConfig, logf fu
 		}
 	}
 	if v6URL != "" {
-		rawPath, err := fetchCached(ctx, v6URL, cacheDir, maxCacheAge)
+		rawPath, err := fetchCachedWithClient(ctx, v6URL, cacheDir, maxCacheAge, client)
 		if err != nil {
 			return tunBypass{}, err
 		}

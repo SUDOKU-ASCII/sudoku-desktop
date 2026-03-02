@@ -70,7 +70,11 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto { udp tcp } to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 53 keep state\\n\"; ")
 	}
 	if blockQUIC {
-		b.WriteString("cfg_flt=\"${cfg_flt}block drop out proto udp to any port 443\\n\"; ")
+		if tunIfExpr != "" {
+			b.WriteString("cfg_flt=\"${cfg_flt}block drop out quick on " + tunIfExpr + " proto udp to any port 443\\n\"; ")
+		} else {
+			b.WriteString("cfg_flt=\"${cfg_flt}block drop out proto udp to any port 443\\n\"; ")
+		}
 	}
 
 	// Keep stdout quiet but allow pfctl stderr through (useful when startup fails).

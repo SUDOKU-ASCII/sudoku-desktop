@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -211,7 +212,13 @@ func buildHevConfig(cfg *AppConfig, localPort int) *hevTunnelConfig {
 	if c.Socks5.UDP == "" {
 		c.Socks5.UDP = "udp"
 	}
-	if cfg.Tun.MapDNSEnabled {
+	enableMapDNS := cfg.Tun.MapDNSEnabled
+	if runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_HEV_MAPDNS")) != "1" {
+		// Production default on macOS: local DNS proxy already handles split DNS, while HEV MapDNS
+		// may destabilize data-plane forwarding on some networks.
+		enableMapDNS = false
+	}
+	if enableMapDNS {
 		c.MapDNS = &hevMapDNSSection{
 			Address:   cfg.Tun.MapDNSAddress,
 			Port:      cfg.Tun.MapDNSPort,

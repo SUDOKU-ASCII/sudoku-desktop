@@ -252,6 +252,7 @@ const hint = () => {
 }
 
 const newGame = async () => {
+  if (generating.value) return
   generating.value = true
   generationError.value = ''
   solvedAt.value = 0
@@ -362,6 +363,9 @@ watch(isSolved, (ok) => {
   if (ok && !solvedAt.value) {
     solvedAt.value = Date.now()
   }
+})
+watch(size, () => {
+  void newGame()
 })
 
 const cellClass = (idx: number) => {

@@ -11,6 +11,36 @@ import (
 	"time"
 )
 
+func healthCheckSystemTCPAny(ctx context.Context, targets []string, timeout time.Duration) error {
+	if len(targets) == 0 {
+		return errors.New("no targets")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	d := &net.Dialer{Timeout: timeout}
+	var errs []string
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		c, err := d.DialContext(ctx, "tcp", t)
+		if err == nil {
+			_ = c.Close()
+			return nil
+		}
+		errs = append(errs, t+": "+err.Error())
+	}
+	if len(errs) == 0 {
+		return errors.New("no valid targets")
+	}
+	return errors.New(strings.Join(errs, " | "))
+}
+
 func healthCheckSOCKS5Connect(ctx context.Context, socksAddr string, target string, timeout time.Duration) error {
 	socksAddr = strings.TrimSpace(socksAddr)
 	target = strings.TrimSpace(target)

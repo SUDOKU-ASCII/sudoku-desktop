@@ -13,6 +13,7 @@ import (
 
 type windowsProxySnapshot struct {
 	ProxyEnable   uint32
+	AutoDetect    uint32
 	ProxyServer   string
 	AutoConfigURL string
 	ProxyOverride string
@@ -36,6 +37,7 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 
 		if err := windowsWriteProxySettings(windowsProxySnapshot{
 			ProxyEnable:   1,
+			AutoDetect:    0,
 			ProxyServer:   server,
 			AutoConfigURL: "",
 			ProxyOverride: strings.Join(override, ";"),
@@ -69,12 +71,17 @@ func windowsReadProxySnapshot() (windowsProxySnapshot, error) {
 	if v, _, err := key.GetIntegerValue("ProxyEnable"); err == nil {
 		enable = v
 	}
+	autoDetect := uint64(0)
+	if v, _, err := key.GetIntegerValue("AutoDetect"); err == nil {
+		autoDetect = v
+	}
 	server, _, _ := key.GetStringValue("ProxyServer")
 	autoURL, _, _ := key.GetStringValue("AutoConfigURL")
 	override, _, _ := key.GetStringValue("ProxyOverride")
 
 	return windowsProxySnapshot{
 		ProxyEnable:   uint32(enable),
+		AutoDetect:    uint32(autoDetect),
 		ProxyServer:   server,
 		AutoConfigURL: autoURL,
 		ProxyOverride: override,
@@ -91,11 +98,18 @@ func windowsWriteProxySettings(s windowsProxySnapshot) error {
 	if err := key.SetDWordValue("ProxyEnable", s.ProxyEnable); err != nil {
 		return err
 	}
+	if err := key.SetDWordValue("AutoDetect", s.AutoDetect); err != nil {
+		return err
+	}
 	if err := key.SetStringValue("ProxyServer", s.ProxyServer); err != nil {
 		return err
 	}
-	if err := key.SetStringValue("AutoConfigURL", s.AutoConfigURL); err != nil {
-		return err
+	if strings.TrimSpace(s.AutoConfigURL) == "" {
+		_ = key.DeleteValue("AutoConfigURL")
+	} else {
+		if err := key.SetStringValue("AutoConfigURL", s.AutoConfigURL); err != nil {
+			return err
+		}
 	}
 	if err := key.SetStringValue("ProxyOverride", s.ProxyOverride); err != nil {
 		return err

@@ -42,6 +42,7 @@ type Backend struct {
 	tunProc             *ManagedProcess
 	tunAdmin            adminDetachedProcess
 	runningTunInterface string
+	tunRecovering       bool
 	revProc             *ManagedProcess
 	routeState          *routeContext
 	pfMgr               *portForwardManager
@@ -553,7 +554,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		return err
 	}
 
-	if !withTun && strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) != "direct" {
+	if !withTun {
 		socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
 		if err := waitForTCPReady(startCtx, socksAddr, 5*time.Second); err != nil {
 			b.addLog("warn", "proxy", fmt.Sprintf("core proxy not ready on %s; skip setting system proxy: %v", socksAddr, err))
@@ -620,6 +621,13 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		// The local DNS proxy uses DoH for "direct" domains, and (optionally) forwards other
 		// queries to HEV MapDNS for FakeIP mapping.
 		effectiveDNS := localDNSServerIPv4
+		if runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_FORCE_LOCAL_DNS")) != "1" {
+			// Production safety on macOS:
+			// If system DNS is forced to localhost but the localhost DNS chain is unstable,
+			// the whole machine appears offline. Keep OS DNS by default for TUN mode.
+			effectiveDNS = ""
+			b.addLog("warn", "dns", "darwin stability mode: skip system DNS override in TUN (set SUDOKU_DARWIN_FORCE_LOCAL_DNS=1 to force old behavior)")
+		}
 
 		// Ensure DNS proxy upstream (DoH/plain DNS) bypasses the TUN on all platforms.
 		// Otherwise, "direct" domains may resolve from the proxy egress IP and return unreachable/incorrect
@@ -647,14 +655,16 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		}
 		directDialer := newOutboundBypassDialer(3*time.Second, bypassCfg)
 
-		// Prepare CN domain rules via the running core SOCKS5 (so fetching works even on restrictive networks).
+		// Prepare PAC assets via the running core SOCKS5 (so fetching works even on restrictive networks).
 		var cnRules *cnRuleSet
+		var socksHTTPClient *http.Client
 		if strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" {
 			socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
 			if werr := waitForTCPReady(startCtx, socksAddr, 6*time.Second); werr != nil {
 				b.addLog("warn", "rule", fmt.Sprintf("core SOCKS5 not ready on %s; skipping PAC rules fetch: %v", socksAddr, werr))
 			} else {
 				if httpc, herr := newHTTPClientViaSOCKS5(socksAddr, 20*time.Second); herr == nil {
+					socksHTTPClient = httpc
 					cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, httpc, func(line string) {
 						b.addLog("info", "rule", line)
 					})
@@ -672,6 +682,28 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			if cnRules != nil && len(cnRules.domainExact) == 0 && len(cnRules.domainSuffix) == 0 {
 				cnRules = nil
 			}
+
+			// CN CIDR bypass routes are required for stable PAC + TUN behavior.
+			// Without them, many "DIRECT" domestic flows can loop back into the tunnel.
+			if socksHTTPClient != nil {
+				if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, socksHTTPClient, func(line string) {
+					b.addLog("info", "route", line)
+				}); berr != nil {
+					b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via SOCKS failed: %v", berr))
+				} else {
+					bypass = bp
+				}
+			}
+			if bypass.V4Path == "" && bypass.V6Path == "" {
+				tr := &http.Transport{DialContext: directDialer.DialContext}
+				if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, &http.Client{Timeout: 25 * time.Second, Transport: tr}, func(line string) {
+					b.addLog("info", "route", line)
+				}); berr != nil {
+					b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via direct failed: %v", berr))
+				} else {
+					bypass = bp
+				}
+			}
 		}
 
 		mapDNSAddr := ""
@@ -680,6 +712,10 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		}
 
 		mapDNSEnabled := tunCfg.MapDNSEnabled && mapDNSAddr != ""
+		if runtime.GOOS == "darwin" && mapDNSEnabled && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_HEV_MAPDNS")) != "1" {
+			mapDNSEnabled = false
+			b.addLog("warn", "dns", "darwin stability mode: HEV MapDNS is disabled (set SUDOKU_DARWIN_ENABLE_HEV_MAPDNS=1 to force old behavior)")
+		}
 		if mapDNSEnabled && strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" && cnRules == nil {
 			// In PAC mode, MapDNS without any CN-domain rules effectively forces everything into FakeIP,
 			// which tends to break domestic access hard. Keep the network usable and log a clear warning.
@@ -723,6 +759,19 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			b.mu.Unlock()
 			dnsProxy.Stop()
 		}()
+		if runtime.GOOS == "darwin" && strings.TrimSpace(effectiveDNS) == localDNSServerIPv4 {
+			pctx, pcancel := context.WithTimeout(context.Background(), 3*time.Second)
+			precheckErr := healthCheckDNSUDP(pctx, net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localDNSProxyListenPort())), "www.baidu.com", 1500*time.Millisecond)
+			pcancel()
+			if precheckErr != nil {
+				// Production safety: never force system DNS to localhost if the local resolver path
+				// isn't ready. Otherwise the machine may look completely offline.
+				b.addLog("warn", "dns", fmt.Sprintf("local dns proxy precheck failed; skip system DNS override this run: %v", precheckErr))
+				effectiveDNS = ""
+			} else {
+				b.addLog("info", "dns", "local dns proxy precheck passed")
+			}
+		}
 
 		b.addLog("info", "tun", fmt.Sprintf("starting hev with config %s", hevCfgPath))
 		hevCmd := hevBin
@@ -742,7 +791,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			hevLogFile = logFile
 			b.addLog("warn", "tun", "starting TUN requires administrator privileges; requesting approval...")
 			type startWithRoutesAdmin interface {
-				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, string, error)
+				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultGatewayV6 string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, string, error)
 			}
 			if dp, ok := b.tunAdmin.(startWithRoutesAdmin); ok {
 				gw, ifName, gwErr := darwinDefaultRoute()
@@ -757,6 +806,10 @@ func (b *Backend) StartProxy(req StartRequest) error {
 					b.emitStateLocked()
 					b.mu.Unlock()
 					return gwErr
+				}
+				gw6 := ""
+				if darwinTunIPv6Enabled() {
+					gw6, _, _ = darwinDefaultRouteIPv6()
 				}
 
 				dnsSetCmd := ""
@@ -792,17 +845,16 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				if effectiveDNS == localDNSServerIPv4 {
 					dnsProxyPort = localDNSProxyListenPort()
 				}
-				if tunCfg.BlockQUIC || dnsProxyPort > 0 {
+				if tunCfg.BlockQUIC || dnsProxyPort > 0 || strings.TrimSpace(bypass.V4Path) != "" || strings.TrimSpace(bypass.V6Path) != "" {
 					pfAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-					gw6, _, _ := darwinDefaultRouteIPv6()
-					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, "", "", tunCfg.BlockQUIC, dnsProxyPort)
+					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, bypass.V4Path, bypass.V6Path, tunCfg.BlockQUIC, dnsProxyPort)
 					pfRestoreCmd = darwinBuildPFRestoreCmd(pfAnchor)
 					if tunCfg.BlockQUIC {
 						b.addLog("info", "pf", "blocking QUIC: drop outbound UDP/443 via pf")
 					}
 				}
 
-				pid, tunIf, scriptOut, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
+				pid, tunIf, scriptOut, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, gw6, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
 				if err != nil {
 					_ = b.coreProc.Stop(3 * time.Second)
 					b.mu.Lock()
@@ -839,14 +891,15 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				}
 				preRouteCtx = &routeContext{
 					DefaultGateway:   gw,
+					DefaultGatewayV6: gw6,
 					DefaultInterface: ifName,
 					ServerIP:         serverIP,
 					DNSService:       dnsService,
 					DNSServers:       dnsPrev,
 					DNSWasAutomatic:  dnsWasAuto,
 					PFAnchor:         pfAnchor,
-					BypassV4Path:     "",
-					BypassV6Path:     "",
+					BypassV4Path:     bypass.V4Path,
+					BypassV6Path:     bypass.V6Path,
 				}
 				routeAlreadySetup = true
 				b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
@@ -942,7 +995,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		if !routeAlreadySetup {
 			var routeErr error
 			routeTunCfg := tunCfg
-			routeTunCfg.MapDNSEnabled = true
+			routeTunCfg.MapDNSEnabled = strings.TrimSpace(effectiveDNS) != ""
 			routeTunCfg.MapDNSAddress = effectiveDNS
 			routeCtx, routeErr = setupRoutes(nodeCopy, routeTunCfg, routingCfg, bypass, func(line string) {
 				b.addLog("info", "route", line)
@@ -975,9 +1028,24 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			if err := healthCheckSOCKS5Connect(hctx, socksAddr, "1.1.1.1:443", 3*time.Second); err != nil {
 				return fmt.Errorf("socks connect check failed: %w", err)
 			}
-			// 2) Verify local DNS (via pf rdr 127.0.0.1:53 -> dns proxy) returns answers.
-			if err := healthCheckDNSUDP(hctx, net.JoinHostPort(localDNSServerIPv4, "53"), "www.baidu.com", 2*time.Second); err != nil {
-				return fmt.Errorf("dns check failed: %w", err)
+			if runtime.GOOS == "darwin" {
+				// 1.5) Verify the system default path can really egress after default-route switch.
+				// This catches "route switched but TUN forwarding is dead" blackhole cases.
+				if err := healthCheckSystemTCPAny(hctx, []string{"223.5.5.5:443", "1.1.1.1:443"}, 2500*time.Millisecond); err != nil {
+					return fmt.Errorf("system egress check failed: %w", err)
+				}
+			}
+			// 2) Verify DNS only when we actually changed system DNS to localhost.
+			if strings.TrimSpace(effectiveDNS) == localDNSServerIPv4 {
+				// via pf rdr 127.0.0.1:53 -> dns proxy
+				if err := healthCheckDNSUDP(hctx, net.JoinHostPort(localDNSServerIPv4, "53"), "www.baidu.com", 2*time.Second); err != nil {
+					return fmt.Errorf("dns check failed: %w", err)
+				}
+			} else {
+				// Best-effort observability check for local dns proxy itself (non-fatal in no-override mode).
+				if err := healthCheckDNSUDP(hctx, net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localDNSProxyListenPort())), "www.baidu.com", 2*time.Second); err != nil {
+					b.addLog("warn", "dns", fmt.Sprintf("local dns proxy best-effort check failed (non-fatal): %v", err))
+				}
 			}
 			return nil
 		}()
@@ -991,8 +1059,48 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				})
 			}
 			_ = b.stopTunLocked(4 * time.Second)
-			_ = b.coreProc.Stop(2 * time.Second)
+			if runtime.GOOS == "darwin" {
+				// Production fallback on macOS: keep core running and switch to system-proxy mode
+				// so users are not left offline when TUN dataplane is unhealthy.
+				b.addLog("warn", "app", fmt.Sprintf("darwin fallback: keep core running without TUN: %v", hcErr))
+				b.mu.Lock()
+				dp := b.dnsProxy
+				b.dnsProxy = nil
+				b.mu.Unlock()
+				if dp != nil {
+					dp.Stop()
+				}
 
+				restore, perr := applySystemProxy(systemProxyConfig{
+					LocalPort: localPort,
+					Logf: func(line string) {
+						b.addLog("info", "proxy", line)
+					},
+				})
+				if perr != nil {
+					b.addLog("warn", "proxy", fmt.Sprintf("fallback set system proxy failed: %v", perr))
+				} else if restore != nil {
+					b.mu.Lock()
+					b.sysProxyRestore = restore
+					b.mu.Unlock()
+					b.addLog("info", "proxy", "fallback system proxy configured")
+				}
+
+				b.mu.Lock()
+				b.routeState = nil
+				b.state.NeedsAdmin = false
+				b.state.RouteSetupError = hcErr.Error()
+				b.state.TunRunning = false
+				b.state.CoreRunning = b.coreProc.IsRunning()
+				b.state.Running = b.state.CoreRunning
+				b.state.LastError = "TUN unavailable, fallback to system-proxy mode: " + hcErr.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				dnsProxyOK = true
+				return nil
+			}
+
+			_ = b.coreProc.Stop(2 * time.Second)
 			b.mu.Lock()
 			b.state.NeedsAdmin = true
 			b.state.RouteSetupError = hcErr.Error()
@@ -1084,6 +1192,7 @@ func (b *Backend) StopProxy() error {
 	b.state.Running = false
 	b.state.TunRunning = false
 	b.state.CoreRunning = false
+	b.tunRecovering = false
 	b.runningLocalPort = 0
 	b.runningTunInterface = ""
 	b.state.NeedsAdmin = false
@@ -1510,10 +1619,16 @@ func (b *Backend) monitorLoop() {
 func (b *Backend) tick() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	needTunRecover := false
 	b.state.CoreRunning = b.coreProc.IsRunning()
 	b.state.TunRunning = b.tunRunningLocked()
 	b.state.ReverseRunning = b.revProc.IsRunning()
 	b.state.Running = b.state.CoreRunning
+	if b.routeState != nil && !b.state.TunRunning && !b.tunRecovering {
+		b.tunRecovering = true
+		needTunRecover = true
+		b.state.LastError = "tun process exited unexpectedly; auto-recovering routes"
+	}
 
 	ifName := b.cfg.Tun.InterfaceName
 	if b.runningTunInterface != "" {
@@ -1596,6 +1711,27 @@ func (b *Backend) tick() {
 	b.state.Connections = topConnections(b.connections, 200)
 	b.state.RecentLogs = b.lastLogsLocked(120)
 	b.emitStateLocked()
+	if needTunRecover {
+		go b.recoverFromTunFailure()
+	}
+}
+
+func (b *Backend) recoverFromTunFailure() {
+	msg := "tun process is not running while routes are active; auto-stopping proxy to restore network"
+	if b.store != nil {
+		if tail := tailFile(filepath.Join(b.store.LogDir(), "hev.log"), 40); strings.TrimSpace(tail) != "" {
+			msg = msg + "; hev tail:\n" + tail
+		}
+	}
+	b.addLog("warn", "tun", msg)
+	_ = b.StopProxy()
+	b.mu.Lock()
+	b.tunRecovering = false
+	if strings.TrimSpace(b.state.LastError) == "" {
+		b.state.LastError = "tun process exited unexpectedly"
+	}
+	b.emitStateLocked()
+	b.mu.Unlock()
 }
 
 func (b *Backend) refreshLatencySliceLocked() {

@@ -52,7 +52,8 @@ type dnsProxyServer struct {
 	cacheMu sync.Mutex
 	cache   map[string]dnsCacheEntry
 
-	doh []*dohClient
+	dohDirect []*dohClient
+	dohGlobal []*dohClient
 }
 
 type dnsCacheEntry struct {
@@ -66,9 +67,14 @@ func newDNSProxyServer(cfg dnsProxyConfig) *dnsProxyServer {
 		stopCh: make(chan struct{}),
 		cache:  map[string]dnsCacheEntry{},
 	}
-	s.doh = []*dohClient{
+	s.dohDirect = []*dohClient{
 		newDoHClient("dns.alidns.com", "/dns-query", []string{"223.5.5.5", "223.6.6.6"}, cfg.DirectDial),
 		newDoHClient("doh.pub", "/dns-query", []string{"119.29.29.29", "119.28.28.28"}, cfg.DirectDial),
+	}
+	s.dohGlobal = []*dohClient{
+		newDoHClient("cloudflare-dns.com", "/dns-query", []string{"1.1.1.1", "1.0.0.1"}, cfg.DirectDial),
+		newDoHClient("dns.google", "/dns-query", []string{"8.8.8.8", "8.8.4.4"}, cfg.DirectDial),
+		newDoHClient("dns.quad9.net", "/dns-query", []string{"9.9.9.9", "149.112.112.112"}, cfg.DirectDial),
 	}
 	return s
 }
@@ -231,13 +237,15 @@ func (s *dnsProxyServer) handleQuery(req []byte) []byte {
 
 	shouldDirect := s.shouldDirect(qname)
 	var resp []byte
-	if shouldDirect || !s.cfg.MapDNSEnabled || strings.TrimSpace(s.cfg.MapDNSAddr) == "" {
+	if shouldDirect {
 		resp = s.forwardDirect(req)
+	} else if !s.cfg.MapDNSEnabled || strings.TrimSpace(s.cfg.MapDNSAddr) == "" {
+		resp = s.forwardNonDirect(req)
 	} else {
 		resp = s.forwardMapDNS(req)
 		if len(resp) == 0 {
 			// Fallback: keep the system working even if MapDNS isn't reachable yet.
-			resp = s.forwardDirect(req)
+			resp = s.forwardNonDirect(req)
 		}
 	}
 	if len(resp) == 0 {
@@ -299,7 +307,7 @@ func (s *dnsProxyServer) forwardMapDNS(req []byte) []byte {
 func (s *dnsProxyServer) forwardDirect(req []byte) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), 1400*time.Millisecond)
 	defer cancel()
-	for _, c := range s.doh {
+	for _, c := range s.dohDirect {
 		if c == nil {
 			continue
 		}
@@ -318,6 +326,27 @@ func (s *dnsProxyServer) forwardDirect(req []byte) []byte {
 		}
 	}
 	return nil
+}
+
+func (s *dnsProxyServer) forwardNonDirect(req []byte) []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
+	defer cancel()
+	for _, c := range s.dohGlobal {
+		if c == nil {
+			continue
+		}
+		resp, err := c.Exchange(ctx, req)
+		if err == nil && len(resp) > 0 {
+			return resp
+		}
+	}
+	for _, server := range []string{"1.1.1.1:53", "8.8.8.8:53", "9.9.9.9:53"} {
+		resp, _ := dnsExchangeUDPWithDial(s.cfg.DirectDial, server, req, 800*time.Millisecond)
+		if len(resp) > 0 && !dnsResponseLooksHijacked(resp) {
+			return resp
+		}
+	}
+	return s.forwardDirect(req)
 }
 
 func (s *dnsProxyServer) cacheKey(name string, qtype dnsmessage.Type) string {

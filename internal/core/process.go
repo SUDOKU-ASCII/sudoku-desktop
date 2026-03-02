@@ -33,6 +33,7 @@ func (p *ManagedProcess) Start(command string, args []string, env []string, work
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, command, args...)
+	applyManagedProcessSysProcAttr(cmd)
 	cmd.Env = append(os.Environ(), env...)
 	if workdir != "" {
 		cmd.Dir = workdir

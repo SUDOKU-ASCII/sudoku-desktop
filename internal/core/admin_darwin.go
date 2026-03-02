@@ -36,17 +36,34 @@ func (p *darwinAdminDetachedProcess) IsRunning() bool {
 	cmd := exec.CommandContext(ctx, "launchctl", "list", label)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		p.pid = 0
 		return false
 	}
-	re := regexp.MustCompile(`(?m)\\bPID\\b\\s*=\\s*(\\d+)`)
-	if m := re.FindStringSubmatch(string(output)); len(m) == 2 {
-		if pid, perr := strconv.Atoi(m[1]); perr == nil && pid > 0 {
+	out := string(output)
+	re := regexp.MustCompile(`(?m)\bPID\b\s*=\s*(-?\d+)`)
+	if m := re.FindStringSubmatch(out); len(m) == 2 {
+		pid, perr := strconv.Atoi(strings.TrimSpace(m[1]))
+		if perr == nil && pid > 0 {
 			p.pid = pid
 			return pidLooksAlive(pid)
 		}
+		// launchctl list with PID <= 0 means job exists but process is not running.
+		p.pid = 0
+		return false
 	}
-	// If the job is listed, treat it as running (even if PID isn't shown yet).
-	return true
+	// Fallback for output forms like: "123\t0\tlabel" or "-\t0\tlabel".
+	reTab := regexp.MustCompile(`(?m)^([0-9-]+)\s+\S+\s+` + regexp.QuoteMeta(label) + `\s*$`)
+	if m := reTab.FindStringSubmatch(strings.ReplaceAll(out, "\r", "\n")); len(m) == 2 {
+		pid, perr := strconv.Atoi(strings.TrimSpace(m[1]))
+		if perr == nil && pid > 0 {
+			p.pid = pid
+			return pidLooksAlive(pid)
+		}
+		p.pid = 0
+		return false
+	}
+	p.pid = 0
+	return false
 }
 
 func newAdminDetachedProcess() adminDetachedProcess {
@@ -147,7 +164,7 @@ func ensureShellStmt(cmd string) string {
 
 // StartWithRoutes starts HEV with admin privileges and sets up routes in the same admin session.
 // This avoids repeated password prompts from multiple `osascript` invocations.
-func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (pid int, tunIf string, scriptOutput string, err error) {
+func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultGatewayV6 string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (pid int, tunIf string, scriptOutput string, err error) {
 	if pidFile == "" {
 		return 0, "", "", errors.New("pidFile required")
 	}
@@ -160,6 +177,7 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	if strings.TrimSpace(defaultGateway) == "" {
 		return 0, "", "", errors.New("defaultGateway required")
 	}
+	defaultGatewayV6 = strings.TrimSpace(defaultGatewayV6)
 	defaultInterface = strings.TrimSpace(defaultInterface)
 	dnsSetCmd = strings.TrimSpace(dnsSetCmd)
 	dnsRestoreCmd = strings.TrimSpace(dnsRestoreCmd)
@@ -204,6 +222,11 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		// and egress without self-looping once the global default route switches to utun.
 		scopedDefaultRoute = shellJoin("route", "-n", "add", "-ifscope", defaultInterface, "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || true"
 	}
+	scopedDefaultRoute6 := ""
+	if defaultInterface != "" && defaultGatewayV6 != "" {
+		// Keep a physical scoped IPv6 default route for direct sockets bound to the physical interface.
+		scopedDefaultRoute6 = shellJoin("route", "-n", "add", "-inet6", "-ifscope", defaultInterface, "default", defaultGatewayV6) + " >/dev/null 2>&1 || true"
+	}
 
 	restoreSnippet := ""
 	// If we fail after touching routes, try to restore the default route and clean up the server host route.
@@ -213,6 +236,9 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		shellJoin("route", "-n", "delete", "default") + " >/dev/null 2>&1 || true; " +
 		shellJoin("route", "-n", "add", "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || true" +
 		"))"
+	if defaultGatewayV6 != "" {
+		restoreSnippet += "; " + shellJoin("route", "-n", "change", "-inet6", "default", defaultGatewayV6) + " >/dev/null 2>&1 || true"
+	}
 	if strings.TrimSpace(serverIP) != "" {
 		restoreSnippet += "; " + shellJoin("route", "-n", "delete", "-host", strings.TrimSpace(serverIP)) + " >/dev/null 2>&1 || true"
 	}
@@ -229,6 +255,10 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	setPFSnippet := ""
 	if pfSetCmd != "" {
 		setPFSnippet = ensureShellStmt(pfSetCmd)
+	}
+	setDefaultV6Snippet := ""
+	if defaultGatewayV6 != "" {
+		setDefaultV6Snippet = ` route -n change -inet6 default -interface "$tun_if" || true;`
 	}
 	guardOKPath := pidFile + ".start_ok"
 
@@ -247,13 +277,14 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" echo '__SUDOKU_STEP__=routes';"+
 			" %s"+
 			" %s"+
+			" %s"+
 			" echo '__SUDOKU_STEP__=pf';"+
 			" %s"+
 			" echo '__SUDOKU_STEP__=default_route';"+
 			" route -n change default -interface \"$tun_if\" || ("+
 			" route -n delete default >/dev/null 2>&1 || true; "+
 			" route -n add default -interface \"$tun_if\");"+
-			" route -n change -inet6 default -interface \"$tun_if\" || true;"+
+			" %s"+
 			" echo '__SUDOKU_STEP__=dns';"+
 			" %s"+
 			" touch \"$guard_ok\" >/dev/null 2>&1 || true;"+
@@ -290,7 +321,14 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			}
 			return " " + scopedDefaultRoute + ";"
 		}(),
+		func() string {
+			if scopedDefaultRoute6 == "" {
+				return ""
+			}
+			return " " + scopedDefaultRoute6 + ";"
+		}(),
 		setPFSnippet,
+		setDefaultV6Snippet,
 		setDNSSnippet,
 	)
 	cmdline := shellJoin("sh", "-lc", inner)

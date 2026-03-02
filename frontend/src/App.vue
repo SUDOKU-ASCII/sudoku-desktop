@@ -786,11 +786,13 @@ onUnmounted(() => {
           <h3>{{ t('directIp') }}</h3>
           <strong>{{ directIP?.ip || '-' }}</strong>
           <small>{{ directIP?.country }} {{ directIP?.region }} {{ directIP?.isp }}</small>
+          <small v-if="directIP?.error" class="error-text">{{ directIP.error }}</small>
         </article>
         <article class="metric">
           <h3>{{ t('proxyIp') }}</h3>
           <strong>{{ proxyIP?.ip || '-' }}</strong>
           <small>{{ proxyIP?.country }} {{ proxyIP?.region }} {{ proxyIP?.isp }}</small>
+          <small v-if="proxyIP?.error" class="error-text">{{ proxyIP.error }}</small>
         </article>
       </div>
 
@@ -1501,6 +1503,11 @@ label.check {
   display: block;
   margin-top: 4px;
   color: var(--ink-soft);
+}
+
+.metric small.error-text {
+  color: var(--bad);
+  word-break: break-word;
 }
 
 .dashboard-actions {

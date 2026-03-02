@@ -17,6 +17,7 @@ import (
 
 type routeContext struct {
 	DefaultGateway        string
+	DefaultGatewayV6      string
 	DefaultInterface      string
 	ServerIP              string
 	TunIndex              int
@@ -35,6 +36,13 @@ type routeContext struct {
 	LinuxDNSRedirectPort  int
 	WindowsFirewallRule   string
 	WindowsDNSBackup      string
+}
+
+func darwinTunIPv6Enabled() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_TUN_IPV6")) == "1"
 }
 
 func setupRoutes(activeNode NodeConfig, tun TunSettings, routing RoutingSettings, bypass tunBypass, logf func(string)) (*routeContext, error) {
@@ -271,6 +279,13 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 	ctx.DefaultGateway = gw
 	ctx.DefaultInterface = ifName
+	if darwinTunIPv6Enabled() {
+		gw6, ifName6, _ := darwinDefaultRouteIPv6()
+		ctx.DefaultGatewayV6 = strings.TrimSpace(gw6)
+		if strings.TrimSpace(ctx.DefaultInterface) == "" && strings.TrimSpace(ifName6) != "" {
+			ctx.DefaultInterface = strings.TrimSpace(ifName6)
+		}
+	}
 	dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
 
 	// Optional: switch system DNS to HEV MapDNS while TUN is active (for correct PAC/domain routing).
@@ -294,14 +309,17 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 	if runtime.GOOS == "darwin" && (tun.BlockQUIC || strings.TrimSpace(ctx.BypassV4Path) != "" || strings.TrimSpace(ctx.BypassV6Path) != "" || dnsProxyPort > 0) {
 		ctx.PFAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-		gw6, _, _ := darwinDefaultRouteIPv6()
-		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, ctx.DefaultInterface, gw, gw6, ctx.BypassV4Path, ctx.BypassV6Path, tun.BlockQUIC, dnsProxyPort)
+		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, ctx.DefaultInterface, gw, ctx.DefaultGatewayV6, ctx.BypassV4Path, ctx.BypassV6Path, tun.BlockQUIC, dnsProxyPort)
 	}
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
-		cmds := make([]string, 0, 5)
+		cmds := make([]string, 0, 7)
 		if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
 			// Keep a physical scoped default route for the core process (it binds sockets to DefaultInterface).
 			cmds = append(cmds, shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || true")
+		}
+		if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
+			// Keep a physical scoped IPv6 default route for direct sockets bound to DefaultInterface.
+			cmds = append(cmds, shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || true")
 		}
 		if ctx.ServerIP != "" {
 			// Be idempotent: a host route may already exist (e.g. from a prior run or system clone).
@@ -312,9 +330,11 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 			shellJoin("route", "-n", "change", "default", "-interface", tun.InterfaceName)+" || ("+
 				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
 				shellJoin("route", "-n", "add", "default", "-interface", tun.InterfaceName)+")",
-			// IPv6 default route may fail depending on system state; ignore.
-			shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)+" || true",
 		)
+		if ctx.DefaultGatewayV6 != "" {
+			// IPv6 default route may fail depending on system state; ignore.
+			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)+" || true")
+		}
 		if pfSetCmd != "" {
 			cmds = append(cmds, pfSetCmd)
 		}
@@ -335,6 +355,9 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
 		_ = runCmd(logf, "sh", "-lc", shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || true")
 	}
+	if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
+		_ = runCmd(logf, "sh", "-lc", shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || true")
+	}
 	if err := runCmd(logf, "route", "-n", "change", "default", "-interface", tun.InterfaceName); err != nil {
 		// Some macOS setups have multiple scoped default routes; if `change` fails, recreate it.
 		_ = runCmd(logf, "route", "-n", "delete", "default")
@@ -342,7 +365,9 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 			return nil, err
 		}
 	}
-	_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)
+	if ctx.DefaultGatewayV6 != "" {
+		_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)
+	}
 	if pfSetCmd != "" {
 		if err := runCmd(logf, "sh", "-lc", pfSetCmd); err != nil {
 			return nil, err
@@ -360,11 +385,14 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 func teardownRoutesDarwin(ctx *routeContext, _ TunSettings, logf func(string)) {
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
 		dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
-		cmds := make([]string, 0, 5)
+		cmds := make([]string, 0, 6)
 		if ctx.DefaultGateway != "" {
 			cmds = append(cmds, shellJoin("route", "-n", "change", "default", ctx.DefaultGateway)+" || ("+
 				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
 				shellJoin("route", "-n", "add", "default", ctx.DefaultGateway)+")")
+		}
+		if strings.TrimSpace(ctx.DefaultGatewayV6) != "" {
+			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", ctx.DefaultGatewayV6)+" || true")
 		}
 		// Always attempt to remove the host route (if we added one), regardless of gateway changes.
 		if ctx.ServerIP != "" {
@@ -393,6 +421,9 @@ func teardownRoutesDarwin(ctx *routeContext, _ TunSettings, logf func(string)) {
 			_ = runCmd(logf, "route", "-n", "add", "default", ctx.DefaultGateway)
 		}
 	}
+	if strings.TrimSpace(ctx.DefaultGatewayV6) != "" {
+		_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", ctx.DefaultGatewayV6)
+	}
 	if ctx.ServerIP != "" {
 		_ = runCmd(logf, "route", "-n", "delete", "-host", ctx.ServerIP)
 	}
@@ -416,11 +447,18 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		return nil, err
 	}
 	ctx.DefaultGateway = gw
-	idx, err := windowsInterfaceIndex(tun.InterfaceName)
+	idx, alias, err := windowsResolveTunInterfaceIndex(tun, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	ctx.TunIndex = idx
+	if logf != nil {
+		if strings.TrimSpace(alias) != "" {
+			logf(fmt.Sprintf("[route] windows tun interface: %s (ifindex=%d)", alias, idx))
+		} else {
+			logf(fmt.Sprintf("[route] windows tun ifindex=%d", idx))
+		}
+	}
 	firewallRule := "4x4-sudoku Block QUIC (UDP/443)"
 	if tun.BlockQUIC {
 		ctx.WindowsFirewallRule = firewallRule
@@ -486,7 +524,7 @@ func runCmdsWindowsAdmin(logf func(string), scriptBody string) error {
 	defer os.Remove(path)
 
 	// PowerShell script self-elevates if needed (UAC prompt).
-	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
 	output, err := cmd.CombinedOutput()
 	clean := strings.TrimSpace(string(output))
 	if logf != nil {
@@ -516,8 +554,8 @@ func windowsAdminWrapper(body string) string {
 		"  return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
 		"}",
 		"if (-not $Elevated -and -not (Test-Admin)) {",
-		"  $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File', $PSCommandPath, '-Elevated')",
-		"  $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $args -Wait -PassThru",
+		"  $args = @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $PSCommandPath, '-Elevated')",
+		"  $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $args -Wait -PassThru",
 		"  exit $proc.ExitCode",
 		"}",
 		"",
@@ -830,8 +868,7 @@ func linuxDefaultOutboundIPv4() (string, error) {
 }
 
 func windowsDefaultGateway() (string, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).NextHop")
-	output, err := cmd.CombinedOutput()
+	output, err := windowsPowerShellOutput("(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1).NextHop")
 	if err != nil {
 		return "", err
 	}
@@ -843,33 +880,131 @@ func windowsDefaultGateway() (string, error) {
 }
 
 func windowsDefaultInterfaceIndex() (int, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex")
-	output, err := cmd.CombinedOutput()
+	output, err := windowsPowerShellOutput("(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1).InterfaceIndex")
 	if err != nil {
 		return 0, err
 	}
-	re := regexp.MustCompile(`\d+`)
-	m := re.FindString(string(output))
-	if m == "" {
-		return 0, errors.New("windows default interface index not found")
-	}
-	idx, err := strconv.Atoi(m)
-	if err != nil {
-		return 0, err
-	}
-	return idx, nil
+	return parseFirstInt(string(output))
 }
 
 func windowsInterfaceIndex(name string) (int, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("(Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias '%s' | Select-Object -First 1).InterfaceIndex", strings.ReplaceAll(name, "'", "''")))
-	output, err := cmd.CombinedOutput()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, errors.New("empty interface name")
+	}
+	script := fmt.Sprintf("(Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex", strings.ReplaceAll(name, "'", "''"))
+	output, err := windowsPowerShellOutput(script)
 	if err != nil {
 		return 0, err
 	}
+	return parseFirstInt(string(output))
+}
+
+func windowsResolveTunInterfaceIndex(tun TunSettings, timeout time.Duration) (int, string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if idx, err := windowsInterfaceIndex(tun.InterfaceName); err == nil && idx > 0 {
+			return idx, strings.TrimSpace(tun.InterfaceName), nil
+		} else if err != nil {
+			lastErr = err
+		}
+
+		if idx, alias, err := windowsInterfaceIndexByIPv4(tun.IPv4); err == nil && idx > 0 {
+			return idx, alias, nil
+		} else if err != nil {
+			lastErr = err
+		}
+
+		if idx, alias, err := windowsLikelyTunInterfaceIndex(tun.InterfaceName); err == nil && idx > 0 {
+			return idx, alias, nil
+		} else if err != nil {
+			lastErr = err
+		}
+
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return 0, "", fmt.Errorf("resolve windows tun interface index failed: %w", lastErr)
+			}
+			return 0, "", errors.New("resolve windows tun interface index failed")
+		}
+		time.Sleep(350 * time.Millisecond)
+	}
+}
+
+func windowsInterfaceIndexByIPv4(ipv4 string) (int, string, error) {
+	ipv4 = strings.TrimSpace(ipv4)
+	if ipv4 == "" {
+		return 0, "", errors.New("empty tun ipv4")
+	}
+	script := strings.Join([]string{
+		"$ip = '" + strings.ReplaceAll(ipv4, "'", "''") + "'",
+		"$addr = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ip -ErrorAction SilentlyContinue | Select-Object -First 1",
+		"if ($addr -eq $null) { '' } else {",
+		"  $ifx = [int]$addr.InterfaceIndex",
+		"  $alias = (Get-NetAdapter -InterfaceIndex $ifx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Name)",
+		"  if (-not $alias) { $alias = (Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty InterfaceAlias) }",
+		"  \"${ifx}`t${alias}\"",
+		"}",
+	}, "; ")
+	output, err := windowsPowerShellOutput(script)
+	if err != nil {
+		return 0, "", err
+	}
+	raw := strings.TrimSpace(string(output))
+	if raw == "" {
+		return 0, "", errors.New("tun interface by ipv4 not found")
+	}
+	parts := strings.SplitN(raw, "\t", 2)
+	idx, err := parseFirstInt(parts[0])
+	if err != nil {
+		return 0, "", err
+	}
+	alias := ""
+	if len(parts) == 2 {
+		alias = strings.TrimSpace(parts[1])
+	}
+	return idx, alias, nil
+}
+
+func windowsLikelyTunInterfaceIndex(preferredName string) (int, string, error) {
+	name := strings.ToLower(strings.TrimSpace(preferredName))
+	script := strings.Join([]string{
+		"$pref = '" + strings.ReplaceAll(name, "'", "''") + "'",
+		"$cands = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Disabled' -and (($_.Name -match '(?i)wintun|sudoku|hev') -or ($_.InterfaceDescription -match '(?i)wintun|wireguard|hev') -or ($pref -and $_.Name -eq $pref)) }",
+		"$sel = $cands | Sort-Object ifIndex | Select-Object -First 1",
+		"if ($sel -eq $null) { '' } else { \"$($sel.ifIndex)`t$($sel.Name)\" }",
+	}, "; ")
+	output, err := windowsPowerShellOutput(script)
+	if err != nil {
+		return 0, "", err
+	}
+	raw := strings.TrimSpace(string(output))
+	if raw == "" {
+		return 0, "", errors.New("likely tun interface not found")
+	}
+	parts := strings.SplitN(raw, "\t", 2)
+	idx, err := parseFirstInt(parts[0])
+	if err != nil {
+		return 0, "", err
+	}
+	alias := ""
+	if len(parts) == 2 {
+		alias = strings.TrimSpace(parts[1])
+	}
+	return idx, alias, nil
+}
+
+func windowsPowerShellOutput(script string) ([]byte, error) {
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+	return cmd.CombinedOutput()
+}
+
+func parseFirstInt(raw string) (int, error) {
 	re := regexp.MustCompile(`\d+`)
-	m := re.FindString(string(output))
+	m := re.FindString(raw)
 	if m == "" {
-		return 0, errors.New("interface index not found")
+		return 0, errors.New("integer not found")
 	}
 	idx, err := strconv.Atoi(m)
 	if err != nil {

@@ -136,15 +136,22 @@ func probeNodeLatency(node NodeConfig) LatencyResult {
 
 func detectIP(useProxy bool, localPort int) IPDetectResult {
 	result := IPDetectResult{
-		Source:        "api.ip.sb",
+		Source:        "unknown",
 		UsedProxy:     useProxy,
 		CheckedAtUnix: time.Now().UnixMilli(),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	transport := &http.Transport{}
 	if useProxy {
-		dialer, err := proxy.SOCKS5("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort)), nil, proxy.Direct)
+		proxyAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
+		if conn, err := net.DialTimeout("tcp", proxyAddr, 900*time.Millisecond); err != nil {
+			result.Error = fmt.Sprintf("proxy core not listening on %s: %v", proxyAddr, err)
+			return result
+		} else {
+			_ = conn.Close()
+		}
+		dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 		if err != nil {
 			result.Error = err.Error()
 			return result
@@ -153,34 +160,103 @@ func detectIP(useProxy bool, localPort int) IPDetectResult {
 			return dialer.Dial(network, addr)
 		}
 	}
-	client := &http.Client{Transport: transport}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ip.sb/geoip", nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		result.Error = err.Error()
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   6 * time.Second,
+	}
+	endpoints := []struct {
+		source string
+		url    string
+	}{
+		{source: "api.ip.sb", url: "https://api.ip.sb/geoip"},
+		{source: "ipapi.co", url: "https://ipapi.co/json/"},
+		{source: "ipinfo.io", url: "https://ipinfo.io/json"},
+		{source: "api64.ipify.org", url: "https://api64.ipify.org?format=json"},
+		{source: "ifconfig.me", url: "https://ifconfig.me/ip"},
+	}
+	var errs []string
+	for _, ep := range endpoints {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ep.url, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			errs = append(errs, ep.source+": "+err.Error())
+			continue
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		_ = resp.Body.Close()
+		if rerr != nil {
+			errs = append(errs, ep.source+": "+rerr.Error())
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errs = append(errs, ep.source+": http "+resp.Status)
+			continue
+		}
+
+		ip, country, region, isp := parseIPDetectPayload(body)
+		if ip == "" {
+			errs = append(errs, ep.source+": empty ip")
+			continue
+		}
+		result.Source = ep.source
+		result.IP = ip
+		result.Country = country
+		result.Region = region
+		result.ISP = isp
+		result.Error = ""
 		return result
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		result.Error = err.Error()
-		return result
+	if len(errs) > 0 {
+		result.Error = strings.Join(uniqueStrings(errs), " | ")
+	} else {
+		result.Error = "no available ip detection endpoint"
 	}
-	var payload struct {
-		IP      string `json:"ip"`
-		Country string `json:"country"`
-		Region  string `json:"region"`
-		ISP     string `json:"isp"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	result.IP = payload.IP
-	result.Country = payload.Country
-	result.Region = payload.Region
-	result.ISP = payload.ISP
 	return result
+}
+
+func parseIPDetectPayload(body []byte) (ip, country, region, isp string) {
+	type payload struct {
+		IP           string `json:"ip"`
+		Query        string `json:"query"`
+		Country      string `json:"country"`
+		CountryName  string `json:"country_name"`
+		Region       string `json:"region"`
+		RegionName   string `json:"region_name"`
+		ISP          string `json:"isp"`
+		Org          string `json:"org"`
+		Organization string `json:"organization"`
+	}
+
+	var p payload
+	if err := json.Unmarshal(body, &p); err == nil {
+		ip = firstNonEmpty(strings.TrimSpace(p.IP), strings.TrimSpace(p.Query))
+		if ip != "" && net.ParseIP(ip) != nil {
+			country = firstNonEmpty(strings.TrimSpace(p.Country), strings.TrimSpace(p.CountryName))
+			region = firstNonEmpty(strings.TrimSpace(p.Region), strings.TrimSpace(p.RegionName))
+			isp = firstNonEmpty(strings.TrimSpace(p.ISP), strings.TrimSpace(p.Org), strings.TrimSpace(p.Organization))
+			return ip, country, region, isp
+		}
+	}
+
+	txt := strings.TrimSpace(string(body))
+	for _, field := range strings.FieldsFunc(txt, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ',' || r == ';'
+	}) {
+		candidate := strings.TrimSpace(field)
+		if net.ParseIP(candidate) != nil {
+			return candidate, "", "", ""
+		}
+	}
+	return "", "", "", ""
+}
+
+func firstNonEmpty(items ...string) string {
+	for _, it := range items {
+		if strings.TrimSpace(it) != "" {
+			return strings.TrimSpace(it)
+		}
+	}
+	return ""
 }
 
 func sortLatencyResults(results []LatencyResult) {
