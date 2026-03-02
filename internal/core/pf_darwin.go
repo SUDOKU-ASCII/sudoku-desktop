@@ -58,6 +58,12 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw6 + ") inet6 to <" + darwinPFTableCN6 + "> keep state\\n\"; ")
 		b.WriteString("fi; ")
 	}
+	if dnsProxyPort > 0 && tunIfExpr != "" && defaultIf != "" && gw4 != "" {
+		// Ensure DNS proxy upstream IPs can always reach the physical gateway even after the global
+		// default route switches to the TUN. This is especially important for DoH bootstrap IPs.
+		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto tcp to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 443 keep state\\n\"; ")
+		b.WriteString("cfg=\"${cfg}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet proto { udp tcp } to { 223.5.5.5, 223.6.6.6, 119.29.29.29, 119.28.28.28 } port 53 keep state\\n\"; ")
+	}
 	if blockQUIC {
 		b.WriteString("cfg=\"${cfg}block drop out proto udp to any port 443\\n\"; ")
 	}
@@ -65,13 +71,32 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 		b.WriteString("cfg=\"${cfg}rdr pass on lo0 inet proto { udp tcp } from any to " + localDNSServerIPv4 + " port 53 -> " + localDNSServerIPv4 + " port " + fmt.Sprintf("%d", dnsProxyPort) + "\\n\"; ")
 	}
 
-	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null 2>&1; fi; ")
+	// Keep stdout quiet but allow pfctl stderr through (useful when startup fails).
+	b.WriteString("if [ -n \"$cfg\" ]; then printf \"%b\" \"$cfg\" | pfctl -a " + shellQuote(anchor) + " -f - >/dev/null; fi; ")
 	if dnsProxyPort > 0 {
-		// Validate that the system DNS server (127.0.0.1:53) actually works after installing rdr rules.
-		// If this fails, we prefer to abort startup and let the caller restore DNS/routes, rather than
-		// leaving the machine with a broken resolver.
-		b.WriteString("if command -v dig >/dev/null 2>&1; then dig +time=2 +tries=2 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A +short 2>/dev/null | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' >/dev/null; ")
-		b.WriteString("elif command -v nslookup >/dev/null 2>&1; then nslookup www.baidu.com " + localDNSServerIPv4 + " >/dev/null 2>&1; ")
+		// Validate that the local DNS proxy works, and that pf rdr makes 127.0.0.1:53 reach it.
+		// If this fails, we prefer to abort startup before the caller points system DNS at 127.0.0.1.
+		//
+		// Note: dig isn't guaranteed, but ships on macOS by default. nslookup can't specify a custom port,
+		// so when dig isn't available we only do a best-effort 127.0.0.1:53 check.
+		ipv4Re := "'^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'"
+		b.WriteString("if command -v dig >/dev/null 2>&1; then ")
+		b.WriteString("echo '__SUDOKU_STEP__=dns_proxy_selftest'; ")
+		b.WriteString("ok=0; for i in $(seq 1 10); do ")
+		b.WriteString("dig +time=1 +tries=1 @" + localDNSServerIPv4 + " -p " + fmt.Sprintf("%d", dnsProxyPort) + " www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
+		b.WriteString("sleep 0.2; ")
+		b.WriteString("done; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_proxy_unreachable'; exit 23; fi; ")
+		b.WriteString("echo '__SUDOKU_STEP__=dns_rdr_selftest'; ")
+		b.WriteString("ok=0; for i in $(seq 1 10); do ")
+		b.WriteString("dig +time=1 +tries=1 @" + localDNSServerIPv4 + " -p 53 www.baidu.com A +short 2>/dev/null | grep -E " + ipv4Re + " >/dev/null 2>&1 && ok=1 && break; ")
+		b.WriteString("sleep 0.2; ")
+		b.WriteString("done; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_rdr_failed'; exit 24; fi; ")
+		b.WriteString("elif command -v nslookup >/dev/null 2>&1; then ")
+		b.WriteString("echo '__SUDOKU_STEP__=dns_rdr_selftest'; ")
+		b.WriteString("ok=0; for i in $(seq 1 10); do nslookup www.baidu.com " + localDNSServerIPv4 + " >/dev/null 2>&1 && ok=1 && break; sleep 0.2; done; ")
+		b.WriteString("if [ \"$ok\" -ne 1 ]; then echo '__SUDOKU_ERR__=dns_rdr_failed'; exit 24; fi; ")
 		b.WriteString("fi; ")
 	}
 

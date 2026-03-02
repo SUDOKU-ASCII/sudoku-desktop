@@ -236,13 +236,17 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" trap \"launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s\" EXIT;"+
 			" tun_if=''; for i in $(seq 1 120); do tun_if=$(%s); [ -n \"$tun_if\" ] && break; sleep 0.1; done;"+
 			" if [ -z \"$tun_if\" ]; then echo '__SUDOKU_HEV_PID__='${pid:-0}; echo '__SUDOKU_TUN_IF__='; exit 22; fi;"+
+			" echo '__SUDOKU_STEP__=routes';"+
 			" %s"+
 			" %s"+
+			" echo '__SUDOKU_STEP__=default_route';"+
 			" route -n change default -interface \"$tun_if\" || ("+
 			" route -n delete default >/dev/null 2>&1 || true; "+
 			" route -n add default -interface \"$tun_if\");"+
 			" route -n change -inet6 default -interface \"$tun_if\" || true;"+
+			" echo '__SUDOKU_STEP__=pf';"+
 			" %s"+
+			" echo '__SUDOKU_STEP__=dns';"+
 			" %s"+
 			" echo '__SUDOKU_HEV_PID__='${pid:-0};"+
 			" echo '__SUDOKU_TUN_IF__='${tun_if};"+
@@ -273,8 +277,8 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			}
 			return " " + scopedDefaultRoute + ";"
 		}(),
-		setDNSSnippet,
 		setPFSnippet,
+		setDNSSnippet,
 	)
 	cmdline := shellJoin("sh", "-lc", inner)
 

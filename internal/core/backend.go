@@ -541,12 +541,15 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		// Prepare CN domain rules via the running core SOCKS5 (so fetching works even on restrictive networks).
 		var cnRules *cnRuleSet
 		if strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" {
-			if httpc, herr := newHTTPClientViaSOCKS5(net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort)), 20*time.Second); herr == nil {
+			socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+			if werr := waitForTCPReady(startCtx, socksAddr, 2*time.Second); werr != nil {
+				b.addLog("warn", "rule", fmt.Sprintf("core SOCKS5 not ready on %s; skipping PAC rules fetch: %v", socksAddr, werr))
+			} else if httpc, herr := newHTTPClientViaSOCKS5(socksAddr, 20*time.Second); herr == nil {
 				cnRules, _ = prepareCNRules(startCtx, b.store, b.cfg, httpc, func(line string) {
 					b.addLog("info", "rule", line)
 				})
 			} else {
-				b.addLog("warn", "dns", fmt.Sprintf("init socks5 http client failed: %v", herr))
+				b.addLog("warn", "rule", fmt.Sprintf("init SOCKS5 http client failed: %v", herr))
 			}
 		}
 

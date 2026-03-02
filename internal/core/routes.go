@@ -312,12 +312,12 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 			// IPv6 default route may fail depending on system state; ignore.
 			shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)+" || true",
 		)
+		if pfSetCmd != "" {
+			cmds = append(cmds, pfSetCmd)
+		}
 		if dnsSetCmd != "" {
 			cmds = append(cmds, dnsSetCmd)
 			cmds = append(cmds, dnsFlushCmd)
-		}
-		if pfSetCmd != "" {
-			cmds = append(cmds, pfSetCmd)
 		}
 		if err := runCmdsDarwinAdmin(logf, cmds...); err != nil {
 			return nil, err
@@ -340,14 +340,16 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		}
 	}
 	_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)
+	if pfSetCmd != "" {
+		if err := runCmd(logf, "sh", "-lc", pfSetCmd); err != nil {
+			return nil, err
+		}
+	}
 	if dnsSetCmd != "" {
 		if err := runCmd(logf, "networksetup", "-setdnsservers", ctx.DNSService, strings.TrimSpace(tun.MapDNSAddress)); err != nil {
 			return nil, err
 		}
 		_ = runCmd(logf, "sh", "-lc", dnsFlushCmd)
-	}
-	if pfSetCmd != "" {
-		_ = runCmd(logf, "sh", "-lc", pfSetCmd)
 	}
 	return ctx, nil
 }
