@@ -51,6 +51,7 @@ export interface TunSettings {
   mtu: number
   ipv4: string
   ipv6: string
+  blockQuic: boolean
   socksUdp: string
   socksMark: number
   routeTable: number

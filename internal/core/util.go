@@ -124,3 +124,22 @@ func isLikelyPermissionError(err error) bool {
 		strings.Contains(msg, "administrator") ||
 		strings.Contains(msg, "not permitted")
 }
+
+func tailFile(path string, maxLines int) string {
+	if maxLines <= 0 {
+		maxLines = 30
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(raw) > 32*1024 {
+		raw = raw[len(raw)-32*1024:]
+	}
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	out := strings.TrimSpace(strings.Join(lines, "\n"))
+	return out
+}

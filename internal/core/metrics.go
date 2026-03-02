@@ -14,6 +14,14 @@ type trafficSampleState struct {
 	lastAt        time.Time
 	lastDirectDec uint64
 	lastProxyDec  uint64
+
+	coreTrafficActive   bool
+	coreLastDirectTx    uint64
+	coreLastDirectRx    uint64
+	coreLastProxyTx     uint64
+	coreLastProxyRx     uint64
+	coreLastTrafficAt   time.Time
+	coreLastTrafficSeen bool
 }
 
 func lookupInterfaceCounters(name string) (uint64, uint64, bool) {

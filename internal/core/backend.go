@@ -21,19 +21,30 @@ import (
 )
 
 var routeLineRegex = regexp.MustCompile(`(?i)\[(tcp|udp)\]\s+([^\s]+)\s+-->\s+([^\s]+).*using\s+(direct|proxy)`) //nolint:lll
+var coreTrafficLineRegex = regexp.MustCompile(`__SUDOKU_TRAFFIC__\s+direct_tx=(\d+)\s+direct_rx=(\d+)\s+proxy_tx=(\d+)\s+proxy_rx=(\d+)`) //nolint:lll
 
 type Backend struct {
-	mu sync.RWMutex
+	mu           sync.RWMutex
+	opMu         sync.Mutex
+	startMu      sync.Mutex
+	startOpID    uint64
+	startCancel  context.CancelFunc
+	shutdownOnce sync.Once
 
-	ctx        context.Context
-	store      *Store
-	cfg        *AppConfig
-	state      RuntimeState
-	coreProc   *ManagedProcess
-	tunProc    *ManagedProcess
-	revProc    *ManagedProcess
-	routeState *routeContext
-	pfMgr      *portForwardManager
+	ctx                 context.Context
+	emitStateCh         chan RuntimeState
+	emitLogCh           chan LogEntry
+	dnsProxy            *dnsProxyServer
+	store               *Store
+	cfg                 *AppConfig
+	state               RuntimeState
+	coreProc            *ManagedProcess
+	tunProc             *ManagedProcess
+	tunAdmin            adminDetachedProcess
+	runningTunInterface string
+	revProc             *ManagedProcess
+	routeState          *routeContext
+	pfMgr               *portForwardManager
 
 	logs             []LogEntry
 	connections      map[string]*ActiveConnection
@@ -76,11 +87,14 @@ func NewBackend() (*Backend, error) {
 		cfg:         cfg,
 		coreProc:    NewManagedProcess("sudoku"),
 		tunProc:     NewManagedProcess("hev"),
+		tunAdmin:    newAdminDetachedProcess(),
 		revProc:     NewManagedProcess("reverse"),
 		connections: map[string]*ActiveConnection{},
 		latencyByID: map[string]LatencyResult{},
 		tickerStop:  make(chan struct{}),
 		logs:        make([]LogEntry, 0, 512),
+		emitStateCh: make(chan RuntimeState, 8),
+		emitLogCh:   make(chan LogEntry, 512),
 	}
 	b.usageDays = trimUsageDays(loadUsageHistory(store.UsageHistoryPath()), 120)
 	b.pfMgr = newPortForwardManager(func(line string) {
@@ -91,6 +105,81 @@ func NewBackend() (*Backend, error) {
 		b.state.ActiveNodeName = node.Name
 	}
 	return b, nil
+}
+
+func (b *Backend) emitterLoop() {
+	for {
+		select {
+		case <-b.tickerStop:
+			return
+		case state := <-b.emitStateCh:
+			if b.ctx != nil {
+				wailsruntime.EventsEmit(b.ctx, EventStateUpdated, state)
+			}
+		case entry := <-b.emitLogCh:
+			if b.ctx != nil {
+				wailsruntime.EventsEmit(b.ctx, EventLogAdded, entry)
+			}
+		}
+	}
+}
+
+func (b *Backend) newStartContext() (context.Context, uint64) {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	if b.startCancel != nil {
+		b.startCancel()
+		b.startCancel = nil
+	}
+	b.startOpID++
+	opID := b.startOpID
+	ctx, cancel := context.WithCancel(context.Background())
+	b.startCancel = cancel
+	return ctx, opID
+}
+
+func (b *Backend) cancelStart() {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	if b.startCancel != nil {
+		b.startCancel()
+		b.startCancel = nil
+	}
+}
+
+func (b *Backend) clearStartIfMatch(opID uint64) {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	if b.startOpID != opID {
+		return
+	}
+	if b.startCancel != nil {
+		b.startCancel()
+	}
+	b.startCancel = nil
+}
+
+func (b *Backend) tunRunningLocked() bool {
+	if b.tunAdmin != nil && b.tunAdmin.IsRunning() {
+		return true
+	}
+	return b.tunProc.IsRunning()
+}
+
+func (b *Backend) stopTunLocked(timeout time.Duration) error {
+	var err1 error
+	var err2 error
+	err1 = b.tunProc.Stop(timeout)
+	if b.tunAdmin != nil && (b.tunAdmin.PID() > 0 || b.tunAdmin.IsRunning()) {
+		err2 = b.tunAdmin.Stop(timeout)
+	}
+	if err1 == nil {
+		return err2
+	}
+	if err2 == nil {
+		return err1
+	}
+	return fmt.Errorf("stop tun: %w; %v", err1, err2)
 }
 
 func migrateStoreIfNeeded(oldStoreName, newStoreName string) error {
@@ -150,6 +239,7 @@ func (b *Backend) Startup(ctx context.Context) {
 	withTun := b.cfg.Tun.Enabled
 	b.mu.Unlock()
 
+	go b.emitterLoop()
 	b.startPACServer()
 
 	go b.monitorLoop()
@@ -161,9 +251,27 @@ func (b *Backend) Startup(ctx context.Context) {
 }
 
 func (b *Backend) Shutdown() {
-	close(b.tickerStop)
-	_ = b.StopReverseForwarder()
-	_ = b.StopProxy()
+	b.shutdownOnce.Do(func() {
+		close(b.tickerStop)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		_ = b.StopReverseForwarder()
+		_ = b.StopProxy()
+		close(done)
+	}()
+
+	// Never hang the app on quit (e.g. if an admin prompt is pending).
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		// Best-effort cleanup without blocking shutdown.
+		_ = b.revProc.Stop(800 * time.Millisecond)
+		_ = b.stopTunLocked(800 * time.Millisecond)
+		_ = b.coreProc.Stop(800 * time.Millisecond)
+		b.pfMgr.StopAll()
+	}
 	b.stopPACServer()
 }
 
@@ -179,9 +287,9 @@ func (b *Backend) GetConfig() AppConfig {
 
 func (b *Backend) SaveConfig(next AppConfig) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	normalizeConfig(&next, b.store.RuntimeDir())
 	if err := b.store.Save(&next); err != nil {
+		b.mu.Unlock()
 		return err
 	}
 	b.cfg = &next
@@ -189,8 +297,12 @@ func (b *Backend) SaveConfig(next AppConfig) error {
 	if node := b.findNode(next.ActiveNodeID); node != nil {
 		b.state.ActiveNodeName = node.Name
 	}
-	b.pfMgr.Apply(next.PortForwards)
 	b.emitStateLocked()
+	portForwards := append([]PortForwardRule(nil), next.PortForwards...)
+	b.mu.Unlock()
+
+	// Apply may emit logs; do it outside b.mu to avoid self-deadlock via b.addLog.
+	b.pfMgr.Apply(portForwards)
 	return nil
 }
 
@@ -292,110 +404,425 @@ func (b *Backend) ExportShortLink(nodeID string) (string, error) {
 }
 
 func (b *Backend) StartProxy(req StartRequest) error {
+	b.opMu.Lock()
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.state.Running {
+		b.mu.Unlock()
+		b.opMu.Unlock()
 		return nil
 	}
 	if err := b.ensureCoreBinariesLocked(); err != nil {
 		b.state.LastError = err.Error()
 		b.emitStateLocked()
+		b.mu.Unlock()
+		b.opMu.Unlock()
 		return err
 	}
 	node := b.findNode(b.cfg.ActiveNodeID)
 	if node == nil {
+		b.mu.Unlock()
+		b.opMu.Unlock()
 		return errors.New("no active node")
 	}
-	sudokuCfgPath, hevCfgPath, localPort, err := writeRuntimeConfigs(b.store, b.cfg, *node, b.pacURL)
+	nodeCopy := *node
+	withTun := req.WithTun && b.cfg.Tun.Enabled
+	sudokuCfgPath, hevCfgPath, localPort, err := writeRuntimeConfigs(b.store, b.cfg, nodeCopy, b.pacURL, withTun)
 	if err != nil {
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+		b.opMu.Unlock()
 		return err
 	}
-	if err := ensureDir(b.cfg.Core.WorkingDir); err != nil {
-		return err
-	}
-	b.addLog("info", "app", fmt.Sprintf("starting sudoku core with config %s", sudokuCfgPath))
-	if err := b.coreProc.Start(b.cfg.Core.SudokuBinary, []string{"-c", sudokuCfgPath}, []string{"SUDOKU_LOG_LEVEL=" + b.cfg.Core.LogLevel}, b.cfg.Core.WorkingDir, b.onCoreLog); err != nil {
-		return err
-	}
-	b.state.CoreRunning = true
-	b.runningLocalPort = localPort
-	b.state.ActiveNodeID = node.ID
-	b.state.ActiveNodeName = node.Name
-	b.state.StartedAtUnix = time.Now().UnixMilli()
-	b.state.Running = true
-	b.cfg.LastStartedNode = node.ID
-	_ = b.store.Save(b.cfg)
+	workDir := b.cfg.Core.WorkingDir
+	sudokuBin := b.cfg.Core.SudokuBinary
+	hevBin := b.cfg.Core.HevBinary
+	coreLogLevel := b.cfg.Core.LogLevel
+	routingCfg := b.cfg.Routing
+	tunCfg := b.cfg.Tun
+	portForwards := append([]PortForwardRule(nil), b.cfg.PortForwards...)
 
-	if req.WithTun && b.cfg.Tun.Enabled {
-		b.addLog("info", "tun", fmt.Sprintf("starting hev with config %s", hevCfgPath))
-		hevCmd := b.cfg.Core.HevBinary
-		hevArgs := []string{hevCfgPath}
-		hevWorkDir := b.cfg.Core.WorkingDir
-		if runtime.GOOS == "windows" {
-			// Ensure Windows DLL dependencies (wintun.dll/msys-2.0.dll) can be resolved reliably.
-			hevWorkDir = filepath.Dir(b.cfg.Core.HevBinary)
-		}
-		if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-			if _, err := exec.LookPath("pkexec"); err == nil {
-				hevCmd = "pkexec"
-				hevArgs = []string{b.cfg.Core.HevBinary, hevCfgPath}
+	b.mu.Unlock()
+
+	startCtx, startID := b.newStartContext()
+	defer b.clearStartIfMatch(startID)
+
+	if err := ensureDir(workDir); err != nil {
+		b.mu.Lock()
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+		b.opMu.Unlock()
+		return err
+	}
+
+	coreEnv := []string{
+		"SUDOKU_LOG_LEVEL=" + coreLogLevel,
+		"SUDOKU_TRAFFIC_REPORT=1",
+		"SUDOKU_TRAFFIC_INTERVAL_MS=1000",
+	}
+	if withTun {
+		switch runtime.GOOS {
+		case "linux":
+			if tunCfg.SocksMark > 0 {
+				coreEnv = append(coreEnv, fmt.Sprintf("SUDOKU_OUTBOUND_MARK=%d", tunCfg.SocksMark))
+			}
+			if srcIP, err := linuxDefaultOutboundIPv4(); err == nil && strings.TrimSpace(srcIP) != "" {
+				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(srcIP))
+			}
+		case "darwin":
+			if _, ifName, derr := darwinDefaultRoute(); derr == nil && strings.TrimSpace(ifName) != "" {
+				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+strings.TrimSpace(ifName))
+			}
+		case "windows":
+			if ifIndex, werr := windowsDefaultInterfaceIndex(); werr == nil && ifIndex > 0 {
+				coreEnv = append(coreEnv, fmt.Sprintf("SUDOKU_OUTBOUND_IFINDEX=%d", ifIndex))
 			}
 		}
-		if err := b.tunProc.Start(hevCmd, hevArgs, nil, hevWorkDir, b.onTunLog); err != nil {
-			_ = b.coreProc.Stop(3 * time.Second)
-			b.state.CoreRunning = false
-			b.state.Running = false
-			b.state.NeedsAdmin = isLikelyPermissionError(err)
-			b.state.RouteSetupError = err.Error()
-			b.state.LastError = err.Error()
-			b.emitStateLocked()
-			return err
+	}
+
+	b.addLog("info", "app", fmt.Sprintf("starting sudoku core with config %s", sudokuCfgPath))
+	if err := b.coreProc.Start(sudokuBin, []string{"-c", sudokuCfgPath}, coreEnv, workDir, b.onCoreLog); err != nil {
+		b.mu.Lock()
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+		b.opMu.Unlock()
+		return err
+	}
+
+	b.mu.Lock()
+	b.trafficCache = trafficSampleState{}
+	b.connections = map[string]*ActiveConnection{}
+	b.state.Traffic = TrafficState{RecentBandwidth: []BandwidthSample{}}
+	b.state.CoreRunning = true
+	b.runningLocalPort = localPort
+	b.state.ActiveNodeID = nodeCopy.ID
+	b.state.ActiveNodeName = nodeCopy.Name
+	b.state.StartedAtUnix = time.Now().UnixMilli()
+	b.state.Running = true
+	b.cfg.LastStartedNode = nodeCopy.ID
+	_ = b.store.Save(b.cfg)
+	b.emitStateLocked()
+	b.mu.Unlock()
+
+	// Core is up; allow StopProxy to proceed even if TUN/route requires admin interaction.
+	b.opMu.Unlock()
+
+	if err := startCtx.Err(); err != nil {
+		_ = b.coreProc.Stop(2 * time.Second)
+		b.mu.Lock()
+		b.state.CoreRunning = false
+		b.state.Running = false
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+		return err
+	}
+
+	if withTun {
+		serverIP := resolveServerIPFromAddress(nodeCopy.ServerAddress)
+		beforeTunIfs := map[string]struct{}{}
+		if runtime.GOOS == "darwin" {
+			beforeTunIfs = darwinListTunInterfaces()
 		}
-		time.Sleep(900 * time.Millisecond)
-		routeCtx, routeErr := setupRoutes(*node, b.cfg.Tun, func(line string) {
-			b.addLog("info", "route", line)
-		})
-		if routeErr != nil {
-			b.state.NeedsAdmin = true
-			b.state.RouteSetupError = routeErr.Error()
-			_ = b.tunProc.Stop(2 * time.Second)
+
+		bypass := tunBypass{}
+
+		effectiveDNS := ""
+		if tunCfg.MapDNSEnabled && strings.TrimSpace(tunCfg.MapDNSAddress) != "" {
+			effectiveDNS = strings.TrimSpace(tunCfg.MapDNSAddress)
+		}
+
+		b.addLog("info", "tun", fmt.Sprintf("starting hev with config %s", hevCfgPath))
+		hevCmd := hevBin
+		hevArgs := []string{hevCfgPath}
+		hevWorkDir := workDir
+		hevLogFile := ""
+		routeAlreadySetup := false
+		var preRouteCtx *routeContext
+		if runtime.GOOS == "windows" {
+			// Ensure Windows DLL dependencies (wintun.dll/msys-2.0.dll) can be resolved reliably.
+			hevWorkDir = filepath.Dir(hevBin)
+		}
+
+		if runtime.GOOS == "darwin" && os.Geteuid() != 0 && b.tunAdmin != nil {
+			pidFile := filepath.Join(b.store.RuntimeDir(), "hev.pid")
+			logFile := filepath.Join(b.store.LogDir(), "hev.log")
+			hevLogFile = logFile
+			b.addLog("warn", "tun", "starting TUN requires administrator privileges; requesting approval...")
+			type startWithRoutesAdmin interface {
+				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, error)
+			}
+			if dp, ok := b.tunAdmin.(startWithRoutesAdmin); ok {
+				gw, ifName, gwErr := darwinDefaultRoute()
+				if gwErr != nil {
+					_ = b.coreProc.Stop(3 * time.Second)
+					b.mu.Lock()
+					b.state.CoreRunning = false
+					b.state.Running = false
+					b.state.NeedsAdmin = true
+					b.state.RouteSetupError = gwErr.Error()
+					b.state.LastError = gwErr.Error()
+					b.emitStateLocked()
+					b.mu.Unlock()
+					return gwErr
+				}
+
+				dnsSetCmd := ""
+				dnsRestoreCmd := ""
+				dnsService := ""
+				var dnsPrev []string
+				dnsWasAuto := false
+				if effectiveDNS != "" && strings.TrimSpace(ifName) != "" {
+					if svc, derr := darwinNetworkServiceForDevice(ifName); derr == nil && strings.TrimSpace(svc) != "" {
+						dnsService = svc
+						if prev, wasAuto, gerr := darwinGetDNSServers(svc); gerr == nil {
+							dnsPrev = prev
+							dnsWasAuto = wasAuto
+						}
+						dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
+						dnsSetCmd = shellJoin("networksetup", "-setdnsservers", svc, effectiveDNS) + "; " + dnsFlushCmd
+						if dnsWasAuto || len(dnsPrev) == 0 {
+							dnsRestoreCmd = shellJoin("networksetup", "-setdnsservers", svc, "Empty") + "; " + dnsFlushCmd
+						} else {
+							args := append([]string{"networksetup", "-setdnsservers", svc}, dnsPrev...)
+							dnsRestoreCmd = shellJoin(args...) + "; " + dnsFlushCmd
+						}
+						b.addLog("info", "dns", fmt.Sprintf("set system DNS for %s to %s (restore on stop)", dnsService, effectiveDNS))
+					} else if derr != nil {
+						b.addLog("warn", "dns", fmt.Sprintf("mapdns enabled but unable to resolve network service for %s: %v", ifName, derr))
+					}
+				}
+
+				pfSetCmd := ""
+				pfRestoreCmd := ""
+				pfAnchor := ""
+				if tunCfg.BlockQUIC {
+					pfAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
+					gw6, _, _ := darwinDefaultRouteIPv6()
+					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, "", "", true, 0)
+					pfRestoreCmd = darwinBuildPFRestoreCmd(pfAnchor)
+					if tunCfg.BlockQUIC {
+						b.addLog("info", "pf", "blocking QUIC: drop outbound UDP/443 via pf")
+					}
+				}
+
+				pid, tunIf, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
+				if err != nil {
+					_ = b.coreProc.Stop(3 * time.Second)
+					b.mu.Lock()
+					b.state.CoreRunning = false
+					b.state.Running = false
+					b.state.NeedsAdmin = true
+					b.state.RouteSetupError = err.Error()
+					b.state.LastError = err.Error()
+					b.emitStateLocked()
+					b.mu.Unlock()
+					return err
+				}
+				b.runningTunInterface = strings.TrimSpace(tunIf)
+				if b.runningTunInterface != "" {
+					b.addLog("info", "tun", fmt.Sprintf("detected tunnel interface: %s", b.runningTunInterface))
+				}
+				preRouteCtx = &routeContext{
+					DefaultGateway:   gw,
+					DefaultInterface: ifName,
+					ServerIP:         serverIP,
+					DNSService:       dnsService,
+					DNSServers:       dnsPrev,
+					DNSWasAutomatic:  dnsWasAuto,
+					PFAnchor:         pfAnchor,
+					BypassV4Path:     "",
+					BypassV6Path:     "",
+				}
+				routeAlreadySetup = true
+				b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
+			} else {
+				pid, err := b.tunAdmin.Start(hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile)
+				if err != nil {
+					_ = b.coreProc.Stop(3 * time.Second)
+					b.mu.Lock()
+					b.state.CoreRunning = false
+					b.state.Running = false
+					b.state.NeedsAdmin = true
+					b.state.RouteSetupError = err.Error()
+					b.state.LastError = err.Error()
+					b.emitStateLocked()
+					b.mu.Unlock()
+					return err
+				}
+				b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
+			}
+		} else {
+			if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+				if _, err := exec.LookPath("pkexec"); err == nil {
+					hevCmd = "pkexec"
+					hevArgs = []string{hevBin, hevCfgPath}
+				}
+			}
+			if err := b.tunProc.Start(hevCmd, hevArgs, nil, hevWorkDir, b.onTunLog); err != nil {
+				_ = b.coreProc.Stop(3 * time.Second)
+				b.mu.Lock()
+				b.state.CoreRunning = false
+				b.state.Running = false
+				b.state.NeedsAdmin = isLikelyPermissionError(err)
+				b.state.RouteSetupError = err.Error()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				return err
+			}
+		}
+
+		select {
+		case <-time.After(900 * time.Millisecond):
+		case <-startCtx.Done():
+			_ = b.stopTunLocked(2 * time.Second)
 			_ = b.coreProc.Stop(2 * time.Second)
+			b.mu.Lock()
 			b.state.TunRunning = false
 			b.state.CoreRunning = false
 			b.state.Running = false
-			b.state.LastError = routeErr.Error()
+			b.state.LastError = startCtx.Err().Error()
 			b.emitStateLocked()
-			return routeErr
+			b.mu.Unlock()
+			return startCtx.Err()
 		}
+		if runtime.GOOS == "darwin" && !routeAlreadySetup {
+			actual := darwinWaitNewTunInterface(beforeTunIfs, 3*time.Second)
+			if actual == "" {
+				actual = darwinFindTunInterfaceByIPv4(tunCfg.IPv4)
+			}
+			if actual != "" {
+				b.runningTunInterface = actual
+				b.addLog("info", "tun", fmt.Sprintf("detected tunnel interface: %s", actual))
+			}
+		}
+		if runtime.GOOS == "darwin" {
+			if !b.tunRunningLocked() {
+				tail := ""
+				if hevLogFile != "" {
+					tail = tailFile(hevLogFile, 60)
+				}
+				err := errors.New("hev exited early")
+				if tail != "" {
+					err = fmt.Errorf("hev exited early:\n%s", tail)
+				}
+				_ = b.stopTunLocked(2 * time.Second)
+				_ = b.coreProc.Stop(2 * time.Second)
+				b.mu.Lock()
+				b.state.NeedsAdmin = true
+				b.state.RouteSetupError = err.Error()
+				b.state.TunRunning = false
+				b.state.CoreRunning = false
+				b.state.Running = false
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				return err
+			}
+		}
+		if runtime.GOOS == "darwin" && b.runningTunInterface != "" {
+			tunCfg.InterfaceName = b.runningTunInterface
+		}
+		routeCtx := preRouteCtx
+		if !routeAlreadySetup {
+			var routeErr error
+			if effectiveDNS != "" {
+				tunCfg.MapDNSEnabled = true
+				tunCfg.MapDNSAddress = effectiveDNS
+			}
+			routeCtx, routeErr = setupRoutes(nodeCopy, tunCfg, routingCfg, bypass, func(line string) {
+				b.addLog("info", "route", line)
+			})
+			if routeErr != nil {
+				_ = b.stopTunLocked(2 * time.Second)
+				_ = b.coreProc.Stop(2 * time.Second)
+				b.mu.Lock()
+				b.state.NeedsAdmin = true
+				b.state.RouteSetupError = routeErr.Error()
+				b.state.TunRunning = false
+				b.state.CoreRunning = false
+				b.state.Running = false
+				b.state.LastError = routeErr.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				return routeErr
+			}
+		}
+		b.mu.Lock()
 		b.routeState = routeCtx
+		b.dnsProxy = nil
 		b.state.TunRunning = true
 		b.state.NeedsAdmin = false
 		b.state.RouteSetupError = ""
+		b.emitStateLocked()
+		b.mu.Unlock()
 	}
-	b.pfMgr.Apply(b.cfg.PortForwards)
+
+	// Apply port forwards outside b.mu to avoid self-deadlock via b.addLog.
+	b.pfMgr.Apply(portForwards)
+
+	b.mu.Lock()
 	b.emitStateLocked()
+	b.mu.Unlock()
 	return nil
 }
 
 func (b *Backend) StopProxy() error {
+	// Interrupt any pending start (e.g. waiting for admin prompt).
+	b.cancelStart()
+	b.opMu.Lock()
+	defer b.opMu.Unlock()
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.routeState != nil {
-		teardownRoutes(b.routeState, b.cfg.Tun, func(line string) {
+	routeState := b.routeState
+	tunCfg := b.cfg.Tun
+	b.routeState = nil
+	b.mu.Unlock()
+
+	// Route teardown may require admin; it also logs via b.addLog.
+	if routeState != nil {
+		teardownRoutes(routeState, tunCfg, func(line string) {
 			b.addLog("info", "route", line)
 		})
-		b.routeState = nil
 	}
-	_ = b.tunProc.Stop(2 * time.Second)
+
+	b.mu.Lock()
+	dnsProxy := b.dnsProxy
+	b.dnsProxy = nil
+	b.mu.Unlock()
+	if dnsProxy != nil {
+		dnsProxy.Stop()
+	}
+
+	tunStopTimeout := 2 * time.Second
+	if runtime.GOOS == "darwin" && os.Geteuid() != 0 && b.tunAdmin != nil && b.tunAdmin.PID() > 0 {
+		// Allow time for the admin password prompt.
+		tunStopTimeout = 90 * time.Second
+	}
+	if err := b.stopTunLocked(tunStopTimeout); err != nil {
+		b.addLog("warn", "tun", fmt.Sprintf("stop hev failed: %v", err))
+		b.mu.Lock()
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+	}
 	_ = b.coreProc.Stop(3 * time.Second)
 	b.pfMgr.StopAll()
+
+	b.mu.Lock()
 	b.state.Running = false
 	b.state.TunRunning = false
 	b.state.CoreRunning = false
 	b.runningLocalPort = 0
+	b.runningTunInterface = ""
 	b.state.NeedsAdmin = false
 	b.state.RouteSetupError = ""
 	b.emitStateLocked()
+	b.mu.Unlock()
 	return nil
 }
 
@@ -618,7 +1045,11 @@ func (b *Backend) GetLogs(level string, limit int) []LogEntry {
 func (b *Backend) GetConnections() []ActiveConnection {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return topConnections(b.connections, 300)
+	out := topConnections(b.connections, 300)
+	if out == nil {
+		return []ActiveConnection{}
+	}
+	return out
 }
 
 func (b *Backend) GetUsageHistory(limit int) []UsageDay {
@@ -630,7 +1061,7 @@ func (b *Backend) GetUsageHistory(limit int) []UsageDay {
 		limit = len(days)
 	}
 	if limit == 0 {
-		return nil
+		return []UsageDay{}
 	}
 	return append([]UsageDay(nil), days[len(days)-limit:]...)
 }
@@ -672,6 +1103,7 @@ func (b *Backend) addLog(level, component, raw string) {
 	}
 	b.state.RecentLogs = b.lastLogsLocked(120)
 	b.parseRouteLineLocked(entry.Message)
+	b.parseCoreTrafficLineLocked(entry.Message)
 	b.emitLog(entry)
 }
 
@@ -709,6 +1141,92 @@ func (b *Backend) parseRouteLineLocked(line string) {
 	}
 }
 
+func (b *Backend) parseCoreTrafficLineLocked(line string) {
+	m := coreTrafficLineRegex.FindStringSubmatch(stripANSI(line))
+	if len(m) != 5 {
+		return
+	}
+	parse := func(s string) (uint64, bool) {
+		v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+		return v, err == nil
+	}
+	directTx, ok1 := parse(m[1])
+	directRx, ok2 := parse(m[2])
+	proxyTx, ok3 := parse(m[3])
+	proxyRx, ok4 := parse(m[4])
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return
+	}
+
+	now := time.Now()
+	totalTx := directTx + proxyTx
+	totalRx := directRx + proxyRx
+
+	b.trafficCache.coreTrafficActive = true
+	b.state.Traffic.TotalTx = totalTx
+	b.state.Traffic.TotalRx = totalRx
+	b.state.Traffic.EstimatedDirectTx = directTx
+	b.state.Traffic.EstimatedDirectRx = directRx
+	b.state.Traffic.EstimatedProxyTx = proxyTx
+	b.state.Traffic.EstimatedProxyRx = proxyRx
+
+	if b.trafficCache.coreLastTrafficSeen && !b.trafficCache.coreLastTrafficAt.IsZero() {
+		deltaSeconds := now.Sub(b.trafficCache.coreLastTrafficAt).Seconds()
+		if deltaSeconds > 0 {
+			prevDirectTx := b.trafficCache.coreLastDirectTx
+			prevDirectRx := b.trafficCache.coreLastDirectRx
+			prevProxyTx := b.trafficCache.coreLastProxyTx
+			prevProxyRx := b.trafficCache.coreLastProxyRx
+
+			// Handle counter resets (core restart) gracefully.
+			if directTx < prevDirectTx || directRx < prevDirectRx || proxyTx < prevProxyTx || proxyRx < prevProxyRx {
+				prevDirectTx, prevDirectRx, prevProxyTx, prevProxyRx = directTx, directRx, proxyTx, proxyRx
+			}
+
+			dDirectTx := directTx - prevDirectTx
+			dDirectRx := directRx - prevDirectRx
+			dProxyTx := proxyTx - prevProxyTx
+			dProxyRx := proxyRx - prevProxyRx
+			dTx := dDirectTx + dProxyTx
+			dRx := dDirectRx + dProxyRx
+
+			b.usageDays = addUsageToDay(b.usageDays, usageDayKey(now), dTx, dRx, dDirectTx, dDirectRx, dProxyTx, dProxyRx)
+			b.usageDays = trimUsageDays(b.usageDays, 120)
+			b.usageDirty = true
+			if b.usageDirty && (b.lastUsageFlush.IsZero() || now.Sub(b.lastUsageFlush) > 15*time.Second) {
+				if err := saveUsageHistory(b.store.UsageHistoryPath(), b.usageDays); err != nil {
+					b.state.LastError = fmt.Sprintf("save usage history: %v", err)
+				} else {
+					b.usageDirty = false
+					b.lastUsageFlush = now
+				}
+			}
+
+			sample := BandwidthSample{
+				At:      now,
+				TxBps:   float64(dTx) / deltaSeconds,
+				RxBps:   float64(dRx) / deltaSeconds,
+				Direct:  float64(dDirectTx+dDirectRx) / deltaSeconds,
+				Proxy:   float64(dProxyTx+dProxyRx) / deltaSeconds,
+				TotalTx: totalTx,
+				TotalRx: totalRx,
+			}
+			b.state.Traffic.RecentBandwidth = append(b.state.Traffic.RecentBandwidth, sample)
+			if len(b.state.Traffic.RecentBandwidth) > 300 {
+				b.state.Traffic.RecentBandwidth = b.state.Traffic.RecentBandwidth[len(b.state.Traffic.RecentBandwidth)-300:]
+			}
+		}
+	}
+
+	b.trafficCache.coreLastDirectTx = directTx
+	b.trafficCache.coreLastDirectRx = directRx
+	b.trafficCache.coreLastProxyTx = proxyTx
+	b.trafficCache.coreLastProxyRx = proxyRx
+	b.trafficCache.coreLastTrafficAt = now
+	b.trafficCache.coreLastTrafficSeen = true
+	b.state.Traffic.LastSampleUnixMillis = now.UnixMilli()
+}
+
 func (b *Backend) monitorLoop() {
 	t := time.NewTicker(1 * time.Second)
 	defer t.Stop()
@@ -726,15 +1244,19 @@ func (b *Backend) tick() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.state.CoreRunning = b.coreProc.IsRunning()
-	b.state.TunRunning = b.tunProc.IsRunning()
+	b.state.TunRunning = b.tunRunningLocked()
 	b.state.ReverseRunning = b.revProc.IsRunning()
 	b.state.Running = b.state.CoreRunning
 
-	tx, rx, ok := lookupInterfaceCounters(b.cfg.Tun.InterfaceName)
-	b.state.Traffic.Interface = b.cfg.Tun.InterfaceName
+	ifName := b.cfg.Tun.InterfaceName
+	if b.runningTunInterface != "" {
+		ifName = b.runningTunInterface
+	}
+	tx, rx, ok := lookupInterfaceCounters(ifName)
+	b.state.Traffic.Interface = ifName
 	b.state.Traffic.InterfaceFound = ok
 	now := time.Now()
-	if ok {
+	if ok && !b.trafficCache.coreTrafficActive {
 		b.state.Traffic.TotalTx = tx
 		b.state.Traffic.TotalRx = rx
 		if !b.trafficCache.lastAt.IsZero() {
@@ -820,10 +1342,11 @@ func (b *Backend) refreshLatencySliceLocked() {
 
 func (b *Backend) snapshotStateLocked() RuntimeState {
 	out := b.state
-	out.RecentLogs = append([]LogEntry(nil), b.state.RecentLogs...)
-	out.Connections = append([]ActiveConnection(nil), b.state.Connections...)
-	out.Latencies = append([]LatencyResult(nil), b.state.Latencies...)
-	out.Traffic.RecentBandwidth = append([]BandwidthSample(nil), b.state.Traffic.RecentBandwidth...)
+	// Always return non-nil slices so the frontend never receives `null` arrays.
+	out.RecentLogs = append([]LogEntry{}, b.state.RecentLogs...)
+	out.Connections = append([]ActiveConnection{}, b.state.Connections...)
+	out.Latencies = append([]LatencyResult{}, b.state.Latencies...)
+	out.Traffic.RecentBandwidth = append([]BandwidthSample{}, b.state.Traffic.RecentBandwidth...)
 	return out
 }
 
@@ -832,14 +1355,29 @@ func (b *Backend) emitStateLocked() {
 		return
 	}
 	state := b.snapshotStateLocked()
-	wailsruntime.EventsEmit(b.ctx, EventStateUpdated, state)
+	select {
+	case b.emitStateCh <- state:
+	default:
+		select {
+		case <-b.emitStateCh:
+		default:
+		}
+		select {
+		case b.emitStateCh <- state:
+		default:
+		}
+	}
 }
 
 func (b *Backend) emitLog(entry LogEntry) {
 	if b.ctx == nil {
 		return
 	}
-	wailsruntime.EventsEmit(b.ctx, EventLogAdded, entry)
+	select {
+	case b.emitLogCh <- entry:
+	default:
+		// Drop logs under backpressure to avoid UI deadlocks.
+	}
 }
 
 func (b *Backend) lastLogsLocked(max int) []LogEntry {

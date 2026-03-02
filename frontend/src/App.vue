@@ -70,13 +70,32 @@ const currentTab = ref<TabKey>('dashboard')
 const navMain = navItems.filter((x) => x.section === 'main')
 const navExtra = navItems.filter((x) => x.section === 'extra')
 
-const sidebarCollapsed = ref(localStorage.getItem('ui.sidebarCollapsed') === '1')
-watch(sidebarCollapsed, (v) => localStorage.setItem('ui.sidebarCollapsed', v ? '1' : '0'))
+const safeLocalStorageGet = (key: string): string | null => {
+  try {
+    return window.localStorage?.getItem(key) ?? null
+  } catch {
+    return null
+  }
+}
+const safeLocalStorageSet = (key: string, value: string) => {
+  try {
+    window.localStorage?.setItem(key, value)
+  } catch {
+    // ignore (may be blocked on some WebView/custom scheme origins)
+  }
+}
+
+const sidebarCollapsed = ref(false)
+onMounted(() => {
+  sidebarCollapsed.value = safeLocalStorageGet('ui.sidebarCollapsed') === '1'
+})
+watch(sidebarCollapsed, (v) => safeLocalStorageSet('ui.sidebarCollapsed', v ? '1' : '0'))
 const toggleSidebar = () => {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
 
 const busy = ref(false)
+const proxyOpBusy = ref(false)
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
 
@@ -105,7 +124,7 @@ const emptyNode = (): NodeConfig => ({
 })
 
 const config = reactive<AppConfig>({
-  version: 2,
+  version: 3,
   activeNodeId: '',
   nodes: [],
   routing: { proxyMode: 'pac', ruleUrls: [], customRulesEnabled: false, customRules: '' },
@@ -115,6 +134,7 @@ const config = reactive<AppConfig>({
     mtu: 8500,
     ipv4: '198.18.0.1',
     ipv6: 'fc00::1',
+    blockQuic: true,
     socksUdp: 'udp',
     socksMark: 438,
     routeTable: 20,
@@ -180,6 +200,10 @@ const shortlinkInput = ref('')
 const shortlinkName = ref('')
 const logLevelFilter = ref('all')
 const logs = ref<LogEntry[]>([])
+let logQueue: LogEntry[] = []
+let logFlushTimer: number | null = null
+let pendingState: RuntimeState | null = null
+let stateFlushTimer: number | null = null
 const proxyIP = ref<IPDetectResult | null>(null)
 const directIP = ref<IPDetectResult | null>(null)
 const usageHistory = ref<UsageDay[]>([])
@@ -211,6 +235,10 @@ const assignConfig = (next: AppConfig) => {
 
 const assignState = (next: RuntimeState) => {
   Object.assign(state, next)
+  if (!Array.isArray(state.connections)) state.connections = []
+  if (!Array.isArray(state.latencies)) state.latencies = []
+  if (!Array.isArray(state.recentLogs)) state.recentLogs = []
+  if (!Array.isArray(state.traffic?.recentBandwidth)) state.traffic.recentBandwidth = []
 }
 
 const activeNode = computed(() => config.nodes.find((n) => n.id === config.activeNodeId) ?? null)
@@ -224,8 +252,10 @@ const sortedNodes = computed(() => {
 })
 
 const filteredLogs = computed(() => {
-  if (logLevelFilter.value === 'all') return logs.value
-  return logs.value.filter((x) => x.level === logLevelFilter.value)
+  const maxItems = 300
+  const src = logLevelFilter.value === 'all' ? logs.value : logs.value.filter((x) => x.level === logLevelFilter.value)
+  if (src.length <= maxItems) return src
+  return src.slice(src.length - maxItems)
 })
 
 const trafficProxyShare = computed(() => {
@@ -280,7 +310,8 @@ const refreshBasics = async () => {
 
 const refreshUsage = async () => {
   try {
-    usageHistory.value = await backendApi.getUsageHistory(30)
+    const days = await backendApi.getUsageHistory(30)
+    usageHistory.value = Array.isArray(days) ? days : []
   } catch {
     // ignore
   }
@@ -299,38 +330,38 @@ const saveConfig = async () => {
 }
 
 const startProxy = async () => {
-  busy.value = true
+  proxyOpBusy.value = true
   try {
     await backendApi.startProxy({ withTun: config.tun.enabled })
     flash('Started')
   } catch (e: any) {
     flash(e?.message || 'Start failed', 'error')
   } finally {
-    busy.value = false
+    proxyOpBusy.value = false
   }
 }
 
 const stopProxy = async () => {
-  busy.value = true
+  proxyOpBusy.value = true
   try {
     await backendApi.stopProxy()
     flash('Stopped')
   } catch (e: any) {
     flash(e?.message || 'Stop failed', 'error')
   } finally {
-    busy.value = false
+    proxyOpBusy.value = false
   }
 }
 
 const restartProxy = async () => {
-  busy.value = true
+  proxyOpBusy.value = true
   try {
     await backendApi.restartProxy({ withTun: config.tun.enabled })
     flash('Restarted')
   } catch (e: any) {
     flash(e?.message || 'Restart failed', 'error')
   } finally {
-    busy.value = false
+    proxyOpBusy.value = false
   }
 }
 
@@ -515,20 +546,46 @@ onMounted(async () => {
   usageHistoryTimer = window.setInterval(() => refreshUsage(), 60_000)
 
   EventsOn('core:state', (payload: RuntimeState) => {
-    assignState(payload)
+    pendingState = payload
+    if (stateFlushTimer) return
+    stateFlushTimer = window.setTimeout(() => {
+      stateFlushTimer = null
+      if (!pendingState) return
+      const next = pendingState
+      pendingState = null
+      assignState(next)
+    }, 80)
   })
 
   EventsOn('core:log', (entry: LogEntry) => {
-    logs.value.push(entry)
-    if (logs.value.length > 1000) {
-      logs.value = logs.value.slice(logs.value.length - 1000)
-    }
+    logQueue.push(entry)
+    if (logFlushTimer) return
+    logFlushTimer = window.setTimeout(() => {
+      logFlushTimer = null
+      if (logQueue.length === 0) return
+      const batch = logQueue
+      logQueue = []
+      logs.value.push(...batch)
+      if (logs.value.length > 1000) {
+        logs.value = logs.value.slice(logs.value.length - 1000)
+      }
+    }, 100)
   })
 })
 
 onUnmounted(() => {
   EventsOff('core:state')
   EventsOff('core:log')
+  if (stateFlushTimer) {
+    window.clearTimeout(stateFlushTimer)
+    stateFlushTimer = null
+  }
+  pendingState = null
+  if (logFlushTimer) {
+    window.clearTimeout(logFlushTimer)
+    logFlushTimer = null
+  }
+  logQueue = []
   if (usageHistoryTimer) {
     window.clearInterval(usageHistoryTimer)
     usageHistoryTimer = null
@@ -653,7 +710,7 @@ onUnmounted(() => {
 
       <section v-if="notice" class="notice" :class="noticeType">{{ notice }}</section>
 
-      <main class="panel brutal-card" v-show="currentTab === 'dashboard'">
+      <main class="panel brutal-card" v-if="currentTab === 'dashboard'">
       <section class="overview-controls">
         <div class="overview-left">
           <div class="overview-title">
@@ -677,9 +734,9 @@ onUnmounted(() => {
         </div>
 
         <div class="overview-actions">
-          <button class="btn" :disabled="busy || state.running" @click="startProxy">{{ t('start') }}</button>
-          <button class="btn" :disabled="busy || !state.running" @click="stopProxy">{{ t('stop') }}</button>
-          <button class="btn" :disabled="busy || !state.running" @click="restartProxy">{{ t('restart') }}</button>
+          <button class="btn" :disabled="proxyOpBusy || state.running" @click="startProxy">{{ t('start') }}</button>
+          <button class="btn" :disabled="proxyOpBusy || !state.running" @click="stopProxy">{{ t('stop') }}</button>
+          <button class="btn" :disabled="proxyOpBusy || !state.running" @click="restartProxy">{{ t('restart') }}</button>
           <button class="btn" :disabled="busy" @click="saveConfig">{{ t('apply') }}</button>
         </div>
       </section>
@@ -765,7 +822,7 @@ onUnmounted(() => {
       </div>
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'nodes'">
+      <main class="panel brutal-card" v-if="currentTab === 'nodes'">
       <div class="node-layout">
         <aside class="node-list">
           <div class="row">
@@ -820,7 +877,7 @@ onUnmounted(() => {
       </div>
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'routing'">
+      <main class="panel brutal-card" v-if="currentTab === 'routing'">
       <div class="form-grid">
         <label>{{ t('proxyMode') }}
           <select v-model="config.routing.proxyMode">
@@ -840,15 +897,18 @@ onUnmounted(() => {
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'tun'">
+      <main class="panel brutal-card" v-if="currentTab === 'tun'">
       <div class="form-grid">
         <label>{{ t('tunEnabled') }}<input type="checkbox" v-model="config.tun.enabled" /></label>
         <label>Interface<input v-model="config.tun.interfaceName" /></label>
         <label>MTU<input v-model.number="config.tun.mtu" type="number" /></label>
         <label>IPv4<input v-model="config.tun.ipv4" /></label>
         <label>IPv6<input v-model="config.tun.ipv6" /></label>
+        <label>Block QUIC (UDP/443)<input type="checkbox" v-model="config.tun.blockQuic" /></label>
         <label>Socks Mark<input v-model.number="config.tun.socksMark" type="number" /></label>
         <label>Route Table<input v-model.number="config.tun.routeTable" type="number" /></label>
+        <label>MapDNS Enabled<input type="checkbox" v-model="config.tun.mapDnsEnabled" /></label>
+        <label>MapDNS Address<input v-model="config.tun.mapDnsAddress" :disabled="!config.tun.mapDnsEnabled" /></label>
         <label>Sudoku Binary<input v-model="config.core.sudokuBinary" /></label>
         <label>HEV Binary<input v-model="config.core.hevBinary" /></label>
         <label>Work Dir<input v-model="config.core.workingDir" /></label>
@@ -874,7 +934,7 @@ onUnmounted(() => {
       <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'forwards'">
+      <main class="panel brutal-card" v-if="currentTab === 'forwards'">
       <div class="row">
         <button class="btn" @click="addPortForward">{{ t('addForward') }}</button>
         <button class="btn" @click="saveConfig">{{ t('apply') }}</button>
@@ -897,7 +957,7 @@ onUnmounted(() => {
       <p class="hint">{{ t('forwardHint') }}</p>
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'reverse'">
+      <main class="panel brutal-card" v-if="currentTab === 'reverse'">
       <h3 class="section-title">{{ t('reverseClient') }}</h3>
       <div class="form-grid">
         <label>{{ t('reverseClientId') }}<input v-model="config.reverseClient.clientId" placeholder="client-id" /></label>
@@ -947,7 +1007,7 @@ onUnmounted(() => {
         <SudokuGame />
       </main>
 
-      <main class="panel brutal-card" v-show="currentTab === 'logs'">
+      <main class="panel brutal-card" v-if="currentTab === 'logs'">
       <div class="row">
         <label>{{ t('level') }}
           <select v-model="logLevelFilter">
@@ -960,7 +1020,7 @@ onUnmounted(() => {
         </label>
       </div>
       <div class="log-list">
-        <article v-for="item in filteredLogs.slice().reverse()" :key="item.id" class="log-item" :class="item.level">
+        <article v-for="item in filteredLogs" :key="item.id" class="log-item" :class="item.level">
           <time>{{ new Date(item.timestamp).toLocaleTimeString() }}</time>
           <strong>[{{ item.component }}]</strong>
           <span>{{ item.message }}</span>

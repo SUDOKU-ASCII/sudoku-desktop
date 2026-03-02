@@ -58,6 +58,7 @@ type TunSettings struct {
 	MTU            int    `json:"mtu"`
 	IPv4           string `json:"ipv4"`
 	IPv6           string `json:"ipv6"`
+	BlockQUIC      bool   `json:"blockQuic"`
 	SocksUDP       string `json:"socksUdp"`
 	SocksMark      int    `json:"socksMark"`
 	RouteTable     int    `json:"routeTable"`

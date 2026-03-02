@@ -173,6 +173,7 @@ export namespace core {
 	    mtu: number;
 	    ipv4: string;
 	    ipv6: string;
+	    blockQuic: boolean;
 	    socksUdp: string;
 	    socksMark: number;
 	    routeTable: number;
@@ -198,6 +199,7 @@ export namespace core {
 	        this.mtu = source["mtu"];
 	        this.ipv4 = source["ipv4"];
 	        this.ipv6 = source["ipv6"];
+	        this.blockQuic = source["blockQuic"];
 	        this.socksUdp = source["socksUdp"];
 	        this.socksMark = source["socksMark"];
 	        this.routeTable = source["routeTable"];

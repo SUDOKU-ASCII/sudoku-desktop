@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const configVersion = 2
+const configVersion = 3
 
 type Store struct {
 	rootDir    string
@@ -110,28 +110,28 @@ func (s *Store) Save(cfg *AppConfig) error {
 }
 
 func DefaultConfig(runtimeDir string) *AppConfig {
+	defaultTunName := "sudoku0"
+	if runtime.GOOS == "darwin" {
+		// HEV's docs use "tun0" on macOS/FreeBSD; using a Linux-ish name breaks route setup.
+		defaultTunName = "tun0"
+	}
 	cfg := &AppConfig{
 		Version:      configVersion,
 		ActiveNodeID: "",
 		Nodes:        []NodeConfig{},
 		Routing: RoutingSettings{
-			ProxyMode: "pac",
-			RuleURLs: []string{
-				"https://gh-proxy.org/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/BiliBili/BiliBili.list",
-				"https://gh-proxy.org/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/WeChat/WeChat.list",
-				"https://gh-proxy.org/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMaxNoIP/ChinaMaxNoIP.list",
-				"https://gh-proxy.org/https://raw.githubusercontent.com/fernvenue/chn-cidr-list/master/ipv4.yaml",
-				"https://gh-proxy.org/https://raw.githubusercontent.com/fernvenue/chn-cidr-list/master/ipv6.yaml",
-			},
+			ProxyMode:          "pac",
+			RuleURLs:           defaultPACRuleURLs(),
 			CustomRulesEnabled: false,
 			CustomRules:        "",
 		},
 		Tun: TunSettings{
 			Enabled:        true,
-			InterfaceName:  "sudoku0",
+			InterfaceName:  defaultTunName,
 			MTU:            8500,
 			IPv4:           "198.18.0.1",
 			IPv6:           "fc00::1",
+			BlockQUIC:      runtime.GOOS == "darwin",
 			SocksUDP:       "udp",
 			SocksMark:      438,
 			RouteTable:     20,
@@ -175,6 +175,7 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 }
 
 func normalizeConfig(cfg *AppConfig, runtimeDir string) {
+	prevVersion := cfg.Version
 	if cfg.Version < configVersion {
 		cfg.Version = configVersion
 	}
@@ -196,8 +197,22 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 	if cfg.Routing.RuleURLs == nil {
 		cfg.Routing.RuleURLs = []string{}
 	}
+	// PAC mode requires rule URLs. If a user accidentally cleared the list (and has no custom rules),
+	// fall back to the recommended defaults so routing doesn't silently become global.
+	if cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) == 0 {
+		if !cfg.Routing.CustomRulesEnabled || strings.TrimSpace(cfg.Routing.CustomRules) == "" {
+			cfg.Routing.RuleURLs = defaultPACRuleURLs()
+		}
+	}
 	if cfg.Tun.InterfaceName == "" {
-		cfg.Tun.InterfaceName = "sudoku0"
+		if runtime.GOOS == "darwin" {
+			cfg.Tun.InterfaceName = "tun0"
+		} else {
+			cfg.Tun.InterfaceName = "sudoku0"
+		}
+	} else if runtime.GOOS == "darwin" && cfg.Tun.InterfaceName == "sudoku0" {
+		// Migrate old default to macOS-friendly default.
+		cfg.Tun.InterfaceName = "tun0"
 	}
 	if cfg.Tun.MTU <= 0 {
 		cfg.Tun.MTU = 8500
@@ -207,6 +222,10 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 	}
 	if cfg.Tun.IPv6 == "" {
 		cfg.Tun.IPv6 = "fc00::1"
+	}
+	// v3 introduced QUIC blocking; on macOS it's often necessary for stability, so default to enabled.
+	if runtime.GOOS == "darwin" && prevVersion < 3 && !cfg.Tun.BlockQUIC {
+		cfg.Tun.BlockQUIC = true
 	}
 	if cfg.Tun.SocksUDP == "" {
 		cfg.Tun.SocksUDP = "udp"

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,7 @@ type sudokuClientConfig struct {
 	Reverse            *sudokuReverse `json:"reverse,omitempty"`
 }
 
-func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL string) (*sudokuClientConfig, error) {
+func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL string, forceGlobal bool) (*sudokuClientConfig, error) {
 	if strings.TrimSpace(node.ServerAddress) == "" {
 		return nil, fmt.Errorf("node server address is empty")
 	}
@@ -60,18 +61,20 @@ func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL strin
 		localPort = cfg.Core.LocalPort
 	}
 	ruleURLs := []string{"global"}
-	switch strings.ToLower(strings.TrimSpace(cfg.Routing.ProxyMode)) {
-	case "direct":
-		ruleURLs = []string{"direct"}
-	case "global":
-		ruleURLs = []string{"global"}
-	case "pac":
-		ruleURLs = append([]string(nil), cfg.Routing.RuleURLs...)
-		if cfg.Routing.CustomRulesEnabled && strings.TrimSpace(cfg.Routing.CustomRules) != "" && strings.TrimSpace(customPACURL) != "" {
-			ruleURLs = append([]string{strings.TrimSpace(customPACURL)}, ruleURLs...)
-		}
-		if len(ruleURLs) == 0 {
+	if !forceGlobal {
+		switch strings.ToLower(strings.TrimSpace(cfg.Routing.ProxyMode)) {
+		case "direct":
+			ruleURLs = []string{"direct"}
+		case "global":
 			ruleURLs = []string{"global"}
+		case "pac":
+			ruleURLs = append([]string(nil), cfg.Routing.RuleURLs...)
+			if cfg.Routing.CustomRulesEnabled && strings.TrimSpace(cfg.Routing.CustomRules) != "" && strings.TrimSpace(customPACURL) != "" {
+				ruleURLs = append([]string{strings.TrimSpace(customPACURL)}, ruleURLs...)
+			}
+			if len(ruleURLs) == 0 {
+				ruleURLs = defaultPACRuleURLs()
+			}
 		}
 	}
 
@@ -223,8 +226,17 @@ func buildHevConfig(cfg *AppConfig, localPort int) *hevTunnelConfig {
 	return c
 }
 
-func writeRuntimeConfigs(store *Store, cfg *AppConfig, node NodeConfig, customPACURL string) (string, string, int, error) {
-	sCfg, err := buildSudokuClientConfig(cfg, node, customPACURL)
+func writeRuntimeConfigs(store *Store, cfg *AppConfig, node NodeConfig, customPACURL string, withTun bool) (string, string, int, error) {
+	// Routing behavior should follow user settings. TUN-mode loop avoidance is handled by
+	// platform route setup (e.g. CN bypass routes for PAC-mode direct decisions).
+	//
+	// In FakeIP mode (MapDNS), system DNS may be switched to HEV's MapDNS while TUN is active.
+	// To avoid the core accidentally resolving the server address into a FakeIP later, resolve
+	// it once here and pin the server address to an IP:port if it was a hostname.
+	if withTun && cfg != nil && cfg.Tun.MapDNSEnabled {
+		node.ServerAddress = pinHostPortToIP(node.ServerAddress)
+	}
+	sCfg, err := buildSudokuClientConfig(cfg, node, customPACURL, false)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -247,4 +259,25 @@ func writeRuntimeConfigs(store *Store, cfg *AppConfig, node NodeConfig, customPA
 		return "", "", 0, fmt.Errorf("write hev config: %w", err)
 	}
 	return sudokuPath, hevPath, localPort, nil
+}
+
+func pinHostPortToIP(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if net.ParseIP(host) != nil {
+		return addr
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return addr
+	}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			return net.JoinHostPort(v4.String(), port)
+		}
+	}
+	return net.JoinHostPort(ips[0].String(), port)
 }
