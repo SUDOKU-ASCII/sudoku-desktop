@@ -46,42 +46,41 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 		var inner error
 		if err := c.Control(func(fd uintptr) {
 			fdInt := int(fd)
-			// Prefer best-effort source-IP binding when provided. Unlike IP_BOUND_IF, this tends to keep
-			// working across different macOS routing states. However, treat failures as non-fatal so we
-			// don't break IPv6 or dual-stack sockets on some networks.
-			if src4 != nil || src6 != nil {
-				isV6 := false
-				if sa, gerr := unix.Getsockname(fdInt); gerr == nil {
-					switch sa.(type) {
-					case *unix.SockaddrInet6:
-						isV6 = true
-					case *unix.SockaddrInet4:
-						isV6 = false
-					}
-				} else {
-					// Heuristic fallback for non-literal targets.
-					isV6 = strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":")
-				}
-				if !isV6 && src4 != nil {
-					_ = unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4})
-				} else if isV6 && src6 != nil {
-					_ = unix.Bind(fdInt, &unix.SockaddrInet6{Addr: *src6})
-				}
-			}
+			isV6 := strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":")
 
+			// Prefer binding to the physical interface when available. This avoids "can't assign requested address"
+			// issues that can happen when binding a specific source IP on some macOS networks.
 			if ifIndex > 0 {
-				// Best-effort dual-stack interface binding.
-				err4 := unix.SetsockoptInt(fdInt, unix.IPPROTO_IP, unix.IP_BOUND_IF, ifIndex)
-				err6 := unix.SetsockoptInt(fdInt, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, ifIndex)
-				if err4 != nil && err6 != nil {
-					if strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":") {
-						inner = err6
-					} else {
-						inner = err4
-					}
+				var errBound error
+				if isV6 {
+					errBound = unix.SetsockoptInt(fdInt, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, ifIndex)
+				} else {
+					errBound = unix.SetsockoptInt(fdInt, unix.IPPROTO_IP, unix.IP_BOUND_IF, ifIndex)
+				}
+				if errBound == nil {
+					inner = nil
 					return
 				}
 			}
+
+			// Fallback: bind to the physical source IP when provided.
+			if !isV6 && src4 != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4}); berr != nil {
+					inner = berr
+					return
+				}
+				inner = nil
+				return
+			}
+			if isV6 && src6 != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet6{Addr: *src6}); berr != nil {
+					inner = berr
+					return
+				}
+				inner = nil
+				return
+			}
+
 			inner = nil
 		}); err != nil {
 			return err

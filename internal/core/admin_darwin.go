@@ -147,18 +147,18 @@ func ensureShellStmt(cmd string) string {
 
 // StartWithRoutes starts HEV with admin privileges and sets up routes in the same admin session.
 // This avoids repeated password prompts from multiple `osascript` invocations.
-func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (pid int, tunIf string, err error) {
+func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (pid int, tunIf string, scriptOutput string, err error) {
 	if pidFile == "" {
-		return 0, "", errors.New("pidFile required")
+		return 0, "", "", errors.New("pidFile required")
 	}
 	if logFile == "" {
-		return 0, "", errors.New("logFile required")
+		return 0, "", "", errors.New("logFile required")
 	}
 	if strings.TrimSpace(tunIPv4) == "" {
-		return 0, "", errors.New("tunIPv4 required")
+		return 0, "", "", errors.New("tunIPv4 required")
 	}
 	if strings.TrimSpace(defaultGateway) == "" {
-		return 0, "", errors.New("defaultGateway required")
+		return 0, "", "", errors.New("defaultGateway required")
 	}
 	defaultInterface = strings.TrimSpace(defaultInterface)
 	dnsSetCmd = strings.TrimSpace(dnsSetCmd)
@@ -166,13 +166,13 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	pfSetCmd = strings.TrimSpace(pfSetCmd)
 	pfRestoreCmd = strings.TrimSpace(pfRestoreCmd)
 	if err := ensureDir(filepath.Dir(pidFile)); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	if err := ensureDir(filepath.Dir(logFile)); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	if pidLooksAlive(p.pid) {
-		return 0, "", fmt.Errorf("process already running (pid=%d)", p.pid)
+		return 0, "", "", fmt.Errorf("process already running (pid=%d)", p.pid)
 	}
 
 	quotedArgs := make([]string, 0, len(args))
@@ -303,22 +303,23 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, "osascript", "-e", script)
 	output, runErr := cmd.CombinedOutput()
+	scriptOutput = strings.TrimSpace(string(output))
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return 0, "", fmt.Errorf("start+routes (admin): timeout")
+			return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): timeout")
 		}
 		if errors.Is(runCtx.Err(), context.Canceled) {
-			return 0, "", fmt.Errorf("start+routes (admin): canceled")
+			return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): canceled")
 		}
-		return 0, "", fmt.Errorf("start+routes (admin): %w: %s", runErr, strings.TrimSpace(string(output)))
+		return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): %w: %s", runErr, scriptOutput)
 	}
 
 	pid, err = readPIDEventually(pidFile, 1500*time.Millisecond)
 	if err != nil {
-		return 0, "", err
+		return 0, "", scriptOutput, err
 	}
 	if pid <= 0 {
-		return 0, "", fmt.Errorf("start+routes (admin): failed to obtain pid for %s", p.label)
+		return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): failed to obtain pid for %s", p.label)
 	}
 
 	out := strings.ReplaceAll(string(output), "\r", "\n")
@@ -330,13 +331,13 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		tunIf = darwinFindTunInterfaceByIPv4(tunIPv4)
 	}
 	if tunIf == "" {
-		return pid, "", errors.New("start+routes (admin): unable to detect tunnel interface")
+		return pid, "", scriptOutput, errors.New("start+routes (admin): unable to detect tunnel interface")
 	}
 
 	p.pid = pid
 	p.pidFile = pidFile
 	p.logFile = logFile
-	return pid, tunIf, nil
+	return pid, tunIf, scriptOutput, nil
 }
 
 func (p *darwinAdminDetachedProcess) Stop(timeout time.Duration) error {

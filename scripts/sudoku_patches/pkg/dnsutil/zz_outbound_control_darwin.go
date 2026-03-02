@@ -63,42 +63,38 @@ func platformOutboundControl() func(network, address string, c syscall.RawConn) 
 		var inner error
 		if err := c.Control(func(fd uintptr) {
 			fdInt := int(fd)
-			// Best-effort source-IP binding when provided. Treat failures as non-fatal so we don't
-			// break IPv6/dual-stack sockets on some networks.
-			if src4 != nil || src6 != nil {
-				isV6 := false
-				if sa, gerr := unix.Getsockname(fdInt); gerr == nil {
-					switch sa.(type) {
-					case *unix.SockaddrInet6:
-						isV6 = true
-					case *unix.SockaddrInet4:
-						isV6 = false
-					}
+			isV6 := strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":")
+
+			if ifIndex > 0 {
+				var errBound error
+				if isV6 {
+					errBound = unix.SetsockoptInt(fdInt, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, ifIndex)
 				} else {
-					isV6 = strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":")
+					errBound = unix.SetsockoptInt(fdInt, unix.IPPROTO_IP, unix.IP_BOUND_IF, ifIndex)
 				}
-				if !isV6 && src4 != nil {
-					_ = unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4})
-				} else if isV6 && src6 != nil {
-					_ = unix.Bind(fdInt, &unix.SockaddrInet6{Addr: *src6})
+				if errBound == nil {
+					inner = nil
+					return
 				}
 			}
 
-			if ifIndex <= 0 {
+			if !isV6 && src4 != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4}); berr != nil {
+					inner = berr
+					return
+				}
 				inner = nil
 				return
 			}
-			// Apply both options best-effort; only one will match the actual socket family.
-			err4 := unix.SetsockoptInt(fdInt, unix.IPPROTO_IP, unix.IP_BOUND_IF, ifIndex)
-			err6 := unix.SetsockoptInt(fdInt, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, ifIndex)
-			if err4 != nil && err6 != nil {
-				if strings.HasSuffix(network, "6") || strings.Contains(strings.ToLower(address), ":") {
-					inner = err6
-				} else {
-					inner = err4
+			if isV6 && src6 != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet6{Addr: *src6}); berr != nil {
+					inner = berr
+					return
 				}
+				inner = nil
 				return
 			}
+
 			inner = nil
 		}); err != nil {
 			return err

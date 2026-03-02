@@ -61,6 +61,9 @@ func resolveServerIPFromAddress(serverAddress string) string {
 	if err != nil {
 		return ""
 	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
 	ips, _ := net.LookupIP(host)
 	for _, ip := range ips {
 		if v4 := ip.To4(); v4 != nil {

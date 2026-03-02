@@ -518,12 +518,22 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(srcIP))
 			}
 		case "darwin":
-			if _, ifName, derr := darwinDefaultRoute(); derr == nil && strings.TrimSpace(ifName) != "" {
-				ifName = strings.TrimSpace(ifName)
-				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
-				if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
-					coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
+			gw, ifName, derr := darwinDefaultRoute()
+			if derr != nil || strings.TrimSpace(gw) == "" || strings.TrimSpace(ifName) == "" {
+				b.mu.Lock()
+				b.state.LastError = fmt.Sprintf("unable to resolve default route for outbound bypass: %v", derr)
+				b.emitStateLocked()
+				b.mu.Unlock()
+				b.opMu.Unlock()
+				if derr != nil {
+					return derr
 				}
+				return errors.New("unable to resolve default route for outbound bypass")
+			}
+			ifName = strings.TrimSpace(ifName)
+			coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
+			if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
+				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
 			}
 		case "windows":
 			if ifIndex, werr := windowsDefaultInterfaceIndex(); werr == nil && ifIndex > 0 {
@@ -709,7 +719,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			hevLogFile = logFile
 			b.addLog("warn", "tun", "starting TUN requires administrator privileges; requesting approval...")
 			type startWithRoutesAdmin interface {
-				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, error)
+				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, string, error)
 			}
 			if dp, ok := b.tunAdmin.(startWithRoutesAdmin); ok {
 				gw, ifName, gwErr := darwinDefaultRoute()
@@ -769,7 +779,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 					}
 				}
 
-				pid, tunIf, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
+				pid, tunIf, scriptOut, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
 				if err != nil {
 					_ = b.coreProc.Stop(3 * time.Second)
 					b.mu.Lock()
@@ -781,6 +791,24 @@ func (b *Backend) StartProxy(req StartRequest) error {
 					b.emitStateLocked()
 					b.mu.Unlock()
 					return err
+				}
+				if strings.TrimSpace(scriptOut) != "" {
+					for _, ln := range strings.Split(strings.ReplaceAll(scriptOut, "\r", "\n"), "\n") {
+						ln = strings.TrimSpace(ln)
+						if ln == "" {
+							continue
+						}
+						switch {
+						case strings.HasPrefix(ln, "__SUDOKU_STEP__="):
+							b.addLog("info", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_STEP__="))
+						case strings.HasPrefix(ln, "__SUDOKU_WARN__="):
+							b.addLog("warn", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_WARN__="))
+						case strings.HasPrefix(ln, "__SUDOKU_GUARD__="):
+							b.addLog("warn", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_GUARD__="))
+						default:
+							b.addLog("info", "tun", "admin "+ln)
+						}
+					}
 				}
 				b.runningTunInterface = strings.TrimSpace(tunIf)
 				if b.runningTunInterface != "" {
@@ -911,6 +939,49 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				return routeErr
 			}
 		}
+
+		// Post-start health checks (production safety):
+		// If we changed system routes/DNS but the proxy isn't actually usable, revert immediately.
+		socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+		hctx, cancelHC := context.WithTimeout(context.Background(), 10*time.Second)
+		hcErr := func() error {
+			if err := waitForTCPReady(hctx, socksAddr, 3*time.Second); err != nil {
+				return fmt.Errorf("core socks not ready: %w", err)
+			}
+			// 1) Verify SOCKS can CONNECT to an external IP (tests proxy path without DNS).
+			if err := healthCheckSOCKS5Connect(hctx, socksAddr, "1.1.1.1:443", 3*time.Second); err != nil {
+				return fmt.Errorf("socks connect check failed: %w", err)
+			}
+			// 2) Verify local DNS (via pf rdr 127.0.0.1:53 -> dns proxy) returns answers.
+			if err := healthCheckDNSUDP(hctx, net.JoinHostPort(localDNSServerIPv4, "53"), "www.baidu.com", 2*time.Second); err != nil {
+				return fmt.Errorf("dns check failed: %w", err)
+			}
+			return nil
+		}()
+		cancelHC()
+		if hcErr != nil {
+			// Best-effort immediate rollback. This avoids leaving the user's machine offline.
+			b.addLog("warn", "app", fmt.Sprintf("post-start health check failed; reverting: %v", hcErr))
+			if routeCtx != nil {
+				teardownRoutes(routeCtx, tunCfg, func(line string) {
+					b.addLog("info", "route", line)
+				})
+			}
+			_ = b.stopTunLocked(4 * time.Second)
+			_ = b.coreProc.Stop(2 * time.Second)
+
+			b.mu.Lock()
+			b.state.NeedsAdmin = true
+			b.state.RouteSetupError = hcErr.Error()
+			b.state.TunRunning = false
+			b.state.CoreRunning = false
+			b.state.Running = false
+			b.state.LastError = hcErr.Error()
+			b.emitStateLocked()
+			b.mu.Unlock()
+			return hcErr
+		}
+
 		b.mu.Lock()
 		b.routeState = routeCtx
 		b.state.TunRunning = true
