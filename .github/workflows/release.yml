@@ -81,7 +81,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ARCH="${{ matrix.platform#*/ }}"
+          PLATFORM="${{ matrix.platform }}"
+          ARCH="${PLATFORM#*/}"
           if [ "${{ runner.os }}" == "Windows" ]; then
             wails3 task windows:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4.exe
           elif [ "${{ runner.os }}" == "Linux" ]; then
@@ -89,7 +90,7 @@ jobs:
           else
             wails3 task darwin:package ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
           fi
-          PLATFORM="${{ matrix.platform }}" ./scripts/bundle_runtime_into_build.sh
+          PLATFORM="${PLATFORM}" ./scripts/bundle_runtime_into_build.sh
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
