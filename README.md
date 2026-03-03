@@ -1,5 +1,8 @@
 # Sudoku Desktop Client
 
+[![Latest Release](https://img.shields.io/github/v/release/SUDOKU-ASCII/sudoku-desktop?style=for-the-badge)](https://github.com/SUDOKU-ASCII/sudoku-desktop/releases)
+[![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg?style=for-the-badge)](./LICENSE)
+
 ## macOS First Run (Important)
 
 If macOS blocks the app after you unzip/download it, clear quarantine attributes first.
