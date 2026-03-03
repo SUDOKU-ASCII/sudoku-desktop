@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 const messages = {
   zh: {
     appTitle: '4x4 sudoku',
-    subtitle: '跨平台 TUN 代理控制台',
+    subtitle: '跨平台sudoku代理',
     statusRunning: '运行中',
     statusStopped: '已停止',
     start: '启动',
@@ -241,7 +241,7 @@ const messages = {
   },
   en: {
     appTitle: '4x4 sudoku',
-    subtitle: 'Cross-platform TUN proxy console',
+    subtitle: 'Cross-platform sudoku proxy console',
     statusRunning: 'Running',
     statusStopped: 'Stopped',
     start: 'Start',
@@ -479,7 +479,7 @@ const messages = {
   },
   ru: {
     appTitle: '4x4 sudoku',
-    subtitle: 'Кроссплатформенная консоль TUN-прокси',
+    subtitle: 'Кроссплатформенная консоль sudoku-прокси',
     statusRunning: 'Запущено',
     statusStopped: 'Остановлено',
     start: 'Запуск',

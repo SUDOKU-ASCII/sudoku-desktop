@@ -36,20 +36,20 @@ xattr -cr "/Applications/sudoku4x4.app"
 
 在 macOS 上启用或停止 `TUN` 时，系统可能会弹出密码输入框。这是正常行为，因为应用需要修改网络路由和网卡配置。请放心输入密码并授权。
 
-## Current Scope
+## What is this project?
 
-This project is currently positioned as a Wails-based desktop Sudoku game.
+This project is a Wails-based desktop Sudoku game.
 
-- Built with `Wails` + `Vue`
+- Built with `Wails3` + `Vue`
 - Built-in Sudoku gameplay (4x4 / 9x9)
 - Difficulty selection, hints, and basic game controls
 - Best user experience should be unmatched
 
-## 当前定位
+## 这啥？
 
-当前项目定位为一个基于 Wails 的桌面数独游戏。
+当前项目为一个基于 Wails3 的桌面数独游戏。
 
-- 使用 `Wails` + `Vue` 构建
+- 使用 `Wails3` + `Vue` 构建
 - 内置数独玩法（4x4 / 9x9）
 - 提供难度选择、提示和基础操作
 - 用户体验应当无敌
