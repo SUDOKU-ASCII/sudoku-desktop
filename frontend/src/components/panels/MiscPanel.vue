@@ -29,7 +29,9 @@ const props = defineProps<{
           </select>
         </label>
       </div>
-      <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
+      <div class="row row-spaced">
+        <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
+      </div>
     </section>
   </main>
 </template>

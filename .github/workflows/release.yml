@@ -273,6 +273,3 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: false
-          body: |
-            macOS: 完整可用（含 TUN）
-            Windows/Linux: TUN 可能不可用，但系统代理可用
