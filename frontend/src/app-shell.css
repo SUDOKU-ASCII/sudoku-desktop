@@ -903,6 +903,10 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.form-grid.align-end {
+  align-items: end;
+}
+
 .span-2 {
   grid-column: span 2;
 }
@@ -911,6 +915,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  align-self: start;
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -922,6 +927,10 @@ textarea {
 .switch-row.compact {
   padding: 7px 9px;
   min-height: var(--control-height);
+}
+
+.form-grid.align-end .switch-row {
+  align-self: end;
 }
 
 .switch-control {
@@ -1026,6 +1035,12 @@ textarea {
 
 .row.row-spaced {
   margin-top: 8px;
+}
+
+.switch-stack {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
 }
 
 .log-list {
@@ -1227,10 +1242,11 @@ textarea {
   .sidebar,
   .sidebar.collapsed {
     position: fixed;
-    left: 8px;
-    right: 8px;
+    left: 50%;
+    right: auto;
     bottom: 8px;
-    width: auto;
+    transform: translateX(-50%);
+    width: min(980px, calc(100vw - 16px));
     height: 64px;
     padding: 6px;
     border-radius: 14px;
@@ -1249,11 +1265,13 @@ textarea {
     overflow-x: auto;
     overflow-y: hidden;
     align-items: stretch;
+    justify-content: center;
   }
 
   .sidebar .nav-group {
     display: flex;
     gap: 6px;
+    justify-content: center;
   }
 
   .sidebar .nav-divider {

@@ -23,10 +23,12 @@ const props = defineProps<{
     <section class="tun-grid">
       <article class="group-card">
         <h3>{{ props.t('toggleOptions') }}</h3>
-        <label class="switch-row"><span>{{ props.t('tunEnabled') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.enabled" /><span class="switch-ui" /></span></label>
-        <label class="switch-row"><span>{{ props.t('blockQuic') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.blockQuic" /><span class="switch-ui" /></span></label>
-        <label class="switch-row"><span>{{ props.t('mapDns') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.mapDnsEnabled" /><span class="switch-ui" /></span></label>
-        <label class="switch-row"><span>{{ props.t('autoStart') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.core.autoStart" /><span class="switch-ui" /></span></label>
+        <div class="switch-stack">
+          <label class="switch-row"><span>{{ props.t('tunEnabled') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.enabled" /><span class="switch-ui" /></span></label>
+          <label class="switch-row"><span>{{ props.t('blockQuic') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.blockQuic" /><span class="switch-ui" /></span></label>
+          <label class="switch-row"><span>{{ props.t('mapDns') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.mapDnsEnabled" /><span class="switch-ui" /></span></label>
+          <label class="switch-row"><span>{{ props.t('autoStart') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.core.autoStart" /><span class="switch-ui" /></span></label>
+        </div>
       </article>
 
       <article class="group-card">

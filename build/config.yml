@@ -18,6 +18,7 @@ dev_mode:
       - .git
       - node_modules
       - frontend/node_modules
+      - frontend/dist
       - build/bin
     file:
       - .DS_Store
@@ -31,7 +32,7 @@ dev_mode:
       type: blocking
     - cmd: wails3 task common:dev:frontend
       type: background
-    - cmd: wails3 task run
+    - cmd: wails3 task run:nobuild
       type: primary
 
 fileAssociations: []

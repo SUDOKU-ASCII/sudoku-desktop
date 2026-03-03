@@ -45,7 +45,7 @@ const emit = defineEmits<{
 
         <section class="group-card">
           <h4>{{ props.t('basicConfig') }}</h4>
-          <div class="form-grid compact-grid">
+          <div class="form-grid compact-grid align-end">
             <label class="field"><span>{{ props.t('name') }}</span><input v-model="props.editableNode.name" /></label>
             <label class="field"><span>{{ props.t('server') }}</span><input v-model="props.editableNode.serverAddress" placeholder="host:port" /></label>
             <label class="field"><span>{{ props.t('key') }}</span><input v-model="props.editableNode.key" /></label>
@@ -61,7 +61,7 @@ const emit = defineEmits<{
 
         <section class="group-card">
           <h4>HTTPMask</h4>
-          <div class="form-grid compact-grid">
+          <div class="form-grid compact-grid align-end">
             <label class="switch-row compact"><span>{{ props.t('disable') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.httpMask.disable" /><span class="switch-ui" /></span></label>
             <label class="field"><span>{{ props.t('mode') }}</span>
               <select v-model="props.editableNode.httpMask.mode">

@@ -37,7 +37,12 @@ tasks:
       - task: install:frontend:deps
       - task: generate:bindings
     cmds:
-      - npm run {{if eq .DEV "true"}}build:dev{{else}}build{{end}}
+      - |
+        {{if eq .DEV "true"}}
+        echo "skip frontend bundle in DEV=true (vite dev server provides assets)"
+        {{else}}
+        npm run build
+        {{end}}
 
   dev:frontend:
     summary: Runs frontend dev server

@@ -27,6 +27,11 @@ tasks:
     cmds:
       - task: "{{OS}}:run"
 
+  run:nobuild:
+    summary: Runs the already-built application for current OS
+    cmds:
+      - task: "{{OS}}:run:nobuild"
+
   dev:
     summary: Runs Wails v3 dev mode
     cmds:

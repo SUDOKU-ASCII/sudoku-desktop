@@ -29,3 +29,8 @@ tasks:
       - task: build
     cmds:
       - '{{.BIN_DIR}}/{{.APP_NAME}}'
+
+  run:nobuild:
+    summary: Run already-built Linux binary
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}'

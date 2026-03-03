@@ -71,12 +71,12 @@ const props = defineProps<{
 
     <section class="group-card">
       <h3>{{ props.t('reverseForwarder') }}</h3>
-      <div class="form-grid compact-grid">
+      <div class="form-grid compact-grid align-end">
         <label class="field"><span>{{ props.t('dialUrl') }}</span><input v-model="props.config.reverseForward.dialUrl" placeholder="wss://example.com/ssh" /></label>
         <label class="field"><span>{{ props.t('listen') }}</span><input v-model="props.config.reverseForward.listenAddr" placeholder="127.0.0.1:2222" /></label>
         <label class="switch-row compact"><span>{{ props.t('insecure') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.reverseForward.insecure" /><span class="switch-ui" /></span></label>
       </div>
-      <div class="row">
+      <div class="row row-spaced">
         <button class="btn" :disabled="props.state.reverseRunning" @click="props.startReverse">{{ props.t('reverseStart') }}</button>
         <button class="btn ghost" :disabled="!props.state.reverseRunning" @click="props.stopReverse">{{ props.t('reverseStop') }}</button>
         <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>

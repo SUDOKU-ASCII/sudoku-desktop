@@ -45,3 +45,8 @@ tasks:
       - task: build
     cmds:
       - '{{.BIN_DIR}}/{{.APP_NAME}}.exe'
+
+  run:nobuild:
+    summary: Run already-built Windows executable
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}.exe'

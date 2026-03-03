@@ -16,7 +16,7 @@ endif
 
 HEV_VERSION ?= 2.14.4
 
-.PHONY: help frontend core core-sudoku core-hev dev build bundle
+.PHONY: help frontend core core-clean-foreign core-sudoku core-hev dev build bundle
 
 ensure-wails:
 	@if [ ! -x "$(WAILS)" ]; then \
@@ -34,7 +34,11 @@ help:
 frontend:
 	cd frontend && $(NPM_INSTALL) && npm run build
 
-core: core-sudoku core-hev
+core: core-clean-foreign core-sudoku core-hev
+
+core-clean-foreign:
+	@mkdir -p runtime/bin
+	@find runtime/bin -mindepth 1 -maxdepth 1 -type d ! -name "$(PLATFORM_DIR)" -exec rm -rf {} +
 
 core-sudoku:
 	GOOS=$(GOOS) GOARCH=$(GOARCH) ./scripts/build_sudoku_target.sh

@@ -98,6 +98,10 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Install create-dmg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
       - name: Build frontend
         run: |
           cd frontend
@@ -135,7 +139,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "build/bin/sudoku4x4.app" "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.zip"
+          APP_SRC_DIR="build/bin"
+          DMG_PATH="dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.dmg"
+          create-dmg \
+            --volname "sudoku4x4 ${{ github.ref_name }}" \
+            --window-pos 200 120 \
+            --window-size 820 460 \
+            --icon-size 100 \
+            --icon "sudoku4x4.app" 220 230 \
+            --hide-extension "sudoku4x4.app" \
+            --app-drop-link 600 230 \
+            "$DMG_PATH" \
+            "$APP_SRC_DIR"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -257,4 +272,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          generate_release_notes: false
+          body: |
+            macOS: 完整可用（含 TUN）
+            Windows/Linux: TUN 可能不可用，但系统代理可用

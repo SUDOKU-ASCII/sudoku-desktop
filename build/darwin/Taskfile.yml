@@ -46,3 +46,8 @@ tasks:
       - task: build
     cmds:
       - '{{.BIN_DIR}}/{{.APP_NAME}}'
+
+  run:nobuild:
+    summary: Run already-built macOS binary
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}'
