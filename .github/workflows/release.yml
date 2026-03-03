@@ -49,7 +49,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install Linux build deps
         if: runner.os == 'Linux'
@@ -79,10 +81,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ARCH="${{ matrix.platform#*/ }}"
           if [ "${{ runner.os }}" == "Windows" ]; then
-            wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku4x4.exe
+            wails3 task windows:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4.exe
+          elif [ "${{ runner.os }}" == "Linux" ]; then
+            wails3 task linux:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
           else
-            wails build -clean -s -platform "${{ matrix.platform }}" -o sudoku4x4
+            wails3 task darwin:package ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
           fi
           PLATFORM="${{ matrix.platform }}" ./scripts/bundle_runtime_into_build.sh
 

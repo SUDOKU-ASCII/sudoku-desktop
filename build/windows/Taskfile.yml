@@ -1,0 +1,47 @@
+version: '3'
+
+includes:
+  common: ../Taskfile.yml
+
+tasks:
+  build:
+    summary: Build binary for Windows
+    deps:
+      - task: common:build:frontend
+        vars:
+          DEV: '{{.DEV}}'
+      - task: generate:syso
+        vars:
+          ARCH: '{{.ARCH | default ARCH}}'
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build {{if ne .DEV "true"}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui"{{end}} -o {{.OUTPUT | default (printf "%s/%s.exe" .BIN_DIR .APP_NAME)}}
+      - rm -f *.syso
+    env:
+      GOOS: windows
+      GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_ENABLED: 0
+
+  generate:syso:
+    summary: Generate Windows resource .syso
+    dir: build
+    cmds:
+      - |
+        if [ -f windows/info.json ] && [ -f windows/wails.exe.manifest ]; then
+          if [ ! -f windows/icon.ico ] && [ -f appicon.png ]; then
+            wails3 generate icons -input appicon.png -windowsfilename windows/icon.ico
+          fi
+          wails3 generate syso -arch {{.ARCH | default ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH | default ARCH}}.syso
+        fi
+
+  package:
+    summary: Package Windows NSIS installer
+    deps:
+      - task: build
+
+  run:
+    summary: Run Windows executable
+    deps:
+      - task: build
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}.exe'

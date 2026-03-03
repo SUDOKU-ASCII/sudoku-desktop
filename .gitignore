@@ -1,6 +1,7 @@
 /build/bin/
 /runtime/
 .tmp/
+.task/
 
 # Node
 node_modules/

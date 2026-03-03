@@ -1,0 +1,31 @@
+version: '3'
+
+includes:
+  common: ../Taskfile.yml
+
+tasks:
+  build:
+    summary: Build binary for Linux
+    deps:
+      - task: common:build:frontend
+        vars:
+          DEV: '{{.DEV}}'
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build {{if ne .DEV "true"}}-tags production -trimpath -buildvcs=false -ldflags="-w -s"{{end}} -o {{.OUTPUT | default (printf "%s/%s" .BIN_DIR .APP_NAME)}}
+    env:
+      GOOS: linux
+      GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_ENABLED: 1
+
+  package:
+    summary: Package Linux tarball payload
+    deps:
+      - task: build
+
+  run:
+    summary: Run Linux binary
+    deps:
+      - task: build
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}'
