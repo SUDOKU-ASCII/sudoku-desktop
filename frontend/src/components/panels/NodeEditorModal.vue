@@ -35,7 +35,7 @@ const emit = defineEmits<{
           <h4>{{ props.t('shortlinkQuickImport') }}</h4>
           <div class="form-grid compact-grid">
             <label class="field"><span>{{ props.t('nodeName') }}</span><input :value="props.shortlinkName" :placeholder="props.t('nodeNamePreferredPlaceholder')" @input="emit('update:shortlinkName', ($event.target as HTMLInputElement).value)" /></label>
-            <label class="field span-2"><span>{{ props.t('shortlink') }}</span><textarea :value="props.shortlinkInput" rows="3" placeholder="sudoku://..." @input="emit('update:shortlinkInput', ($event.target as HTMLTextAreaElement).value)" /></label>
+            <label class="field"><span>{{ props.t('shortlink') }}</span><input :value="props.shortlinkInput" placeholder="sudoku://..." @input="emit('update:shortlinkInput', ($event.target as HTMLInputElement).value)" /></label>
           </div>
           <div class="row">
             <button class="btn ghost" @click="emit('parse-shortlink')">{{ props.t('parseShortlink') }}</button>
@@ -48,7 +48,7 @@ const emit = defineEmits<{
           <div class="form-grid compact-grid">
             <label class="field"><span>{{ props.t('name') }}</span><input v-model="props.editableNode.name" /></label>
             <label class="field"><span>{{ props.t('server') }}</span><input v-model="props.editableNode.serverAddress" placeholder="host:port" /></label>
-            <label class="field span-2"><span>{{ props.t('key') }}</span><textarea v-model="props.editableNode.key" rows="3" /></label>
+            <label class="field"><span>{{ props.t('key') }}</span><input v-model="props.editableNode.key" /></label>
             <label class="field"><span>AEAD</span><select v-model="props.editableNode.aead"><option>chacha20-poly1305</option><option>aes-128-gcm</option><option>none</option></select></label>
             <label class="field"><span>ASCII</span><select v-model="props.editableNode.ascii"><option>prefer_entropy</option><option>prefer_ascii</option></select></label>
             <label class="field"><span>{{ props.t('localPort') }}</span><input v-model.number="props.editableNode.localPort" type="number" /></label>
@@ -88,7 +88,6 @@ const emit = defineEmits<{
         <section class="group-card">
           <h4>{{ props.t('advancedOptions') }}</h4>
           <div class="form-grid compact-grid">
-            <label class="field"><span>{{ props.t('customTable') }}</span><input v-model="props.editableNode.customTable" /></label>
             <label class="field span-2"><span>{{ props.t('customTablesPerLine') }}</span>
               <textarea
                 :value="props.editableNode.customTables.join('\n')"

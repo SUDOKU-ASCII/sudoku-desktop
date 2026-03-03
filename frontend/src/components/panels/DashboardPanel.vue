@@ -36,7 +36,7 @@ const props = defineProps<{
           <p>{{ props.t('dashboardSummary') }}</p>
         </div>
         <div class="hero-controls">
-          <label class="field compact">
+          <label class="hero-select-row">
             <span>{{ props.t('runningNode') }}</span>
             <select
               v-model="props.config.activeNodeId"
@@ -46,7 +46,7 @@ const props = defineProps<{
               <option v-for="n in props.config.nodes" :key="n.id" :value="n.id">{{ n.name || n.serverAddress }}</option>
             </select>
           </label>
-          <label class="switch-row">
+          <label class="switch-row hero-switch-row">
             <span>{{ props.t('tunEnabled') }}</span>
             <span class="switch-control">
               <input type="checkbox" v-model="props.config.tun.enabled" />

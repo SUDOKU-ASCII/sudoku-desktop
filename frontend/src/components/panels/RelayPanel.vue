@@ -42,7 +42,7 @@ const props = defineProps<{
       <div class="form-grid compact-grid">
         <label class="field"><span>{{ props.t('reverseClientId') }}</span><input v-model="props.config.reverseClient.clientId" placeholder="client-id" /></label>
       </div>
-      <div class="row">
+      <div class="row row-spaced">
         <button class="btn mini" @click="props.addReverseRoute">{{ props.t('addRoute') }}</button>
       </div>
       <div class="relay-list">

@@ -10,6 +10,7 @@
   --ok: #2f6b4d;
   --bad: #8f3f34;
   --radius: 12px;
+  --control-height: 36px;
   --shadow-sm: 0 8px 24px rgba(44, 36, 30, 0.08);
   --shadow-md: 0 14px 36px rgba(44, 36, 30, 0.12);
   --paper: var(--bg);
@@ -135,6 +136,21 @@ html[data-app-theme='light'] #app {
   border-radius: 16px;
   background: var(--panel);
   box-shadow: var(--shadow-md);
+}
+
+.app-shell,
+.app-shell * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app-shell input,
+.app-shell textarea,
+.app-shell select,
+.app-shell option,
+.app-shell [contenteditable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .sidebar {
@@ -414,9 +430,45 @@ html[data-app-theme='light'] #app {
 
 .hero-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 360px) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  align-items: end;
+  align-items: stretch;
+}
+
+.hero-select-row {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.hero-select-row span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.hero-select-row select {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 66%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  min-height: auto;
+  background: transparent;
+  box-shadow: none;
+}
+
+.hero-select-row select:focus {
+  box-shadow: none;
+}
+
+.switch-row.hero-switch-row {
+  min-height: 42px;
 }
 
 .hero-actions {
@@ -823,6 +875,11 @@ select {
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
+input:not([type='checkbox']):not([type='radio']),
+select {
+  min-height: var(--control-height);
+}
+
 input:not([type='checkbox']):not([type='radio']):focus,
 textarea:focus,
 select:focus {
@@ -837,6 +894,7 @@ textarea {
 
 .form-grid {
   display: grid;
+  align-items: start;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
@@ -857,11 +915,13 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 8px 10px;
+  min-height: var(--control-height);
   font-size: 12px;
 }
 
 .switch-row.compact {
   padding: 7px 9px;
+  min-height: var(--control-height);
 }
 
 .switch-control {
@@ -915,9 +975,14 @@ textarea {
   background: color-mix(in srgb, var(--surface) 82%, var(--accent) 18%);
   color: var(--accent-strong);
   border-radius: 9px;
+  min-height: var(--control-height);
   padding: 7px 11px;
   font-size: 12px;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   cursor: pointer;
   transition: all 0.16s ease;
 }
@@ -947,6 +1012,7 @@ textarea {
 }
 
 .btn.mini {
+  min-height: 30px;
   padding: 5px 8px;
   font-size: 11px;
 }
@@ -956,6 +1022,10 @@ textarea {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.row.row-spaced {
+  margin-top: 8px;
 }
 
 .log-list {
@@ -1111,7 +1181,7 @@ textarea {
   }
 }
 
-@media (max-width: 980px) {
+@media (max-aspect-ratio: 1/1) {
   .app-shell {
     width: calc(100vw - 14px);
     height: auto;
@@ -1148,7 +1218,7 @@ textarea {
   }
 }
 
-@media (max-width: 980px) {
+@media (max-aspect-ratio: 1/1) {
   .app-shell {
     padding: 8px 8px 78px;
     border-radius: 14px;

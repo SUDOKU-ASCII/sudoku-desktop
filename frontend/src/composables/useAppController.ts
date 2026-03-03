@@ -341,9 +341,21 @@ const logComponentText = (component: string): string => {
   return name || 'core'
 }
 
+const normalizedCustomTables = (tables: unknown, legacyTable = ''): string[] => {
+  const out = (Array.isArray(tables) ? tables : [])
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean)
+  const legacy = String(legacyTable || '').trim()
+  if (out.length === 0 && legacy) {
+    out.push(legacy)
+  }
+  return out
+}
+
 const pickNode = (node: NodeConfig) => {
   selectedNodeId.value = node.id
   Object.assign(editableNode, cloneDeep(node))
+  editableNode.customTables = normalizedCustomTables(editableNode.customTables, editableNode.customTable)
 }
 
 const resetEditableNode = () => {
@@ -431,7 +443,10 @@ const restartProxy = async () => {
 const saveNode = async () => {
   busy.value = true
   try {
-    const node = await backendApi.upsertNode(cloneDeep(editableNode))
+    const payload = cloneDeep(editableNode)
+    payload.customTables = normalizedCustomTables(payload.customTables, payload.customTable)
+    payload.customTable = ''
+    const node = await backendApi.upsertNode(payload)
     await refreshBasics()
     pickNode(node)
     nodeEditorOpen.value = false
@@ -664,7 +679,7 @@ const decodeRawUrlBase64 = (raw: string): string => {
   return new TextDecoder().decode(bytes)
 }
 
-const applyShortlinkToEditable = (link: string, nameOverride = '') => {
+const applyShortlinkToEditable = (link: string, nameOverride = '', preferHostAsName = false) => {
   const raw = link.trim()
   if (!raw.startsWith('sudoku://')) {
     throw new Error(t('invalidShortlinkScheme'))
@@ -681,8 +696,8 @@ const applyShortlinkToEditable = (link: string, nameOverride = '') => {
   editableNode.ascii = payload.a === 'ascii' ? 'prefer_ascii' : 'prefer_entropy'
   editableNode.localPort = payload.m && payload.m > 0 ? payload.m : config.core.localPort
   editableNode.enablePureDownlink = !payload.x
-  editableNode.customTable = payload.t || ''
-  editableNode.customTables = Array.isArray(payload.ts) ? payload.ts : []
+  editableNode.customTable = ''
+  editableNode.customTables = normalizedCustomTables(payload.ts, payload.t || '')
   editableNode.httpMask.disable = !!payload.hd
   editableNode.httpMask.mode = payload.hm || 'auto'
   editableNode.httpMask.tls = payload.ht ?? true
@@ -692,7 +707,7 @@ const applyShortlinkToEditable = (link: string, nameOverride = '') => {
 
   if (nameOverride.trim()) {
     editableNode.name = nameOverride.trim()
-  } else if (!editableNode.name.trim()) {
+  } else if (preferHostAsName || !editableNode.name.trim()) {
     editableNode.name = payload.h
   }
 }
@@ -714,7 +729,7 @@ const parseShortlinkFromClipboard = async () => {
       return
     }
     shortlinkInput.value = text.trim()
-    applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value)
+    applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value, true)
     flash(t('importedFromClipboard'))
   } catch (e: any) {
     flash(e?.message || t('clipboardImportFailed'), 'error')
