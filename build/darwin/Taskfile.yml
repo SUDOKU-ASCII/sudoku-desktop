@@ -29,7 +29,7 @@ tasks:
         fi
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
-      - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}"
+      - cp "{{.OUTPUT | default (printf "%s/%s" .BIN_DIR .APP_NAME)}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist"
       - |
         if [ -f build/darwin/icons.icns ]; then
@@ -39,6 +39,7 @@ tasks:
         if [ -f build/appicon.png ]; then
           cp build/appicon.png "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/appicon.png"
         fi
+      - rm -f "{{.OUTPUT | default (printf "%s/%s" .BIN_DIR .APP_NAME)}}"
 
   run:
     summary: Run macOS binary
