@@ -33,7 +33,36 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Checkout Fallback (Retry)
+        if: steps.checkout.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO_URL="https://github.com/${{ github.repository }}.git"
+          TARGET_SHA="${{ github.sha }}"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Fallback checkout attempt ${attempt}/5"
+            rm -rf .git
+            git init .
+            git remote add origin "${REPO_URL}"
+            if git -c protocol.version=2 fetch --no-tags --depth=1 origin "${TARGET_SHA}" && git checkout --detach FETCH_HEAD; then
+              echo "Fallback checkout succeeded on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "Fallback checkout failed after 5 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
 
       - name: Setup Go
         uses: actions/setup-go@v5
