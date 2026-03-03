@@ -326,7 +326,23 @@ func (b *Backend) SaveConfig(next AppConfig) error {
 	wasRunning := b.state.Running
 	wasTun := b.state.TunRunning
 	normalizeConfig(&next, b.store.RuntimeDir())
+
+	launchAtLoginChanged := prev != nil && prev.UI.LaunchAtLogin != next.UI.LaunchAtLogin
+	launchAtLoginEnabled := next.UI.LaunchAtLogin
+	if launchAtLoginChanged {
+		// Apply OS-level autostart first so a failure doesn't leave config in an inconsistent state.
+		if err := setLaunchAtLogin(launchAtLoginEnabled); err != nil {
+			b.state.LastError = err.Error()
+			b.emitStateLocked()
+			b.mu.Unlock()
+			return err
+		}
+	}
 	if err := b.store.Save(&next); err != nil {
+		// Best-effort rollback when config persistence fails after applying the side effect.
+		if launchAtLoginChanged && prev != nil {
+			_ = setLaunchAtLogin(prev.UI.LaunchAtLogin)
+		}
 		b.mu.Unlock()
 		return err
 	}
@@ -338,6 +354,14 @@ func (b *Backend) SaveConfig(next AppConfig) error {
 	b.emitStateLocked()
 	portForwards := append([]PortForwardRule(nil), next.PortForwards...)
 	b.mu.Unlock()
+
+	if launchAtLoginChanged {
+		if launchAtLoginEnabled {
+			b.addLog("info", "app", "launch at login enabled")
+		} else {
+			b.addLog("info", "app", "launch at login disabled")
+		}
+	}
 
 	// Apply may emit logs; do it outside b.mu to avoid self-deadlock via b.addLog.
 	b.pfMgr.Apply(portForwards)

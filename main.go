@@ -2,7 +2,9 @@ package main
 
 import (
 	"embed"
+	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
@@ -29,6 +31,14 @@ func init() {
 }
 
 func main() {
+	startHidden := false
+	for _, arg := range os.Args[1:] {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "--autostart", "--background", "--hidden":
+			startHidden = true
+		}
+	}
+
 	appService := NewApp(bundledRuntime, "runtime/bin")
 	quitting := false
 
@@ -61,7 +71,8 @@ func main() {
 		MinHeight:              680,
 		URL:                    "/",
 		BackgroundColour:       application.NewRGB(245, 239, 225),
-		OpenInspectorOnStartup: true,
+		Hidden:                 startHidden,
+		OpenInspectorOnStartup: !startHidden,
 		KeyBindings: map[string]func(window application.Window){
 			"cmd+w": func(window application.Window) {
 				if runtime.GOOS == "darwin" {

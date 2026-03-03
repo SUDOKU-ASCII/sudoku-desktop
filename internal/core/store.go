@@ -168,6 +168,8 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 		UI: UISettings{
 			Language: "auto",
 			Theme:    "auto",
+			// launchAtLogin defaults to false and is only used by the desktop host app.
+			LaunchAtLogin: false,
 		},
 	}
 	normalizeConfig(cfg, runtimeDir)

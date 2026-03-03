@@ -159,7 +159,7 @@ const config = reactive<AppConfig>({
   reverseClient: { clientId: '', routes: [] },
   reverseForward: { dialUrl: '', listenAddr: '127.0.0.1:2222', insecure: false },
   portForwards: [],
-  ui: { language: 'auto', theme: 'auto' },
+  ui: { language: 'auto', theme: 'auto', launchAtLogin: false },
   lastStartedNode: '',
 })
 

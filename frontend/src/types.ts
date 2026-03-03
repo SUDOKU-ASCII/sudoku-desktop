@@ -94,6 +94,7 @@ export interface PortForwardRule {
 export interface UISettings {
   language: string
   theme: string
+  launchAtLogin: boolean
 }
 
 export interface AppConfig {

@@ -29,6 +29,9 @@ const props = defineProps<{
           </select>
         </label>
       </div>
+      <div class="switch-stack">
+        <label class="switch-row"><span>{{ props.t('launchAtLogin') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.ui.launchAtLogin" /><span class="switch-ui" /></span></label>
+      </div>
       <div class="row row-spaced">
         <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
       </div>

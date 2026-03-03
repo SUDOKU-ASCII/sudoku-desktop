@@ -99,8 +99,9 @@ type PortForwardRule struct {
 }
 
 type UISettings struct {
-	Language string `json:"language"`
-	Theme    string `json:"theme"`
+	Language      string `json:"language"`
+	Theme         string `json:"theme"`
+	LaunchAtLogin bool   `json:"launchAtLogin"`
 }
 
 type AppConfig struct {

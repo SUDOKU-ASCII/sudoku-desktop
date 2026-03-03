@@ -13,8 +13,8 @@ var directDNSBootstrapIPv4 = []string{
 }
 
 var (
-	aliDNSBootstrapIPv4   = []string{"223.5.5.5", "223.6.6.6"}
-	dnsPodBootstrapIPv4   = []string{"119.29.29.29", "119.28.28.28"}
-	fallbackPlainDNSIPv4  = []string{"223.5.5.5:53", "119.29.29.29:53"}
-	fallbackPlainDoHIPv4  = []string{"223.5.5.5", "119.29.29.29"}
+	aliDNSBootstrapIPv4  = []string{"223.5.5.5", "223.6.6.6"}
+	dnsPodBootstrapIPv4  = []string{"119.29.29.29", "119.28.28.28"}
+	fallbackPlainDNSIPv4 = []string{"223.5.5.5:53", "119.29.29.29:53"}
+	fallbackPlainDoHIPv4 = []string{"223.5.5.5", "119.29.29.29"}
 )

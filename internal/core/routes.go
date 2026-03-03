@@ -515,7 +515,8 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 
 	dnsBackupName := ""
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
-		dnsBackupName = fmt.Sprintf("sudoku4x4-dns-%d.json", os.Getuid())
+		// Use PID to avoid collisions (os.Getuid is not meaningful on Windows).
+		dnsBackupName = fmt.Sprintf("sudoku4x4-dns-%d.json", os.Getpid())
 		ctx.WindowsDNSBackup = dnsBackupName
 	}
 	ps := buildWindowsRouteScript(
@@ -746,7 +747,20 @@ func buildWindowsRouteScript(
 		"    Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ServerAddresses @($mapDNS) -ErrorAction SilentlyContinue | Out-Null",
 		"    try { Clear-DnsClientCache | Out-Null } catch { }",
 		"  }",
-		"  & route.exe change 0.0.0.0 mask 0.0.0.0 0.0.0.0 if $tunIf | Out-Null",
+		"  $out4 = & route.exe change 0.0.0.0 mask 0.0.0.0 0.0.0.0 if $tunIf 2>&1",
+		"  if ($LASTEXITCODE -ne 0) { throw ('route.exe change default route failed: ' + ($out4 | Out-String).Trim()) }",
+		"  if ($if6 -gt 0) {",
+		"    $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
+		"    $out6 = & netsh interface ipv6 add route prefix=::/0 interface=$tunIf metric=1 store=active 2>&1",
+		"    if ($LASTEXITCODE -ne 0) { Write-Output ('[warn] netsh add ipv6 default route failed: ' + ($out6 | Out-String).Trim()) }",
+		"  }",
+		"  $best4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"  if ($best4 -eq $null) { throw 'windows default route not found after tun switch' }",
+		"  if ([int]$best4.InterfaceIndex -ne $tunIf) { throw ('windows default route still not on tun interface: expected=' + $tunIf + ' got=' + [int]$best4.InterfaceIndex) }",
+		"  if ($if6 -gt 0) {",
+		"    $best6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"    if ($best6 -ne $null -and [int]$best6.InterfaceIndex -ne $tunIf) { Write-Output ('[warn] ipv6 default route not on tun interface: expected=' + $tunIf + ' got=' + [int]$best6.InterfaceIndex) }",
+		"  }",
 		"  # Keep a physical default route for core-bypass sockets (IP_UNICAST_IF).",
 		"  try { if ($if4 -gt 0 -and $gw4) { New-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
 		"  try { if ($if6 -gt 0 -and $gw6) { New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
@@ -775,7 +789,11 @@ func buildWindowsRouteScript(
 		"  # Remove the auxiliary physical default route (if we added it).",
 		"  try { if ($if4 -gt 0 -and $gw4) { Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
 		"  try { if ($if6 -gt 0 -and $gw6) { Get-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
-		"  if ($if4 -gt 0 -and $gw4) { & route.exe change 0.0.0.0 mask 0.0.0.0 $gw4 if $if4 | Out-Null }",
+		"  $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
+		"  if ($if4 -gt 0 -and $gw4) {",
+		"    $out = & route.exe change 0.0.0.0 mask 0.0.0.0 $gw4 if $if4 2>&1",
+		"    if ($LASTEXITCODE -ne 0) { Write-Output ('[warn] route.exe restore default route failed: ' + ($out | Out-String).Trim()) }",
+		"  }",
 		"  if ($serverIP) {",
 		"    if ($serverIP -match ':') { Remove-RoutePrefix ($serverIP + '/128') $if6 $gw6 } else { Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
 		"  }",

@@ -931,6 +931,7 @@ export class TunSettings {
 export class UISettings {
     "language": string;
     "theme": string;
+    "launchAtLogin": boolean;
 
     /** Creates a new UISettings instance. */
     constructor($$source: Partial<UISettings> = {}) {
@@ -939,6 +940,9 @@ export class UISettings {
         }
         if (!("theme" in $$source)) {
             this["theme"] = "";
+        }
+        if (!("launchAtLogin" in $$source)) {
+            this["launchAtLogin"] = false;
         }
 
         Object.assign(this, $$source);

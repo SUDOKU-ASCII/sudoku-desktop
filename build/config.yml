@@ -7,7 +7,7 @@ info:
   description: "A Wails desktop client for Sudoku proxy controls"
   copyright: "(c) 2026, SUDOKU-ASCII"
   comments: "Sudoku desktop"
-  version: "0.0.1"
+  version: "0.0.2"
 
 dev_mode:
   root_path: .

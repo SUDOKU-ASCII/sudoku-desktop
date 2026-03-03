@@ -29,6 +29,7 @@ func TestBuildWindowsRouteScriptPinsPhysicalDefaultRoute(t *testing.T) {
 		"$gw6 = 'fe80::1'",
 		"$if6 = 13",
 		"route.exe change 0.0.0.0 mask 0.0.0.0 0.0.0.0 if $tunIf",
+		"netsh interface ipv6 add route prefix=::/0 interface=$tunIf",
 		"if (-not $gw4 -or -not $if4 -or $if4 -le 0)",
 	} {
 		if !strings.Contains(script, needle) {
