@@ -4,6 +4,7 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -18,16 +19,20 @@ const (
 // - loads CN CIDR tables from files (if provided)
 //
 // tunIfExpr may be a literal interface name (e.g. "utun2") or a shell expression (e.g. "${tun_if}").
-func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 string, gw6 string, bypassV4File string, bypassV6File string, blockQUIC bool, dnsProxyPort int) string {
+func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 string, gw6 string, tunIPv4 string, bypassV4File string, bypassV6File string, blockQUIC bool, dnsProxyPort int) string {
 	anchor = strings.TrimSpace(anchor)
 	tunIfExpr = strings.TrimSpace(tunIfExpr)
 	defaultIf = strings.TrimSpace(defaultIf)
 	gw4 = strings.TrimSpace(gw4)
 	gw6 = strings.TrimSpace(gw6)
+	tunIPv4 = strings.TrimSpace(tunIPv4)
 	bypassV4File = strings.TrimSpace(bypassV4File)
 	bypassV6File = strings.TrimSpace(bypassV6File)
 	if dnsProxyPort <= 0 || dnsProxyPort == 53 {
 		dnsProxyPort = 0
+	}
+	if ip := net.ParseIP(tunIPv4); ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		tunIPv4 = ""
 	}
 
 	if anchor == "" {
@@ -51,6 +56,12 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, defaultIf string, gw4 
 	if bypassV4File != "" && tunIfExpr != "" && defaultIf != "" && gw4 != "" {
 		b.WriteString("if [ -f " + shellQuote(bypassV4File) + " ]; then ")
 		b.WriteString("cfg_opt=\"${cfg_opt}table <" + darwinPFTableCN4 + "> persist\\n\"; ")
+		if tunIPv4 != "" {
+			// If the kernel picks the TUN interface address as the socket source, packets that we policy-route
+			// back to the physical interface may carry a non-routable source (e.g. 198.18.0.1). SNAT those to
+			// the physical interface address so CN-bypassed flows remain usable.
+			b.WriteString("cfg_trans=\"${cfg_trans}nat on " + defaultIf + " inet from " + tunIPv4 + " to <" + darwinPFTableCN4 + "> -> (" + defaultIf + ")\\n\"; ")
+		}
 		b.WriteString("cfg_flt=\"${cfg_flt}pass out quick on " + tunIfExpr + " route-to (" + defaultIf + " " + gw4 + ") inet to <" + darwinPFTableCN4 + "> keep state\\n\"; ")
 		b.WriteString("fi; ")
 	}

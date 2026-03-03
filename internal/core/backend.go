@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -18,10 +19,18 @@ import (
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/net/proxy"
 )
 
 var routeLineRegex = regexp.MustCompile(`(?i)\[(tcp|udp)\]\s+([^\s]+)\s+-->\s+([^\s]+).*using\s+(direct|proxy)`)                          //nolint:lll
 var coreTrafficLineRegex = regexp.MustCompile(`__SUDOKU_TRAFFIC__\s+direct_tx=(\d+)\s+direct_rx=(\d+)\s+proxy_tx=(\d+)\s+proxy_rx=(\d+)`) //nolint:lll
+
+type coreTrafficFileSnapshot struct {
+	DirectTx uint64 `json:"direct_tx"`
+	DirectRx uint64 `json:"direct_rx"`
+	ProxyTx  uint64 `json:"proxy_tx"`
+	ProxyRx  uint64 `json:"proxy_rx"`
+}
 
 type Backend struct {
 	mu           sync.RWMutex
@@ -475,6 +484,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	}
 	nodeCopy := *node
 	withTun := req.WithTun && b.cfg.Tun.Enabled
+	useDarwinSrcIPBind := runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_USE_OUTBOUND_SRC_IP")) == "1"
 	sudokuCfgPath, hevCfgPath, localPort, err := writeRuntimeConfigs(b.store, b.cfg, nodeCopy, b.pacURL, withTun)
 	if err != nil {
 		b.state.LastError = err.Error()
@@ -487,6 +497,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	sudokuBin := b.cfg.Core.SudokuBinary
 	hevBin := b.cfg.Core.HevBinary
 	coreLogLevel := b.cfg.Core.LogLevel
+	trafficStatsFile := filepath.Join(b.store.RuntimeDir(), "traffic_stats.json")
 	routingCfg := b.cfg.Routing
 	tunCfg := b.cfg.Tun
 	portForwards := append([]PortForwardRule(nil), b.cfg.PortForwards...)
@@ -509,6 +520,10 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		"SUDOKU_LOG_LEVEL=" + coreLogLevel,
 		"SUDOKU_TRAFFIC_REPORT=1",
 		"SUDOKU_TRAFFIC_INTERVAL_MS=1000",
+		"SUDOKU_TRAFFIC_FILE=" + trafficStatsFile,
+	}
+	if err := writeCoreTrafficStatsFile(trafficStatsFile, coreTrafficFileSnapshot{}); err != nil {
+		b.addLog("warn", "traffic", fmt.Sprintf("prepare traffic stats file failed: %v", err))
 	}
 	if withTun {
 		switch runtime.GOOS {
@@ -535,7 +550,11 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			ifName = strings.TrimSpace(ifName)
 			coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
 			if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
-				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
+				if useDarwinSrcIPBind {
+					coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
+				} else {
+					b.addLog("warn", "route", "darwin stability mode: skip source-ip bind for core outbound (set SUDOKU_DARWIN_USE_OUTBOUND_SRC_IP=1 to force old behavior)")
+				}
 			}
 		case "windows":
 			if ifIndex, werr := windowsDefaultInterfaceIndex(); werr == nil && ifIndex > 0 {
@@ -555,29 +574,15 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	}
 
 	if !withTun {
-		socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
-		if err := waitForTCPReady(startCtx, socksAddr, 5*time.Second); err != nil {
-			b.addLog("warn", "proxy", fmt.Sprintf("core proxy not ready on %s; skip setting system proxy: %v", socksAddr, err))
-		} else {
-			restore, err := applySystemProxy(systemProxyConfig{
-				LocalPort: localPort,
-				Logf: func(line string) {
-					b.addLog("info", "proxy", line)
-				},
-			})
-			if err != nil {
-				b.addLog("warn", "proxy", fmt.Sprintf("set system proxy failed: %v", err))
-			} else if restore != nil {
-				b.mu.Lock()
-				b.sysProxyRestore = restore
-				b.mu.Unlock()
-				b.addLog("info", "proxy", "system proxy configured")
-			}
+		if err := b.applySystemProxyWhenCoreReady(startCtx, localPort, 5*time.Second); err != nil {
+			b.addLog("warn", "proxy", fmt.Sprintf("initial system proxy setup deferred: %v; will retry in background", err))
+			go b.retryApplySystemProxy(startCtx, localPort, 30*time.Second)
 		}
 	}
 
 	b.mu.Lock()
 	b.trafficCache = trafficSampleState{}
+	b.trafficCache.coreTrafficFile = trafficStatsFile
 	b.connections = map[string]*ActiveConnection{}
 	b.state.Traffic = TrafficState{RecentBandwidth: []BandwidthSample{}}
 	b.state.CoreRunning = true
@@ -621,12 +626,18 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		// The local DNS proxy uses DoH for "direct" domains, and (optionally) forwards other
 		// queries to HEV MapDNS for FakeIP mapping.
 		effectiveDNS := localDNSServerIPv4
-		if runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_FORCE_LOCAL_DNS")) != "1" {
-			// Production safety on macOS:
-			// If system DNS is forced to localhost but the localhost DNS chain is unstable,
-			// the whole machine appears offline. Keep OS DNS by default for TUN mode.
+		if runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_SKIP_LOCAL_DNS")) == "1" {
+			// Optional opt-out for users who explicitly prefer the old behavior.
 			effectiveDNS = ""
-			b.addLog("warn", "dns", "darwin stability mode: skip system DNS override in TUN (set SUDOKU_DARWIN_FORCE_LOCAL_DNS=1 to force old behavior)")
+			b.addLog("warn", "dns", "darwin stability mode: skip system DNS override in TUN (set SUDOKU_DARWIN_SKIP_LOCAL_DNS=0/unset for managed DNS)")
+		}
+		if runtime.GOOS == "linux" && strings.TrimSpace(effectiveDNS) == localDNSServerIPv4 && localDNSProxyListenPort() != 53 {
+			// Linux needs OUTPUT nat redirect to map :53 -> localDNSProxyListenPort().
+			// If iptables is unavailable, forcing system DNS to 127.0.0.1 can make DNS appear down.
+			if _, iptErr := exec.LookPath("iptables"); iptErr != nil {
+				effectiveDNS = ""
+				b.addLog("warn", "dns", "linux: iptables not found; skip system DNS override to localhost in TUN mode")
+			}
 		}
 
 		// Ensure DNS proxy upstream (DoH/plain DNS) bypasses the TUN on all platforms.
@@ -644,8 +655,12 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		case "darwin":
 			if _, ifName, err := darwinDefaultRoute(); err == nil && strings.TrimSpace(ifName) != "" {
 				bypassCfg.DarwinInterface = strings.TrimSpace(ifName)
-				if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
-					bypassCfg.DarwinSourceIP = strings.TrimSpace(ip4)
+				if useDarwinSrcIPBind {
+					if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
+						bypassCfg.DarwinSourceIP = strings.TrimSpace(ip4)
+					}
+				} else {
+					b.addLog("warn", "dns", "darwin stability mode: DNS upstream bypass uses interface-bind only (source-ip bind disabled)")
 				}
 			}
 		case "windows":
@@ -654,6 +669,18 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			}
 		}
 		directDialer := newOutboundBypassDialer(3*time.Second, bypassCfg)
+		var proxyDial func(ctx context.Context, network, addr string) (net.Conn, error)
+		if localPort > 0 {
+			socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+			if sd, serr := proxy.SOCKS5("tcp", socksAddr, nil, (&net.Dialer{Timeout: 2 * time.Second})); serr == nil && sd != nil {
+				proxyDial = func(_ context.Context, network, addr string) (net.Conn, error) {
+					// x/net/proxy dialer doesn't support contexts; rely on timeouts upstream.
+					return sd.Dial(network, addr)
+				}
+			} else if serr != nil {
+				b.addLog("warn", "dns", fmt.Sprintf("init SOCKS5 dialer for dns proxy failed: %v", serr))
+			}
+		}
 
 		// Prepare PAC assets via the running core SOCKS5 (so fetching works even on restrictive networks).
 		var cnRules *cnRuleSet
@@ -683,25 +710,34 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				cnRules = nil
 			}
 
-			// CN CIDR bypass routes are required for stable PAC + TUN behavior.
-			// Without them, many "DIRECT" domestic flows can loop back into the tunnel.
-			if socksHTTPClient != nil {
-				if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, socksHTTPClient, func(line string) {
-					b.addLog("info", "route", line)
-				}); berr != nil {
-					b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via SOCKS failed: %v", berr))
-				} else {
-					bypass = bp
-				}
+			// NOTE(darwin): Do NOT pre-split traffic at the system route layer by default.
+			// On macOS, TUN mode should capture everything and let the core decide DIRECT/PROXY.
+			// CIDR bypass (CN split-tunnel) is optional and can be enabled for legacy behavior.
+			enableCIDRBypass := runtime.GOOS != "darwin" || strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_CIDR_BYPASS")) == "1"
+			if runtime.GOOS == "darwin" && !enableCIDRBypass {
+				b.addLog("info", "route", "darwin: CIDR bypass pre-split disabled (core-based routing only); set SUDOKU_DARWIN_ENABLE_CIDR_BYPASS=1 to enable legacy behavior")
 			}
-			if bypass.V4Path == "" && bypass.V6Path == "" {
-				tr := &http.Transport{DialContext: directDialer.DialContext}
-				if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, &http.Client{Timeout: 25 * time.Second, Transport: tr}, func(line string) {
-					b.addLog("info", "route", line)
-				}); berr != nil {
-					b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via direct failed: %v", berr))
-				} else {
-					bypass = bp
+			if enableCIDRBypass {
+				// CN CIDR bypass routes help some setups avoid self-looping for DIRECT egress.
+				// (Legacy split-tunnel mode; not required in strict-route mode.)
+				if socksHTTPClient != nil {
+					if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, socksHTTPClient, func(line string) {
+						b.addLog("info", "route", line)
+					}); berr != nil {
+						b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via SOCKS failed: %v", berr))
+					} else {
+						bypass = bp
+					}
+				}
+				if bypass.V4Path == "" && bypass.V6Path == "" {
+					tr := &http.Transport{DialContext: directDialer.DialContext}
+					if bp, berr := prepareTunBypassWithClient(startCtx, b.store, b.cfg, &http.Client{Timeout: 25 * time.Second, Transport: tr}, func(line string) {
+						b.addLog("info", "route", line)
+					}); berr != nil {
+						b.addLog("warn", "route", fmt.Sprintf("prepare CN bypass via direct failed: %v", berr))
+					} else {
+						bypass = bp
+					}
 				}
 			}
 		}
@@ -712,15 +748,16 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		}
 
 		mapDNSEnabled := tunCfg.MapDNSEnabled && mapDNSAddr != ""
-		if runtime.GOOS == "darwin" && mapDNSEnabled && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_HEV_MAPDNS")) != "1" {
-			mapDNSEnabled = false
-			b.addLog("warn", "dns", "darwin stability mode: HEV MapDNS is disabled (set SUDOKU_DARWIN_ENABLE_HEV_MAPDNS=1 to force old behavior)")
-		}
 		if mapDNSEnabled && strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode)) == "pac" && cnRules == nil {
 			// In PAC mode, MapDNS without any CN-domain rules effectively forces everything into FakeIP,
 			// which tends to break domestic access hard. Keep the network usable and log a clear warning.
 			mapDNSEnabled = false
 			b.addLog("warn", "dns", "PAC rules are empty; disabling MapDNS for this run to avoid FakeIP breaking DIRECT traffic")
+		}
+		if mapDNSEnabled {
+			b.addLog("info", "dns", fmt.Sprintf("HEV MapDNS enabled: %s", mapDNSAddr))
+		} else {
+			b.addLog("info", "dns", "HEV MapDNS disabled")
 		}
 
 		dnsProxy := newDNSProxyServer(dnsProxyConfig{
@@ -728,7 +765,9 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			CNRules:       cnRules,
 			MapDNSEnabled: mapDNSEnabled,
 			MapDNSAddr:    mapDNSAddr,
+			PreferIPv4:    runtime.GOOS == "darwin" && withTun && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ALLOW_IPV6_DNS")) != "1",
 			DirectDial:    directDialer.DialContext,
+			ProxyDial:     proxyDial,
 			Logf: func(line string) {
 				b.addLog("info", "dns", line)
 			},
@@ -847,7 +886,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				}
 				if tunCfg.BlockQUIC || dnsProxyPort > 0 || strings.TrimSpace(bypass.V4Path) != "" || strings.TrimSpace(bypass.V6Path) != "" {
 					pfAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, bypass.V4Path, bypass.V6Path, tunCfg.BlockQUIC, dnsProxyPort)
+					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, tunCfg.IPv4, bypass.V4Path, bypass.V6Path, tunCfg.BlockQUIC, dnsProxyPort)
 					pfRestoreCmd = darwinBuildPFRestoreCmd(pfAnchor)
 					if tunCfg.BlockQUIC {
 						b.addLog("info", "pf", "blocking QUIC: drop outbound UDP/443 via pf")
@@ -1024,15 +1063,25 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			if err := waitForTCPReady(hctx, socksAddr, 3*time.Second); err != nil {
 				return fmt.Errorf("core socks not ready: %w", err)
 			}
-			// 1) Verify SOCKS can CONNECT to an external IP (tests proxy path without DNS).
-			if err := healthCheckSOCKS5Connect(hctx, socksAddr, "1.1.1.1:443", 3*time.Second); err != nil {
-				return fmt.Errorf("socks connect check failed: %w", err)
+			proxyMode := strings.ToLower(strings.TrimSpace(routingCfg.ProxyMode))
+			if proxyMode == "global" || proxyMode == "pac" {
+				// 1) Verify SOCKS can CONNECT to an external IP (tests proxy path without DNS).
+				if err := healthCheckSOCKS5Connect(hctx, socksAddr, "1.1.1.1:443", 3*time.Second); err != nil {
+					return fmt.Errorf("socks proxy-path check failed: %w", err)
+				}
+			}
+			if proxyMode == "direct" || proxyMode == "pac" {
+				// 1.2) Verify a "domestic direct" path is usable. This catches PAC+TUN loop issues where
+				// many DIRECT flows become unreachable while PROXY still works.
+				if err := healthCheckSOCKS5ConnectAny(hctx, socksAddr, []string{"223.5.5.5:443", "119.29.29.29:443"}, 3*time.Second); err != nil {
+					return fmt.Errorf("socks direct-path check failed: %w", err)
+				}
 			}
 			if runtime.GOOS == "darwin" {
-				// 1.5) Verify the system default path can really egress after default-route switch.
-				// This catches "route switched but TUN forwarding is dead" blackhole cases.
+				// 1.5) Best-effort observability check for system egress after default-route switch.
+				// Keep it non-fatal: some networks block these fixed targets even when TUN is healthy.
 				if err := healthCheckSystemTCPAny(hctx, []string{"223.5.5.5:443", "1.1.1.1:443"}, 2500*time.Millisecond); err != nil {
-					return fmt.Errorf("system egress check failed: %w", err)
+					b.addLog("warn", "tun", fmt.Sprintf("system egress check failed (non-fatal): %v", err))
 				}
 			}
 			// 2) Verify DNS only when we actually changed system DNS to localhost.
@@ -1132,6 +1181,73 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	return nil
 }
 
+func (b *Backend) applySystemProxyWhenCoreReady(ctx context.Context, localPort int, readyTimeout time.Duration) error {
+	if localPort <= 0 || localPort > 65535 {
+		return fmt.Errorf("invalid local port: %d", localPort)
+	}
+	b.mu.RLock()
+	if b.sysProxyRestore != nil {
+		b.mu.RUnlock()
+		return nil
+	}
+	b.mu.RUnlock()
+
+	socksAddr := net.JoinHostPort(localDNSServerIPv4, fmt.Sprintf("%d", localPort))
+	if err := waitForTCPReady(ctx, socksAddr, readyTimeout); err != nil {
+		return fmt.Errorf("core proxy not ready on %s: %w", socksAddr, err)
+	}
+	restore, err := applySystemProxy(systemProxyConfig{
+		LocalPort: localPort,
+		Logf: func(line string) {
+			b.addLog("info", "proxy", line)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if restore == nil {
+		return nil
+	}
+
+	b.mu.Lock()
+	if b.sysProxyRestore == nil {
+		b.sysProxyRestore = restore
+		b.mu.Unlock()
+		b.addLog("info", "proxy", "system proxy configured")
+		return nil
+	}
+	b.mu.Unlock()
+	_ = restore()
+	return nil
+}
+
+func (b *Backend) retryApplySystemProxy(ctx context.Context, localPort int, maxDuration time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if maxDuration <= 0 {
+		maxDuration = 20 * time.Second
+	}
+	deadline := time.Now().Add(maxDuration)
+	for {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		if err := b.applySystemProxyWhenCoreReady(ctx, localPort, 3*time.Second); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			b.addLog("warn", "proxy", "system proxy background retry timed out")
+			return
+		}
+		select {
+		case <-time.After(1200 * time.Millisecond):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (b *Backend) StopProxy() error {
 	// Interrupt any pending start (e.g. waiting for admin prompt).
 	b.cancelStart()
@@ -1193,6 +1309,8 @@ func (b *Backend) StopProxy() error {
 	b.state.TunRunning = false
 	b.state.CoreRunning = false
 	b.tunRecovering = false
+	b.trafficCache = trafficSampleState{}
+	b.state.Traffic = TrafficState{RecentBandwidth: []BandwidthSample{}}
 	b.runningLocalPort = 0
 	b.runningTunInterface = ""
 	b.state.NeedsAdmin = false
@@ -1401,8 +1519,8 @@ func (b *Backend) GetLogs(level string, limit int) []LogEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	level = strings.ToLower(strings.TrimSpace(level))
-	if limit <= 0 || limit > 1000 {
-		limit = 300
+	if limit <= 0 || limit > 20000 {
+		limit = 5000
 	}
 	out := make([]LogEntry, 0, limit)
 	for i := len(b.logs) - 1; i >= 0 && len(out) < limit; i-- {
@@ -1411,9 +1529,6 @@ func (b *Backend) GetLogs(level string, limit int) []LogEntry {
 			continue
 		}
 		out = append(out, l)
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
 	}
 	return out
 }
@@ -1426,6 +1541,55 @@ func (b *Backend) GetConnections() []ActiveConnection {
 		return []ActiveConnection{}
 	}
 	return out
+}
+
+func (b *Backend) CloseConnection(connectionID string) error {
+	connectionID = strings.TrimSpace(connectionID)
+	if connectionID == "" {
+		return errors.New("connection id is empty")
+	}
+
+	b.mu.RLock()
+	conn, ok := b.connections[connectionID]
+	var snapshot ActiveConnection
+	if ok && conn != nil {
+		snapshot = *conn
+	}
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("connection not found: %s", connectionID)
+	}
+
+	if err := terminateActiveConnection(snapshot.Network, snapshot.Source, snapshot.Destination); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	delete(b.connections, connectionID)
+	b.state.Connections = topConnections(b.connections, 200)
+	b.emitStateLocked()
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Backend) CloseAllConnections() error {
+	b.mu.RLock()
+	running := b.state.Running
+	withTun := b.state.TunRunning
+	b.mu.RUnlock()
+
+	if running {
+		if err := b.RestartProxy(StartRequest{WithTun: withTun}); err != nil {
+			return err
+		}
+	}
+
+	b.mu.Lock()
+	b.connections = map[string]*ActiveConnection{}
+	b.state.Connections = []ActiveConnection{}
+	b.emitStateLocked()
+	b.mu.Unlock()
+	return nil
 }
 
 func (b *Backend) GetUsageHistory(limit int) []UsageDay {
@@ -1463,23 +1627,50 @@ func (b *Backend) onReverseLog(line string) {
 }
 
 func (b *Backend) addLog(level, component, raw string) {
+	cleanRaw := strings.TrimSpace(stripANSI(raw))
+	normLevel := normalizeLogLevel(level)
+	normComponent := strings.TrimSpace(component)
+	message := cleanRaw
+
+	if parsed, ok := parseLogxLine(cleanRaw); ok {
+		if parsed.Level != "" {
+			normLevel = normalizeLogLevel(parsed.Level)
+		}
+		if parsed.Component != "" {
+			normComponent = parsed.Component
+		}
+		if parsed.Message != "" {
+			message = parsed.Message
+		} else {
+			message = ""
+		}
+	}
+
+	message = trimComponentPrefix(message, normComponent)
+	if message == "" {
+		message = cleanRaw
+	}
+	if normComponent == "" {
+		normComponent = componentFromLine(cleanRaw)
+	}
+
 	entry := LogEntry{
 		ID:        newID("log_"),
 		Timestamp: time.Now(),
-		Level:     normalizeLogLevel(level),
-		Component: strings.TrimSpace(component),
-		Message:   strings.TrimSpace(stripANSI(raw)),
-		Raw:       strings.TrimSpace(raw),
+		Level:     normLevel,
+		Component: normComponent,
+		Message:   message,
+		Raw:       cleanRaw,
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logs = append(b.logs, entry)
-	if len(b.logs) > 2000 {
-		b.logs = b.logs[len(b.logs)-2000:]
+	if len(b.logs) > 20000 {
+		b.logs = b.logs[len(b.logs)-20000:]
 	}
 	b.state.RecentLogs = b.lastLogsLocked(120)
-	b.parseRouteLineLocked(entry.Message)
-	b.parseCoreTrafficLineLocked(entry.Message)
+	b.parseRouteLineLocked(entry.Raw)
+	b.parseCoreTrafficLineLocked(entry.Raw)
 	b.emitLog(entry)
 }
 
@@ -1533,8 +1724,10 @@ func (b *Backend) parseCoreTrafficLineLocked(line string) {
 	if !ok1 || !ok2 || !ok3 || !ok4 {
 		return
 	}
+	b.applyCoreTrafficCountersLocked(directTx, directRx, proxyTx, proxyRx, time.Now())
+}
 
-	now := time.Now()
+func (b *Backend) applyCoreTrafficCountersLocked(directTx, directRx, proxyTx, proxyRx uint64, now time.Time) {
 	totalTx := directTx + proxyTx
 	totalRx := directRx + proxyRx
 
@@ -1603,6 +1796,59 @@ func (b *Backend) parseCoreTrafficLineLocked(line string) {
 	b.state.Traffic.LastSampleUnixMillis = now.UnixMilli()
 }
 
+func (b *Backend) refreshCoreTrafficFromFileLocked(now time.Time) {
+	path := strings.TrimSpace(b.trafficCache.coreTrafficFile)
+	if path == "" {
+		return
+	}
+	s, ok, err := readCoreTrafficStatsFile(path)
+	if err != nil || !ok {
+		return
+	}
+	b.applyCoreTrafficCountersLocked(s.DirectTx, s.DirectRx, s.ProxyTx, s.ProxyRx, now)
+}
+
+func readCoreTrafficStatsFile(path string) (coreTrafficFileSnapshot, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return coreTrafficFileSnapshot{}, false, nil
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return coreTrafficFileSnapshot{}, false, nil
+		}
+		return coreTrafficFileSnapshot{}, false, err
+	}
+	if len(strings.TrimSpace(string(buf))) == 0 {
+		return coreTrafficFileSnapshot{}, false, nil
+	}
+	var s coreTrafficFileSnapshot
+	if err := json.Unmarshal(buf, &s); err != nil {
+		return coreTrafficFileSnapshot{}, false, err
+	}
+	return s, true, nil
+}
+
+func writeCoreTrafficStatsFile(path string, s coreTrafficFileSnapshot) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	buf, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func (b *Backend) monitorLoop() {
 	t := time.NewTicker(1 * time.Second)
 	defer t.Stop()
@@ -1638,37 +1884,22 @@ func (b *Backend) tick() {
 	b.state.Traffic.Interface = ifName
 	b.state.Traffic.InterfaceFound = ok
 	now := time.Now()
+	b.refreshCoreTrafficFromFileLocked(now)
 	if ok && !b.trafficCache.coreTrafficActive {
 		b.state.Traffic.TotalTx = tx
 		b.state.Traffic.TotalRx = rx
 		if !b.trafficCache.lastAt.IsZero() {
 			deltaSeconds := now.Sub(b.trafficCache.lastAt).Seconds()
 			if deltaSeconds > 0 {
-				dTx := tx - b.trafficCache.lastTx
-				dRx := rx - b.trafficCache.lastRx
-				dDirect := b.state.Traffic.DirectConnDecisions - b.trafficCache.lastDirectDec
-				dProxy := b.state.Traffic.ProxyConnDecisions - b.trafficCache.lastProxyDec
-				totalDec := dDirect + dProxy
-				directRatio := 0.0
-				if totalDec > 0 {
-					directRatio = float64(dDirect) / float64(totalDec)
+				prevTx := b.trafficCache.lastTx
+				prevRx := b.trafficCache.lastRx
+				if tx < prevTx || rx < prevRx {
+					prevTx = tx
+					prevRx = rx
 				}
-				proxyRatio := 1.0 - directRatio
-				directTx := uint64(float64(dTx) * directRatio)
-				if directTx > dTx {
-					directTx = dTx
-				}
-				directRx := uint64(float64(dRx) * directRatio)
-				if directRx > dRx {
-					directRx = dRx
-				}
-				proxyTx := dTx - directTx
-				proxyRx := dRx - directRx
-				b.state.Traffic.EstimatedDirectTx += directTx
-				b.state.Traffic.EstimatedDirectRx += directRx
-				b.state.Traffic.EstimatedProxyTx += proxyTx
-				b.state.Traffic.EstimatedProxyRx += proxyRx
-				b.usageDays = addUsageToDay(b.usageDays, usageDayKey(now), dTx, dRx, directTx, directRx, proxyTx, proxyRx)
+				dTx := tx - prevTx
+				dRx := rx - prevRx
+				b.usageDays = addUsageToDay(b.usageDays, usageDayKey(now), dTx, dRx, 0, 0, 0, 0)
 				b.usageDays = trimUsageDays(b.usageDays, 120)
 				b.usageDirty = true
 				if b.usageDirty && (b.lastUsageFlush.IsZero() || now.Sub(b.lastUsageFlush) > 15*time.Second) {
@@ -1683,8 +1914,8 @@ func (b *Backend) tick() {
 					At:      now,
 					TxBps:   float64(dTx) / deltaSeconds,
 					RxBps:   float64(dRx) / deltaSeconds,
-					Direct:  (float64(dTx) + float64(dRx)) * directRatio / deltaSeconds,
-					Proxy:   (float64(dTx) + float64(dRx)) * proxyRatio / deltaSeconds,
+					Direct:  0,
+					Proxy:   0,
 					TotalTx: tx,
 					TotalRx: rx,
 				}

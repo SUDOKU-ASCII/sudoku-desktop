@@ -35,8 +35,10 @@ type dnsProxyConfig struct {
 	CNRules       *cnRuleSet
 	MapDNSEnabled bool
 	MapDNSAddr    string
+	PreferIPv4    bool
 	AlwaysDirect  []string
 	DirectDial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	ProxyDial     func(ctx context.Context, network, addr string) (net.Conn, error)
 	Logf          func(string)
 }
 
@@ -71,11 +73,24 @@ func newDNSProxyServer(cfg dnsProxyConfig) *dnsProxyServer {
 		newDoHClient("dns.alidns.com", "/dns-query", []string{"223.5.5.5", "223.6.6.6"}, cfg.DirectDial),
 		newDoHClient("doh.pub", "/dns-query", []string{"119.29.29.29", "119.28.28.28"}, cfg.DirectDial),
 	}
-	s.dohGlobal = []*dohClient{
+	s.dohGlobal = make([]*dohClient, 0, 6)
+	// Prefer resolving "non-direct" (i.e. proxied) domains via the proxy when possible, to avoid
+	// local DNS poisoning / blocking on restrictive networks.
+	//
+	// We still append a direct dial fallback to keep the system usable during early startup when
+	// the core SOCKS port isn't ready yet.
+	if cfg.ProxyDial != nil {
+		s.dohGlobal = append(s.dohGlobal,
+			newDoHClient("cloudflare-dns.com", "/dns-query", []string{"1.1.1.1", "1.0.0.1"}, cfg.ProxyDial),
+			newDoHClient("dns.google", "/dns-query", []string{"8.8.8.8", "8.8.4.4"}, cfg.ProxyDial),
+			newDoHClient("dns.quad9.net", "/dns-query", []string{"9.9.9.9", "149.112.112.112"}, cfg.ProxyDial),
+		)
+	}
+	s.dohGlobal = append(s.dohGlobal,
 		newDoHClient("cloudflare-dns.com", "/dns-query", []string{"1.1.1.1", "1.0.0.1"}, cfg.DirectDial),
 		newDoHClient("dns.google", "/dns-query", []string{"8.8.8.8", "8.8.4.4"}, cfg.DirectDial),
 		newDoHClient("dns.quad9.net", "/dns-query", []string{"9.9.9.9", "149.112.112.112"}, cfg.DirectDial),
-	}
+	)
 	return s
 }
 
@@ -111,6 +126,9 @@ func (s *dnsProxyServer) Start() error {
 
 	if s.cfg.Logf != nil {
 		s.cfg.Logf(fmt.Sprintf("dns proxy listening on %s (udp/tcp)", addr))
+		if s.cfg.PreferIPv4 {
+			s.cfg.Logf("dns prefer-ipv4 mode enabled (AAAA queries return NODATA)")
+		}
 	}
 	return nil
 }
@@ -236,6 +254,11 @@ func (s *dnsProxyServer) handleQuery(req []byte) []byte {
 	}
 
 	shouldDirect := s.shouldDirect(qname)
+	if s.cfg.PreferIPv4 && qtype == dnsmessage.TypeAAAA && !isLikelyLocalHostname(qname) {
+		resp := s.buildNODATA(req)
+		s.storeCache(key, resp, 20*time.Second)
+		return resp
+	}
 	var resp []byte
 	if shouldDirect {
 		resp = s.forwardDirect(req)
@@ -340,12 +363,8 @@ func (s *dnsProxyServer) forwardNonDirect(req []byte) []byte {
 			return resp
 		}
 	}
-	for _, server := range []string{"1.1.1.1:53", "8.8.8.8:53", "9.9.9.9:53"} {
-		resp, _ := dnsExchangeUDPWithDial(s.cfg.DirectDial, server, req, 800*time.Millisecond)
-		if len(resp) > 0 && !dnsResponseLooksHijacked(resp) {
-			return resp
-		}
-	}
+	// Avoid plaintext UDP to foreign resolvers here; those paths are often intercepted/poisoned.
+	// Fall back to trusted DoH/plain DNS direct resolvers instead.
 	return s.forwardDirect(req)
 }
 
@@ -420,6 +439,35 @@ func (s *dnsProxyServer) buildSERVFAILWithID(id uint16) []byte {
 		RecursionAvailable: true,
 		RCode:              dnsmessage.RCodeServerFailure,
 	})
+	msg, _ := b.Finish()
+	return msg
+}
+
+func (s *dnsProxyServer) buildNODATA(req []byte) []byte {
+	id := dnsID(req)
+	var p dnsmessage.Parser
+	if _, err := p.Start(req); err != nil {
+		return s.buildNODATAWithID(id, nil)
+	}
+	q, err := p.Question()
+	if err != nil {
+		return s.buildNODATAWithID(id, nil)
+	}
+	return s.buildNODATAWithID(id, &q)
+}
+
+func (s *dnsProxyServer) buildNODATAWithID(id uint16, q *dnsmessage.Question) []byte {
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+		ID:                 id,
+		Response:           true,
+		RecursionAvailable: true,
+		RCode:              dnsmessage.RCodeSuccess,
+	})
+	if q != nil {
+		if err := b.StartQuestions(); err == nil {
+			_ = b.Question(*q)
+		}
+	}
 	msg, _ := b.Finish()
 	return msg
 }

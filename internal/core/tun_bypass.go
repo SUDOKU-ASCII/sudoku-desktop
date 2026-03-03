@@ -46,7 +46,8 @@ func prepareTunBypassWithClient(ctx context.Context, store *Store, cfg *AppConfi
 		urls = defaultPACRuleURLs()
 	}
 	v4URL, v6URL := findChnCIDRURLs(urls)
-	if v4URL == "" && v6URL == "" {
+	v4Candidates, v6Candidates := chnCIDRURLCandidates(v4URL, v6URL)
+	if len(v4Candidates) == 0 && len(v6Candidates) == 0 {
 		return tunBypass{}, nil
 	}
 
@@ -61,46 +62,40 @@ func prepareTunBypassWithClient(ctx context.Context, store *Store, cfg *AppConfi
 
 	const maxCacheAge = 7 * 24 * time.Hour
 	out := tunBypass{}
+	var errs []string
 
-	if v4URL != "" {
-		rawPath, err := fetchCachedWithClient(ctx, v4URL, cacheDir, maxCacheAge, client)
+	if len(v4Candidates) > 0 {
+		cidrs, usedURL, err := fetchCIDRsFromAny(ctx, v4Candidates, cacheDir, maxCacheAge, client, false)
 		if err != nil {
-			return tunBypass{}, err
-		}
-		cidrs, err := parseCIDRsFromYAMLFile(rawPath, false)
-		if err != nil {
-			return tunBypass{}, err
-		}
-		out.V4Count = len(cidrs)
-		if out.V4Count > 0 {
+			errs = append(errs, fmt.Sprintf("ipv4: %v", err))
+		} else if len(cidrs) > 0 {
+			out.V4Count = len(cidrs)
 			out.V4Path = filepath.Join(bypassDir, "cn_ipv4.txt")
-			if err := writeLines(out.V4Path, cidrs); err != nil {
-				return tunBypass{}, err
+			if werr := writeLines(out.V4Path, cidrs); werr != nil {
+				return tunBypass{}, werr
 			}
 			if logf != nil {
-				logf(fmt.Sprintf("prepared CN bypass list (ipv4): %d routes", out.V4Count))
+				logf(fmt.Sprintf("prepared CN bypass list (ipv4): %d routes (%s)", out.V4Count, usedURL))
 			}
 		}
 	}
-	if v6URL != "" {
-		rawPath, err := fetchCachedWithClient(ctx, v6URL, cacheDir, maxCacheAge, client)
+	if len(v6Candidates) > 0 {
+		cidrs, usedURL, err := fetchCIDRsFromAny(ctx, v6Candidates, cacheDir, maxCacheAge, client, true)
 		if err != nil {
-			return tunBypass{}, err
-		}
-		cidrs, err := parseCIDRsFromYAMLFile(rawPath, true)
-		if err != nil {
-			return tunBypass{}, err
-		}
-		out.V6Count = len(cidrs)
-		if out.V6Count > 0 {
+			errs = append(errs, fmt.Sprintf("ipv6: %v", err))
+		} else if len(cidrs) > 0 {
+			out.V6Count = len(cidrs)
 			out.V6Path = filepath.Join(bypassDir, "cn_ipv6.txt")
-			if err := writeLines(out.V6Path, cidrs); err != nil {
-				return tunBypass{}, err
+			if werr := writeLines(out.V6Path, cidrs); werr != nil {
+				return tunBypass{}, werr
 			}
 			if logf != nil {
-				logf(fmt.Sprintf("prepared CN bypass list (ipv6): %d routes", out.V6Count))
+				logf(fmt.Sprintf("prepared CN bypass list (ipv6): %d routes (%s)", out.V6Count, usedURL))
 			}
 		}
+	}
+	if out.V4Path == "" && out.V6Path == "" && len(errs) > 0 {
+		return tunBypass{}, errors.New(strings.Join(errs, " | "))
 	}
 	return out, nil
 }
@@ -122,6 +117,108 @@ func findChnCIDRURLs(urls []string) (v4 string, v6 string) {
 		}
 	}
 	return v4, v6
+}
+
+func chnCIDRURLCandidates(v4URL string, v6URL string) (v4 []string, v6 []string) {
+	// Prefer the user's configured sources (found from RuleURLs), but allow a few derived mirrors
+	// (raw GitHub, jsDelivr, gh-proxy) for resilience. Do not hardcode CN bypass sources when the
+	// user didn't configure them.
+	if strings.TrimSpace(v4URL) != "" {
+		v4 = append(v4, urlMirrorCandidates(strings.TrimSpace(v4URL))...)
+	}
+	if strings.TrimSpace(v6URL) != "" {
+		v6 = append(v6, urlMirrorCandidates(strings.TrimSpace(v6URL))...)
+	}
+	return uniqueStrings(v4), uniqueStrings(v6)
+}
+
+func fetchCIDRsFromAny(ctx context.Context, urls []string, cacheDir string, maxAge time.Duration, client *http.Client, wantV6 bool) (cidrs []string, usedURL string, err error) {
+	var errs []string
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		rawPath, ferr := fetchCachedWithClient(ctx, u, cacheDir, maxAge, client)
+		if ferr != nil {
+			errs = append(errs, u+": "+ferr.Error())
+			continue
+		}
+		parsed, perr := parseCIDRsFromYAMLFile(rawPath, wantV6)
+		if perr != nil {
+			errs = append(errs, u+": "+perr.Error())
+			continue
+		}
+		if len(parsed) == 0 {
+			errs = append(errs, u+": empty cidr list")
+			continue
+		}
+		return parsed, u, nil
+	}
+	if len(errs) > 0 {
+		return nil, "", errors.New(strings.Join(errs, " | "))
+	}
+	return nil, "", errors.New("no available cidr urls")
+}
+
+func urlMirrorCandidates(url string) []string {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return nil
+	}
+	const (
+		ghProxyPrefix = "https://gh-proxy.org/https://"
+		rawPrefix     = "https://raw.githubusercontent.com/"
+		jsdPrefix     = "https://fastly.jsdelivr.net/gh/"
+	)
+
+	out := []string{url}
+
+	// Unwrap gh-proxy -> raw.
+	if strings.HasPrefix(url, ghProxyPrefix+rawPrefix) {
+		out = append(out, strings.TrimPrefix(url, ghProxyPrefix))
+	}
+
+	// raw -> jsDelivr (+ gh-proxy variant).
+	for _, candidate := range []string{url, strings.TrimPrefix(url, ghProxyPrefix)} {
+		if strings.HasPrefix(candidate, rawPrefix) {
+			parts := strings.Split(strings.TrimPrefix(candidate, rawPrefix), "/")
+			// owner/repo/ref/path...
+			if len(parts) >= 4 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
+				owner, repo, ref := parts[0], parts[1], parts[2]
+				path := strings.Join(parts[3:], "/")
+				out = append(out,
+					jsdPrefix+owner+"/"+repo+"@"+ref+"/"+path,
+					ghProxyPrefix+candidate,
+				)
+			}
+		}
+	}
+
+	// jsDelivr -> raw (+ gh-proxy variant).
+	if strings.HasPrefix(url, jsdPrefix) {
+		rest := strings.TrimPrefix(url, jsdPrefix)
+		parts := strings.Split(rest, "/")
+		// owner/repo@ref/path...
+		if len(parts) >= 2 {
+			owner := parts[0]
+			repoRef := parts[1]
+			if owner != "" && strings.Contains(repoRef, "@") {
+				repoParts := strings.SplitN(repoRef, "@", 2)
+				repo, ref := repoParts[0], repoParts[1]
+				path := ""
+				if len(parts) > 2 {
+					path = strings.Join(parts[2:], "/")
+				}
+				if repo != "" && ref != "" && path != "" {
+					raw := rawPrefix + owner + "/" + repo + "/" + ref + "/" + path
+					out = append(out, raw, ghProxyPrefix+raw)
+				}
+			}
+		}
+	}
+
+	return uniqueStrings(out)
 }
 
 func fetchCached(ctx context.Context, url string, cacheDir string, maxAge time.Duration) (string, error) {

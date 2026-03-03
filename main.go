@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 
+	"github.com/saba-futai/sudoku/pkg/logx"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -18,10 +19,10 @@ func main() {
 	// Create application with options
 	err := wails.Run(&options.App{
 		Title:     "4x4 sudoku",
-		Width:     1320,
-		Height:    860,
-		MinWidth:  1100,
-		MinHeight: 720,
+		Width:     1160,
+		Height:    760,
+		MinWidth:  390,
+		MinHeight: 680,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -35,6 +36,6 @@ func main() {
 	})
 
 	if err != nil {
-		println("Error:", err.Error())
+		logx.Errorf("Desktop", "wails run failed: %v", err)
 	}
 }

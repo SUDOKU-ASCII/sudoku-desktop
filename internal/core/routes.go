@@ -16,26 +16,28 @@ import (
 )
 
 type routeContext struct {
-	DefaultGateway        string
-	DefaultGatewayV6      string
-	DefaultInterface      string
-	ServerIP              string
-	TunIndex              int
-	DNSService            string
-	DNSServers            []string
-	DNSWasAutomatic       bool
-	PFAnchor              string
-	BypassV4Path          string
-	BypassV6Path          string
-	LinuxOutboundSrcIP    string
-	LinuxBypassMark       int
-	LinuxBypassSet4       string
-	LinuxBypassSet6       string
-	LinuxDNSMode          string
-	LinuxResolvConfBackup string
-	LinuxDNSRedirectPort  int
-	WindowsFirewallRule   string
-	WindowsDNSBackup      string
+	DefaultGateway         string
+	DefaultGatewayV6       string
+	DefaultInterface       string
+	ServerIP               string
+	TunIndex               int
+	DNSService             string
+	DNSServers             []string
+	DNSWasAutomatic        bool
+	PFAnchor               string
+	BypassV4Path           string
+	BypassV6Path           string
+	LinuxOutboundSrcIP     string
+	LinuxBypassMark        int
+	LinuxBypassSet4        string
+	LinuxBypassSet6        string
+	LinuxDNSMode           string
+	LinuxResolvConfBackup  string
+	LinuxDNSRedirectPort   int
+	WindowsFirewallRule    string
+	WindowsDNSBackup       string
+	WindowsDefaultIfIndex  int
+	WindowsDefaultIfIndex6 int
 }
 
 func darwinTunIPv6Enabled() bool {
@@ -99,14 +101,19 @@ func teardownRoutes(ctx *routeContext, tun TunSettings, logf func(string)) {
 }
 
 func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
+	if !linuxHasCommand("ip") {
+		return nil, errors.New("required command not found on linux: ip")
+	}
+
 	uid := os.Getuid()
 	bypassMark := tun.SocksMark + 1
 	if bypassMark <= 0 {
 		bypassMark = 439
 	}
-	ctx.LinuxBypassMark = bypassMark
-	ctx.LinuxBypassSet4 = fmt.Sprintf("sudoku4x4_cn4_%d", uid)
-	ctx.LinuxBypassSet6 = fmt.Sprintf("sudoku4x4_cn6_%d", uid)
+
+	hasIPSet := linuxHasCommand("ipset")
+	hasIPTables := linuxHasCommand("iptables")
+	hasIP6Tables := linuxHasCommand("ip6tables")
 
 	cmdlines := make([]string, 0, 32)
 	if ctx.ServerIP != "" {
@@ -125,7 +132,19 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 
 	// PAC-mode loop avoidance: bypass CN CIDRs to the main routing table.
 	if strings.TrimSpace(ctx.BypassV4Path) != "" || strings.TrimSpace(ctx.BypassV6Path) != "" {
-		if strings.TrimSpace(ctx.BypassV4Path) != "" {
+		enableBypass4 := strings.TrimSpace(ctx.BypassV4Path) != "" && hasIPSet && hasIPTables
+		enableBypass6 := strings.TrimSpace(ctx.BypassV6Path) != "" && hasIPSet && hasIP6Tables
+		if strings.TrimSpace(ctx.BypassV4Path) != "" && !enableBypass4 && logf != nil {
+			logf("[route] linux: skip ipv4 CN-bypass rules (missing ipset/iptables)")
+		}
+		if strings.TrimSpace(ctx.BypassV6Path) != "" && !enableBypass6 && logf != nil {
+			logf("[route] linux: skip ipv6 CN-bypass rules (missing ipset/ip6tables)")
+		}
+		if enableBypass4 || enableBypass6 {
+			ctx.LinuxBypassMark = bypassMark
+		}
+		if enableBypass4 {
+			ctx.LinuxBypassSet4 = fmt.Sprintf("sudoku4x4_cn4_%d", uid)
 			cmdlines = append(cmdlines,
 				shellJoin("ipset", "create", ctx.LinuxBypassSet4, "hash:net", "family", "inet", "-exist"),
 				shellJoin("ipset", "flush", ctx.LinuxBypassSet4)+" || true",
@@ -134,7 +153,8 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 					"iptables -t mangle -A OUTPUT -m set --match-set "+shellQuote(ctx.LinuxBypassSet4)+" dst -j MARK --set-mark "+strconv.Itoa(bypassMark),
 			)
 		}
-		if strings.TrimSpace(ctx.BypassV6Path) != "" {
+		if enableBypass6 {
+			ctx.LinuxBypassSet6 = fmt.Sprintf("sudoku4x4_cn6_%d", uid)
 			cmdlines = append(cmdlines,
 				shellJoin("ipset", "create", ctx.LinuxBypassSet6, "hash:net", "family", "inet6", "-exist"),
 				shellJoin("ipset", "flush", ctx.LinuxBypassSet6)+" || true",
@@ -143,47 +163,65 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 					"ip6tables -t mangle -A OUTPUT -m set --match-set "+shellQuote(ctx.LinuxBypassSet6)+" dst -j MARK --set-mark "+strconv.Itoa(bypassMark),
 			)
 		}
-		cmdlines = append(cmdlines,
-			shellJoin("ip", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
-			shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
-		)
+		if enableBypass4 || enableBypass6 {
+			cmdlines = append(cmdlines,
+				shellJoin("ip", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
+				shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
+			)
+		}
 	}
 
 	// Optional: block QUIC (UDP/443).
 	if tun.BlockQUIC {
-		cmdlines = append(cmdlines,
-			"iptables -C OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || iptables -I OUTPUT 1 -p udp --dport 443 -j DROP",
-			"ip6tables -C OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || ip6tables -I OUTPUT 1 -p udp --dport 443 -j DROP",
-		)
+		if hasIPTables {
+			cmdlines = append(cmdlines, "iptables -C OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || iptables -I OUTPUT 1 -p udp --dport 443 -j DROP")
+		} else if logf != nil {
+			logf("[route] linux: skip IPv4 QUIC block (iptables not found)")
+		}
+		if hasIP6Tables {
+			cmdlines = append(cmdlines, "ip6tables -C OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || ip6tables -I OUTPUT 1 -p udp --dport 443 -j DROP")
+		} else if logf != nil {
+			logf("[route] linux: skip IPv6 QUIC block (ip6tables not found)")
+		}
 	}
 
 	// Optional: switch system DNS to HEV MapDNS while TUN is active (FakeIP mode).
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
 		dnsAddr := strings.TrimSpace(tun.MapDNSAddress)
+		canApplyDNS := true
 		if dnsAddr == localDNSServerIPv4 && localDNSProxyListenPort() != 53 {
-			ctx.LinuxDNSRedirectPort = localDNSProxyListenPort()
-			cmdlines = append(cmdlines,
-				"iptables -t nat -C OUTPUT -p udp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort)+" >/dev/null 2>&1 || "+
-					"iptables -t nat -I OUTPUT 1 -p udp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort),
-				"iptables -t nat -C OUTPUT -p tcp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort)+" >/dev/null 2>&1 || "+
-					"iptables -t nat -I OUTPUT 1 -p tcp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort),
-			)
+			if hasIPTables {
+				ctx.LinuxDNSRedirectPort = localDNSProxyListenPort()
+				cmdlines = append(cmdlines,
+					"iptables -t nat -C OUTPUT -p udp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort)+" >/dev/null 2>&1 || "+
+						"iptables -t nat -I OUTPUT 1 -p udp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort),
+					"iptables -t nat -C OUTPUT -p tcp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort)+" >/dev/null 2>&1 || "+
+						"iptables -t nat -I OUTPUT 1 -p tcp -d "+localDNSServerIPv4+" --dport 53 -j REDIRECT --to-ports "+strconv.Itoa(ctx.LinuxDNSRedirectPort),
+				)
+			} else {
+				canApplyDNS = false
+				if logf != nil {
+					logf("[route] linux: skip DNS override to localhost (iptables nat redirect unavailable)")
+				}
+			}
 		}
-		if _, err := exec.LookPath("resolvectl"); err == nil {
-			ctx.LinuxDNSMode = "resolvectl"
-			cmdlines = append(cmdlines,
-				shellJoin("resolvectl", "dns", tun.InterfaceName, dnsAddr)+" || true",
-				shellJoin("resolvectl", "domain", tun.InterfaceName, "~.")+" || true",
-				"resolvectl flush-caches >/dev/null 2>&1 || true",
-			)
-		} else {
-			ctx.LinuxDNSMode = "resolvconf"
-			ctx.LinuxResolvConfBackup = fmt.Sprintf("/tmp/sudoku4x4-resolv.conf.%d.bak", uid)
-			cmdlines = append(cmdlines,
-				"cp -f /etc/resolv.conf "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true",
-				"printf 'nameserver "+dnsAddr+"\\n' > /etc/resolv.conf",
-				"resolvectl flush-caches >/dev/null 2>&1 || systemd-resolve --flush-caches >/dev/null 2>&1 || true",
-			)
+		if canApplyDNS {
+			if _, err := exec.LookPath("resolvectl"); err == nil {
+				ctx.LinuxDNSMode = "resolvectl"
+				cmdlines = append(cmdlines,
+					shellJoin("resolvectl", "dns", tun.InterfaceName, dnsAddr)+" || true",
+					shellJoin("resolvectl", "domain", tun.InterfaceName, "~.")+" || true",
+					"resolvectl flush-caches >/dev/null 2>&1 || true",
+				)
+			} else {
+				ctx.LinuxDNSMode = "resolvconf"
+				ctx.LinuxResolvConfBackup = fmt.Sprintf("/tmp/sudoku4x4-resolv.conf.%d.bak", uid)
+				cmdlines = append(cmdlines,
+					"cp -f /etc/resolv.conf "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true",
+					"printf 'nameserver "+dnsAddr+"\\n' > /etc/resolv.conf",
+					"resolvectl flush-caches >/dev/null 2>&1 || systemd-resolve --flush-caches >/dev/null 2>&1 || true",
+				)
+			}
 		}
 	}
 
@@ -309,18 +347,10 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 	if runtime.GOOS == "darwin" && (tun.BlockQUIC || strings.TrimSpace(ctx.BypassV4Path) != "" || strings.TrimSpace(ctx.BypassV6Path) != "" || dnsProxyPort > 0) {
 		ctx.PFAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, ctx.DefaultInterface, gw, ctx.DefaultGatewayV6, ctx.BypassV4Path, ctx.BypassV6Path, tun.BlockQUIC, dnsProxyPort)
+		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, ctx.DefaultInterface, gw, ctx.DefaultGatewayV6, tun.IPv4, ctx.BypassV4Path, ctx.BypassV6Path, tun.BlockQUIC, dnsProxyPort)
 	}
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
-		cmds := make([]string, 0, 7)
-		if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
-			// Keep a physical scoped default route for the core process (it binds sockets to DefaultInterface).
-			cmds = append(cmds, shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || true")
-		}
-		if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
-			// Keep a physical scoped IPv6 default route for direct sockets bound to DefaultInterface.
-			cmds = append(cmds, shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || true")
-		}
+		cmds := make([]string, 0, 9)
 		if ctx.ServerIP != "" {
 			// Be idempotent: a host route may already exist (e.g. from a prior run or system clone).
 			cmds = append(cmds, shellJoin("route", "-n", "add", "-host", ctx.ServerIP, gw)+" || "+shellJoin("route", "-n", "change", "-host", ctx.ServerIP, gw))
@@ -334,6 +364,18 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		if ctx.DefaultGatewayV6 != "" {
 			// IPv6 default route may fail depending on system state; ignore.
 			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)+" || true")
+		}
+		if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
+			// Ensure a physical scoped default route exists for sockets bound to DefaultInterface (core outbound bypass).
+			// NOTE: Creating this route *before* switching the global default route can fail with "File exists" (it
+			// collides with the current global default). Ensure it after the default route has switched to utun.
+			cmds = append(cmds, "("+shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || "+
+				shellJoin("route", "-n", "change", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1) || echo '__SUDOKU_WARN__=scoped_default_route_failed'")
+		}
+		if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
+			// Keep a physical scoped IPv6 default route for direct sockets bound to DefaultInterface.
+			cmds = append(cmds, "("+shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || "+
+				shellJoin("route", "-n", "change", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1) || echo '__SUDOKU_WARN__=scoped_default_route6_failed'")
 		}
 		if pfSetCmd != "" {
 			cmds = append(cmds, pfSetCmd)
@@ -352,12 +394,6 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		_ = runCmd(logf, "route", "-n", "add", "-host", ctx.ServerIP, gw)
 		_ = runCmd(logf, "route", "-n", "change", "-host", ctx.ServerIP, gw)
 	}
-	if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
-		_ = runCmd(logf, "sh", "-lc", shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || true")
-	}
-	if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
-		_ = runCmd(logf, "sh", "-lc", shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || true")
-	}
 	if err := runCmd(logf, "route", "-n", "change", "default", "-interface", tun.InterfaceName); err != nil {
 		// Some macOS setups have multiple scoped default routes; if `change` fails, recreate it.
 		_ = runCmd(logf, "route", "-n", "delete", "default")
@@ -367,6 +403,14 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 	if ctx.DefaultGatewayV6 != "" {
 		_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", "-interface", tun.InterfaceName)
+	}
+	if ctx.DefaultInterface != "" && ctx.DefaultGateway != "" {
+		_ = runCmd(logf, "sh", "-lc", "("+shellJoin("route", "-n", "add", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1 || "+
+			shellJoin("route", "-n", "change", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGateway)+" >/dev/null 2>&1) || echo '__SUDOKU_WARN__=scoped_default_route_failed'")
+	}
+	if ctx.DefaultInterface != "" && ctx.DefaultGatewayV6 != "" {
+		_ = runCmd(logf, "sh", "-lc", "("+shellJoin("route", "-n", "add", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1 || "+
+			shellJoin("route", "-n", "change", "-inet6", "-ifscope", ctx.DefaultInterface, "default", ctx.DefaultGatewayV6)+" >/dev/null 2>&1) || echo '__SUDOKU_WARN__=scoped_default_route6_failed'")
 	}
 	if pfSetCmd != "" {
 		if err := runCmd(logf, "sh", "-lc", pfSetCmd); err != nil {
@@ -442,11 +486,6 @@ func teardownRoutesDarwin(ctx *routeContext, _ TunSettings, logf func(string)) {
 }
 
 func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
-	gw, err := windowsDefaultGateway()
-	if err != nil {
-		return nil, err
-	}
-	ctx.DefaultGateway = gw
 	idx, alias, err := windowsResolveTunInterfaceIndex(tun, 10*time.Second)
 	if err != nil {
 		return nil, err
@@ -459,6 +498,16 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 			logf(fmt.Sprintf("[route] windows tun ifindex=%d", idx))
 		}
 	}
+	gw, if4, err := windowsPreferredDefaultRouteIPv4(idx)
+	if err != nil {
+		return nil, err
+	}
+	ctx.DefaultGateway = gw
+	ctx.WindowsDefaultIfIndex = if4
+	if gw6, if6, err6 := windowsPreferredDefaultRouteIPv6(idx); err6 == nil {
+		ctx.DefaultGatewayV6 = strings.TrimSpace(gw6)
+		ctx.WindowsDefaultIfIndex6 = if6
+	}
 	firewallRule := "4x4-sudoku Block QUIC (UDP/443)"
 	if tun.BlockQUIC {
 		ctx.WindowsFirewallRule = firewallRule
@@ -469,8 +518,24 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		dnsBackupName = fmt.Sprintf("sudoku4x4-dns-%d.json", os.Getuid())
 		ctx.WindowsDNSBackup = dnsBackupName
 	}
-	ps := buildWindowsRouteScript(true, ctx.ServerIP, ctx.BypassV4Path, ctx.BypassV6Path, firewallRule, tun.BlockQUIC, idx, tun.MapDNSEnabled, strings.TrimSpace(tun.MapDNSAddress), dnsBackupName)
+	ps := buildWindowsRouteScript(
+		true,
+		ctx.ServerIP,
+		ctx.BypassV4Path,
+		ctx.BypassV6Path,
+		firewallRule,
+		tun.BlockQUIC,
+		idx,
+		ctx.DefaultGateway,
+		ctx.WindowsDefaultIfIndex,
+		ctx.DefaultGatewayV6,
+		ctx.WindowsDefaultIfIndex6,
+		tun.MapDNSEnabled,
+		strings.TrimSpace(tun.MapDNSAddress),
+		dnsBackupName,
+	)
 	if err := runCmdsWindowsAdmin(logf, ps); err != nil {
+		teardownRoutesWindows(ctx, tun, logf)
 		return nil, err
 	}
 	return ctx, nil
@@ -486,7 +551,22 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 	}
 	// Restore DNS whenever we backed it up during start (we always do so in TUN mode).
 	mapDNSEnabled := strings.TrimSpace(ctx.WindowsDNSBackup) != ""
-	ps := buildWindowsRouteScript(false, ctx.ServerIP, ctx.BypassV4Path, ctx.BypassV6Path, firewallRule, tun.BlockQUIC, ctx.TunIndex, mapDNSEnabled, localDNSServerIPv4, ctx.WindowsDNSBackup)
+	ps := buildWindowsRouteScript(
+		false,
+		ctx.ServerIP,
+		ctx.BypassV4Path,
+		ctx.BypassV6Path,
+		firewallRule,
+		tun.BlockQUIC,
+		ctx.TunIndex,
+		ctx.DefaultGateway,
+		ctx.WindowsDefaultIfIndex,
+		ctx.DefaultGatewayV6,
+		ctx.WindowsDefaultIfIndex6,
+		mapDNSEnabled,
+		localDNSServerIPv4,
+		ctx.WindowsDNSBackup,
+	)
 	_ = runCmdsWindowsAdmin(logf, ps)
 }
 
@@ -525,6 +605,7 @@ func runCmdsWindowsAdmin(logf func(string), scriptBody string) error {
 
 	// PowerShell script self-elevates if needed (UAC prompt).
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
+	applyManagedProcessSysProcAttr(cmd)
 	output, err := cmd.CombinedOutput()
 	clean := strings.TrimSpace(string(output))
 	if logf != nil {
@@ -564,7 +645,22 @@ func windowsAdminWrapper(body string) string {
 	}, "\r\n")
 }
 
-func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypassV6 string, firewallRule string, blockQUIC bool, tunIfIndex int, mapDNSEnabled bool, mapDNSAddress string, dnsBackupName string) string {
+func buildWindowsRouteScript(
+	start bool,
+	serverIP string,
+	bypassV4 string,
+	bypassV6 string,
+	firewallRule string,
+	blockQUIC bool,
+	tunIfIndex int,
+	defaultGw4 string,
+	defaultIf4 int,
+	defaultGw6 string,
+	defaultIf6 int,
+	mapDNSEnabled bool,
+	mapDNSAddress string,
+	dnsBackupName string,
+) string {
 	op := "start"
 	if !start {
 		op = "stop"
@@ -573,6 +669,8 @@ func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypas
 	bypassV6 = strings.TrimSpace(bypassV6)
 	serverIP = strings.TrimSpace(serverIP)
 	firewallRule = strings.TrimSpace(firewallRule)
+	defaultGw4 = strings.TrimSpace(defaultGw4)
+	defaultGw6 = strings.TrimSpace(defaultGw6)
 	mapDNSAddress = strings.TrimSpace(mapDNSAddress)
 	dnsBackupName = strings.TrimSpace(dnsBackupName)
 	if firewallRule == "" {
@@ -582,13 +680,21 @@ func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypas
 	// Use ActiveStore so routes/rules are not persisted across reboot.
 	lines := []string{
 		fmt.Sprintf("$op = '%s'", op),
-		"$default4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1",
-		"$gw4 = $default4.NextHop",
-		"$if4 = $default4.InterfaceIndex",
-		"$default6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1",
-		"$gw6 = $default6.NextHop",
-		"$if6 = $default6.InterfaceIndex",
 		fmt.Sprintf("$tunIf = %d", tunIfIndex),
+		fmt.Sprintf("$gw4 = '%s'", strings.ReplaceAll(defaultGw4, "'", "''")),
+		fmt.Sprintf("$if4 = %d", defaultIf4),
+		fmt.Sprintf("$gw6 = '%s'", strings.ReplaceAll(defaultGw6, "'", "''")),
+		fmt.Sprintf("$if6 = %d", defaultIf6),
+		"if (-not $gw4 -or -not $if4 -or $if4 -le 0) {",
+		"  $default4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf -and $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"  if ($default4 -eq $null) { $default4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
+		"  if ($default4 -ne $null) { $gw4 = $default4.NextHop; $if4 = [int]$default4.InterfaceIndex }",
+		"}",
+		"if (-not $if6 -or $if6 -le 0) {",
+		"  $default6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf -and $_.NextHop -and $_.NextHop -ne '::' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"  if ($default6 -eq $null) { $default6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
+		"  if ($default6 -ne $null) { $gw6 = $default6.NextHop; $if6 = [int]$default6.InterfaceIndex }",
+		"}",
 	}
 	if serverIP != "" {
 		lines = append(lines, fmt.Sprintf("$serverIP = '%s'", strings.ReplaceAll(serverIP, "'", "''")))
@@ -607,13 +713,13 @@ func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypas
 		"",
 		"function Add-RoutePrefix($prefix, $ifIndex, $gw) {",
 		"  try {",
-		"    if (-not $prefix) { return }",
+		"    if (-not $prefix -or -not $ifIndex -or $ifIndex -le 0 -or -not $gw) { return }",
 		"    New-NetRoute -DestinationPrefix $prefix -InterfaceIndex $ifIndex -NextHop $gw -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
 		"  } catch { }",
 		"}",
 		"function Remove-RoutePrefix($prefix, $ifIndex, $gw) {",
 		"  try {",
-		"    if (-not $prefix) { return }",
+		"    if (-not $prefix -or -not $ifIndex -or $ifIndex -le 0 -or -not $gw) { return }",
 		"    Remove-NetRoute -DestinationPrefix $prefix -InterfaceIndex $ifIndex -NextHop $gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction Stop",
 		"  } catch { }",
 		"}",
@@ -642,8 +748,8 @@ func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypas
 		"  }",
 		"  & route.exe change 0.0.0.0 mask 0.0.0.0 0.0.0.0 if $tunIf | Out-Null",
 		"  # Keep a physical default route for core-bypass sockets (IP_UNICAST_IF).",
-		"  try { New-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } catch { }",
-		"  try { if ($gw6) { New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
+		"  try { if ($if4 -gt 0 -and $gw4) { New-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
+		"  try { if ($if6 -gt 0 -and $gw6) { New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
 		"  if ($blockQUIC) {",
 		"    if (-not (Get-NetFirewallRule -DisplayName $fwRule -ErrorAction SilentlyContinue)) {",
 		"      New-NetFirewallRule -DisplayName $fwRule -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -Profile Any | Out-Null",
@@ -667,9 +773,9 @@ func buildWindowsRouteScript(start bool, serverIP string, bypassV4 string, bypas
 		"  }",
 		"  try { Clear-DnsClientCache | Out-Null } catch { }",
 		"  # Remove the auxiliary physical default route (if we added it).",
-		"  try { Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } catch { }",
-		"  try { if ($gw6) { Get-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
-		"  & route.exe change 0.0.0.0 mask 0.0.0.0 $gw4 | Out-Null",
+		"  try { if ($if4 -gt 0 -and $gw4) { Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
+		"  try { if ($if6 -gt 0 -and $gw6) { Get-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
+		"  if ($if4 -gt 0 -and $gw4) { & route.exe change 0.0.0.0 mask 0.0.0.0 $gw4 if $if4 | Out-Null }",
 		"  if ($serverIP) {",
 		"    if ($serverIP -match ':') { Remove-RoutePrefix ($serverIP + '/128') $if6 $gw6 } else { Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
 		"  }",
@@ -868,23 +974,76 @@ func linuxDefaultOutboundIPv4() (string, error) {
 }
 
 func windowsDefaultGateway() (string, error) {
-	output, err := windowsPowerShellOutput("(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1).NextHop")
-	if err != nil {
-		return "", err
-	}
-	gw := strings.TrimSpace(string(output))
-	if gw == "" {
-		return "", errors.New("windows default gateway not found")
-	}
-	return gw, nil
+	gw, _, err := windowsPreferredDefaultRouteIPv4(0)
+	return gw, err
 }
 
 func windowsDefaultInterfaceIndex() (int, error) {
-	output, err := windowsPowerShellOutput("(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1).InterfaceIndex")
+	_, idx, err := windowsPreferredDefaultRouteIPv4(0)
+	return idx, err
+}
+
+func windowsPreferredDefaultRouteIPv4(excludeIf int) (string, int, error) {
+	script := strings.Join([]string{
+		fmt.Sprintf("$exclude = %d", excludeIf),
+		"$routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue",
+		"if ($exclude -gt 0) { $routes = $routes | Where-Object { $_.InterfaceIndex -ne $exclude } }",
+		"$sel = $routes | Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"if ($sel -eq $null) { $sel = $routes | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
+		"if ($sel -eq $null) { '' } else { \"$($sel.NextHop)`t$([int]$sel.InterfaceIndex)\" }",
+	}, "; ")
+	output, err := windowsPowerShellOutput(script)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	return parseFirstInt(string(output))
+	raw := strings.TrimSpace(string(output))
+	if raw == "" {
+		return "", 0, errors.New("windows default route not found")
+	}
+	parts := strings.SplitN(raw, "\t", 2)
+	gw := strings.TrimSpace(parts[0])
+	if gw == "" {
+		return "", 0, errors.New("windows default gateway not found")
+	}
+	idxRaw := raw
+	if len(parts) == 2 {
+		idxRaw = parts[1]
+	}
+	idx, err := parseFirstInt(idxRaw)
+	if err != nil {
+		return "", 0, err
+	}
+	return gw, idx, nil
+}
+
+func windowsPreferredDefaultRouteIPv6(excludeIf int) (string, int, error) {
+	script := strings.Join([]string{
+		fmt.Sprintf("$exclude = %d", excludeIf),
+		"$routes = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue",
+		"if ($exclude -gt 0) { $routes = $routes | Where-Object { $_.InterfaceIndex -ne $exclude } }",
+		"$sel = $routes | Where-Object { $_.NextHop -and $_.NextHop -ne '::' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"if ($sel -eq $null) { $sel = $routes | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
+		"if ($sel -eq $null) { '' } else { \"$($sel.NextHop)`t$([int]$sel.InterfaceIndex)\" }",
+	}, "; ")
+	output, err := windowsPowerShellOutput(script)
+	if err != nil {
+		return "", 0, err
+	}
+	raw := strings.TrimSpace(string(output))
+	if raw == "" {
+		return "", 0, nil
+	}
+	parts := strings.SplitN(raw, "\t", 2)
+	gw := strings.TrimSpace(parts[0])
+	idxRaw := raw
+	if len(parts) == 2 {
+		idxRaw = parts[1]
+	}
+	idx, err := parseFirstInt(idxRaw)
+	if err != nil {
+		return "", 0, err
+	}
+	return gw, idx, nil
 }
 
 func windowsInterfaceIndex(name string) (int, error) {
@@ -997,7 +1156,13 @@ func windowsLikelyTunInterfaceIndex(preferredName string) (int, string, error) {
 
 func windowsPowerShellOutput(script string) ([]byte, error) {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+	applyManagedProcessSysProcAttr(cmd)
 	return cmd.CombinedOutput()
+}
+
+func linuxHasCommand(name string) bool {
+	_, err := exec.LookPath(strings.TrimSpace(name))
+	return err == nil
 }
 
 func parseFirstInt(raw string) (int, error) {

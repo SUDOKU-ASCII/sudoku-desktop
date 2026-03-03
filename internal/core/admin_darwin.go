@@ -205,7 +205,13 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	p.label = label
 
 	// Find the tunnel interface by the configured IPv4 (HEV assigns it to utunX).
-	findTunIF := fmt.Sprintf(
+	// Prefer interfaces that were not present before HEV starts, so we don't switch
+	// default route to an unrelated/stale utun with the same address.
+	findTunIFNew := fmt.Sprintf(
+		`ifconfig 2>/dev/null | awk -v ip=%s -v before="$before_ifs" 'BEGIN{ifname=""} /^[^[:space:]]+:/ {gsub(":", "", $1); ifname=$1} $1=="inet" && $2==ip { if (index(" " before " ", " " ifname " ")==0) { print ifname; exit } }'`,
+		shellQuote(strings.TrimSpace(tunIPv4)),
+	)
+	findTunIFAny := fmt.Sprintf(
 		`ifconfig 2>/dev/null | awk -v ip=%s 'BEGIN{ifname=""} /^[^[:space:]]+:/ {gsub(":", "", $1); ifname=$1} $1=="inet" && $2==ip {print ifname; exit}'`,
 		shellQuote(strings.TrimSpace(tunIPv4)),
 	)
@@ -220,12 +226,18 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 	if defaultInterface != "" {
 		// Keep a physical scoped default route so the core can bind sockets to the physical interface
 		// and egress without self-looping once the global default route switches to utun.
-		scopedDefaultRoute = shellJoin("route", "-n", "add", "-ifscope", defaultInterface, "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || true"
+		scopedDefaultRoute = "(" +
+			shellJoin("route", "-n", "add", "-ifscope", defaultInterface, "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1 || " +
+			shellJoin("route", "-n", "change", "-ifscope", defaultInterface, "default", strings.TrimSpace(defaultGateway)) + " >/dev/null 2>&1" +
+			") || echo '__SUDOKU_WARN__=scoped_default_route_failed'"
 	}
 	scopedDefaultRoute6 := ""
 	if defaultInterface != "" && defaultGatewayV6 != "" {
 		// Keep a physical scoped IPv6 default route for direct sockets bound to the physical interface.
-		scopedDefaultRoute6 = shellJoin("route", "-n", "add", "-inet6", "-ifscope", defaultInterface, "default", defaultGatewayV6) + " >/dev/null 2>&1 || true"
+		scopedDefaultRoute6 = "(" +
+			shellJoin("route", "-n", "add", "-inet6", "-ifscope", defaultInterface, "default", defaultGatewayV6) + " >/dev/null 2>&1 || " +
+			shellJoin("route", "-n", "change", "-inet6", "-ifscope", defaultInterface, "default", defaultGatewayV6) + " >/dev/null 2>&1" +
+			") || echo '__SUDOKU_WARN__=scoped_default_route6_failed'"
 	}
 
 	restoreSnippet := ""
@@ -264,6 +276,7 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 
 	inner := fmt.Sprintf(
 		"set -e; cd %s && umask 022 && ("+
+			" before_ifs=\"$(ifconfig -l 2>/dev/null || true)\";"+
 			" launchctl remove %s >/dev/null 2>&1 || true;"+
 			" launchctl submit -l %s -o %s -e %s -- %s %s;"+
 			" sleep 0.2;"+
@@ -273,10 +286,10 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" trap \"launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s\" EXIT;"+
 			" ( sleep 35; if [ ! -f \"$guard_ok\" ]; then echo '__SUDOKU_GUARD__=revert'; launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s; fi ) >/dev/null 2>&1 &"+
 			" tun_if=''; for i in $(seq 1 120); do tun_if=$(%s); [ -n \"$tun_if\" ] && break; sleep 0.1; done;"+
+			" if [ -z \"$tun_if\" ]; then tun_if=$(%s); fi;"+
+			" case \" $before_ifs \" in (*\" $tun_if \"*) echo '__SUDOKU_WARN__=reused_existing_tun_interface_'${tun_if} ;; esac;"+
 			" if [ -z \"$tun_if\" ]; then echo '__SUDOKU_HEV_PID__='${pid:-0}; echo '__SUDOKU_TUN_IF__='; exit 22; fi;"+
 			" echo '__SUDOKU_STEP__=routes';"+
-			" %s"+
-			" %s"+
 			" %s"+
 			" echo '__SUDOKU_STEP__=pf';"+
 			" %s"+
@@ -284,6 +297,9 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" route -n change default -interface \"$tun_if\" || ("+
 			" route -n delete default >/dev/null 2>&1 || true; "+
 			" route -n add default -interface \"$tun_if\");"+
+			" %s"+
+			" echo '__SUDOKU_STEP__=scoped_routes';"+
+			" %s"+
 			" %s"+
 			" echo '__SUDOKU_STEP__=dns';"+
 			" %s"+
@@ -308,13 +324,16 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		shellQuote(label),
 		escapeForDoubleQuotes(pidFile),
 		escapeForDoubleQuotes(restoreSnippet),
-		findTunIF,
+		findTunIFNew,
+		findTunIFAny,
 		func() string {
 			if serverRoute == "" {
 				return ""
 			}
 			return " " + serverRoute + ";"
 		}(),
+		setPFSnippet,
+		setDefaultV6Snippet,
 		func() string {
 			if scopedDefaultRoute == "" {
 				return ""
@@ -327,8 +346,6 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			}
 			return " " + scopedDefaultRoute6 + ";"
 		}(),
-		setPFSnippet,
-		setDefaultV6Snippet,
 		setDNSSnippet,
 	)
 	cmdline := shellJoin("sh", "-lc", inner)

@@ -200,6 +200,20 @@ func (a *App) GetConnections() []core.ActiveConnection {
 	return a.backend.GetConnections()
 }
 
+func (a *App) CloseConnection(connectionID string) error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.CloseConnection(connectionID)
+}
+
+func (a *App) CloseAllConnections() error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.CloseAllConnections()
+}
+
 func (a *App) GetUsageHistory(limit int) []core.UsageDay {
 	if a.backend == nil {
 		return nil
@@ -219,6 +233,13 @@ func (a *App) BuildInfo() map[string]string {
 		return map[string]string{}
 	}
 	return a.backend.BuildInfo()
+}
+
+func (a *App) ValidateYAML(content string) error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.ValidateYAML(content)
 }
 
 func (a *App) OpenRuntimeDir() string {

@@ -10,6 +10,14 @@ export function BuildInfo() {
   return window['go']['main']['App']['BuildInfo']();
 }
 
+export function CloseAllConnections() {
+  return window['go']['main']['App']['CloseAllConnections']();
+}
+
+export function CloseConnection(arg1) {
+  return window['go']['main']['App']['CloseConnection'](arg1);
+}
+
 export function DeleteNode(arg1) {
   return window['go']['main']['App']['DeleteNode'](arg1);
 }
@@ -112,4 +120,8 @@ export function SwitchNode(arg1) {
 
 export function UpsertNode(arg1) {
   return window['go']['main']['App']['UpsertNode'](arg1);
+}
+
+export function ValidateYAML(arg1) {
+  return window['go']['main']['App']['ValidateYAML'](arg1);
 }

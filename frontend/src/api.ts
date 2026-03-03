@@ -50,7 +50,10 @@ export const backendApi = {
   stopReverseForwarder: () => call<void>('StopReverseForwarder'),
   getLogs: (level: string, limit: number) => call<LogEntry[]>('GetLogs', level, limit),
   getConnections: () => call<ActiveConnection[]>('GetConnections'),
+  closeConnection: (id: string) => call<void>('CloseConnection', id),
+  closeAllConnections: () => call<void>('CloseAllConnections'),
   getUsageHistory: (limit: number) => call<UsageDay[]>('GetUsageHistory', limit),
+  validateYAML: (content: string) => call<void>('ValidateYAML', content),
   ensureCoreBinaries: () => call<void>('EnsureCoreBinaries'),
   buildInfo: () => call<Record<string, string>>('BuildInfo'),
 }

@@ -6,6 +6,10 @@ export function AutoSelectLowestLatency():Promise<core.LatencyResult>;
 
 export function BuildInfo():Promise<Record<string, string>>;
 
+export function CloseAllConnections():Promise<void>;
+
+export function CloseConnection(arg1:string):Promise<void>;
+
 export function DeleteNode(arg1:string):Promise<void>;
 
 export function DetectIPDirect():Promise<core.IPDetectResult>;
@@ -57,3 +61,5 @@ export function StopReverseForwarder():Promise<void>;
 export function SwitchNode(arg1:string):Promise<void>;
 
 export function UpsertNode(arg1:core.NodeConfig):Promise<core.NodeConfig>;
+
+export function ValidateYAML(arg1:string):Promise<void>;

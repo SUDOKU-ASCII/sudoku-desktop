@@ -17,6 +17,15 @@ import (
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var logxLineRegex = regexp.MustCompile(`^\s*(\d{2}:\d{2}:\d{2})\s+(debug|info|warn|warning|error)\b(?:\s+\[([^\]]+)\])?\s*(.*)\s*$`)
+var leadingBracketComponentRegex = regexp.MustCompile(`^\[([^\]]+)\]\s*`)
+
+type parsedLogLine struct {
+	Timestamp string
+	Level     string
+	Component string
+	Message   string
+}
 
 func newID(prefix string) string {
 	var b [8]byte
@@ -38,6 +47,20 @@ func cloneConfig(cfg *AppConfig) *AppConfig {
 
 func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
+}
+
+func parseLogxLine(line string) (parsedLogLine, bool) {
+	clean := stripANSI(strings.TrimSpace(line))
+	m := logxLineRegex.FindStringSubmatch(clean)
+	if len(m) != 5 {
+		return parsedLogLine{}, false
+	}
+	return parsedLogLine{
+		Timestamp: strings.TrimSpace(m[1]),
+		Level:     strings.ToLower(strings.TrimSpace(m[2])),
+		Component: strings.TrimSpace(m[3]),
+		Message:   strings.TrimSpace(m[4]),
+	}, true
 }
 
 func ensureDir(path string) error {
@@ -76,6 +99,18 @@ func readLinesPipe(ctx context.Context, r io.Reader, onLine func(string)) error 
 }
 
 func levelFromLine(line string) string {
+	if parsed, ok := parseLogxLine(line); ok && parsed.Level != "" {
+		switch parsed.Level {
+		case "debug":
+			return "debug"
+		case "warn", "warning":
+			return "warn"
+		case "error":
+			return "error"
+		default:
+			return "info"
+		}
+	}
 	clean := strings.ToLower(stripANSI(strings.TrimSpace(line)))
 	parts := strings.Fields(clean)
 	if len(parts) >= 2 {
@@ -103,6 +138,12 @@ func levelFromLine(line string) string {
 }
 
 func componentFromLine(line string) string {
+	if parsed, ok := parseLogxLine(line); ok {
+		if parsed.Component != "" {
+			return parsed.Component
+		}
+		return "core"
+	}
 	clean := stripANSI(line)
 	l := strings.Index(clean, "[")
 	r := strings.Index(clean, "]")
@@ -110,6 +151,24 @@ func componentFromLine(line string) string {
 		return strings.TrimSpace(clean[l+1 : r])
 	}
 	return "core"
+}
+
+func trimComponentPrefix(message, component string) string {
+	msg := strings.TrimSpace(stripANSI(message))
+	comp := strings.TrimSpace(component)
+	if msg == "" || comp == "" {
+		return msg
+	}
+	if m := leadingBracketComponentRegex.FindStringSubmatch(msg); len(m) == 2 {
+		if strings.EqualFold(strings.TrimSpace(m[1]), comp) {
+			return strings.TrimSpace(msg[len(m[0]):])
+		}
+	}
+	prefix := comp + ":"
+	if len(msg) >= len(prefix) && strings.EqualFold(msg[:len(prefix)], prefix) {
+		return strings.TrimSpace(msg[len(prefix):])
+	}
+	return msg
 }
 
 func isLikelyPermissionError(err error) bool {

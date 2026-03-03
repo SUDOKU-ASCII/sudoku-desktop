@@ -5,6 +5,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -20,6 +21,7 @@ type windowsProxySnapshot struct {
 }
 
 func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
+	logf := cfg.Logf
 	snap, err := windowsReadProxySnapshot()
 	if err != nil {
 		return nil, err
@@ -45,6 +47,9 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 			return err
 		}
 		_ = windowsRefreshInternetSettings()
+		if err := windowsSyncWinHTTPProxy(cfg.LocalPort); err != nil && logf != nil {
+			logf(fmt.Sprintf("sync winhttp proxy failed: %v", err))
+		}
 		return nil
 	}()
 	if applyErr != nil {
@@ -56,6 +61,9 @@ func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
 			return err
 		}
 		_ = windowsRefreshInternetSettings()
+		if err := windowsResetWinHTTPProxy(); err != nil && logf != nil {
+			logf(fmt.Sprintf("reset winhttp proxy failed: %v", err))
+		}
 		return nil
 	}, nil
 }
@@ -144,4 +152,31 @@ func windowsRefreshInternetSettings() error {
 		return err
 	}
 	return nil
+}
+
+func windowsSyncWinHTTPProxy(localPort int) error {
+	if localPort <= 0 || localPort > 65535 {
+		return errors.New("invalid local port for winhttp proxy")
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	bypass := "localhost;127.0.0.1;::1"
+	out, err := windowsRunHiddenCommand("netsh", "winhttp", "set", "proxy", "proxy-server="+addr, "bypass-list="+bypass)
+	if err != nil {
+		return fmt.Errorf("netsh set proxy: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func windowsResetWinHTTPProxy() error {
+	out, err := windowsRunHiddenCommand("netsh", "winhttp", "reset", "proxy")
+	if err != nil {
+		return fmt.Errorf("netsh reset proxy: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func windowsRunHiddenCommand(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	applyManagedProcessSysProcAttr(cmd)
+	return cmd.CombinedOutput()
 }

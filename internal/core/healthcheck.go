@@ -142,6 +142,34 @@ func healthCheckSOCKS5Connect(ctx context.Context, socksAddr string, target stri
 	return nil
 }
 
+func healthCheckSOCKS5ConnectAny(ctx context.Context, socksAddr string, targets []string, timeout time.Duration) error {
+	if len(targets) == 0 {
+		return errors.New("no targets")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	var errs []string
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if err := healthCheckSOCKS5Connect(ctx, socksAddr, t, timeout); err == nil {
+			return nil
+		} else {
+			errs = append(errs, t+": "+err.Error())
+		}
+	}
+	if len(errs) == 0 {
+		return errors.New("no valid targets")
+	}
+	return errors.New(strings.Join(errs, " | "))
+}
+
 func healthCheckDNSUDP(ctx context.Context, server string, qname string, timeout time.Duration) error {
 	server = strings.TrimSpace(server)
 	qname = strings.TrimSpace(qname)

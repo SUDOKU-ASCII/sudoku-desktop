@@ -3,8 +3,10 @@
 package app
 
 import (
+	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +38,7 @@ var (
 const (
 	trafficKindDirect = 0
 	trafficKindProxy  = 1
+	envTrafficFile    = "SUDOKU_TRAFFIC_FILE"
 )
 
 type countingConn struct {
@@ -107,13 +110,39 @@ func startTrafficReporter() {
 			interval = time.Duration(v) * time.Millisecond
 		}
 	}
+	trafficFile := strings.TrimSpace(os.Getenv(envTrafficFile))
+	if trafficFile != "" {
+		_ = writeTrafficStatsFile(trafficFile, SnapshotTrafficStats())
+	}
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for range t.C {
 			s := SnapshotTrafficStats()
+			if trafficFile != "" {
+				_ = writeTrafficStatsFile(trafficFile, s)
+			}
 			logx.Infof("Traffic", "__SUDOKU_TRAFFIC__ direct_tx=%d direct_rx=%d proxy_tx=%d proxy_rx=%d",
 				s.DirectTx, s.DirectRx, s.ProxyTx, s.ProxyRx)
 		}
 	}()
+}
+
+func writeTrafficStatsFile(path string, s TrafficStats) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	buf, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

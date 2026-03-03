@@ -16,6 +16,7 @@ type trafficSampleState struct {
 	lastProxyDec  uint64
 
 	coreTrafficActive   bool
+	coreTrafficFile     string
 	coreLastDirectTx    uint64
 	coreLastDirectRx    uint64
 	coreLastProxyTx     uint64
