@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -86,6 +88,12 @@ func fileMissing(path string) bool {
 }
 
 func (b *Backend) installBundledRuntimeDir(destDir string) error {
+	if err := b.installBundledRuntimeFromEmbeddedFS(destDir); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
 	srcDir, err := findBundledRuntimePlatformDir()
 	if err != nil {
 		return err
@@ -122,6 +130,55 @@ func (b *Backend) installBundledRuntimeDir(destDir string) error {
 	return nil
 }
 
+func (b *Backend) installBundledRuntimeFromEmbeddedFS(destDir string) error {
+	if b == nil || b.bundledRuntimeFS == nil {
+		return os.ErrNotExist
+	}
+	root := strings.TrimSpace(b.bundledRuntimeRoot)
+	if root == "" {
+		root = "runtime/bin"
+	}
+	root = strings.Trim(strings.ReplaceAll(root, "\\", "/"), "/")
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	srcDir := path.Join(root, platform)
+
+	entries, err := fs.ReadDir(b.bundledRuntimeFS, srcDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return os.ErrNotExist
+		}
+		return err
+	}
+	if err := ensureDir(destDir); err != nil {
+		return err
+	}
+
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		name := ent.Name()
+		srcPath := path.Join(srcDir, name)
+		content, err := fs.ReadFile(b.bundledRuntimeFS, srcPath)
+		if err != nil {
+			return err
+		}
+		dstPath := filepath.Join(destDir, name)
+		if !fileMissing(dstPath) {
+			same, err := bytesLookIdentical(content, dstPath)
+			if err == nil && same {
+				continue
+			}
+		}
+		mode := bundledFileMode(name)
+		if err := writeBytesAtomic(content, dstPath, mode); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func filesLookIdentical(srcPath, dstPath string) (bool, error) {
 	srcInfo, err := os.Stat(srcPath)
 	if err != nil {
@@ -145,6 +202,22 @@ func filesLookIdentical(srcPath, dstPath string) (bool, error) {
 	return srcHash == dstHash, nil
 }
 
+func bytesLookIdentical(srcContent []byte, dstPath string) (bool, error) {
+	dstInfo, err := os.Stat(dstPath)
+	if err != nil {
+		return false, err
+	}
+	if int64(len(srcContent)) != dstInfo.Size() {
+		return false, nil
+	}
+	srcHash := bytesSHA256(srcContent)
+	dstHash, err := fileSHA256(dstPath)
+	if err != nil {
+		return false, err
+	}
+	return srcHash == dstHash, nil
+}
+
 func fileSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -157,6 +230,11 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func bytesSHA256(data []byte) string {
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h[:])
 }
 
 func bundledFileMode(name string) os.FileMode {
@@ -268,6 +346,39 @@ func copyFileAtomic(srcPath, dstPath string, mode os.FileMode) error {
 	}
 
 	if _, err := io.Copy(tmp, src); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if mode != 0 {
+		_ = os.Chmod(tmpPath, mode)
+	}
+	_ = os.Remove(dstPath)
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
+}
+
+func writeBytesAtomic(content []byte, dstPath string, mode os.FileMode) error {
+	if err := ensureDir(filepath.Dir(dstPath)); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dstPath), filepath.Base(dstPath)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.Write(content); err != nil {
 		cleanup()
 		return err
 	}

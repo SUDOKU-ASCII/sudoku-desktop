@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -71,10 +72,20 @@ type Backend struct {
 	usageDirty     bool
 	lastUsageFlush time.Time
 
-	tickerStop chan struct{}
+	tickerStop         chan struct{}
+	bundledRuntimeFS   fs.FS
+	bundledRuntimeRoot string
 }
 
 func NewBackend() (*Backend, error) {
+	return newBackendWithRuntimeFS(nil, "")
+}
+
+func NewBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, error) {
+	return newBackendWithRuntimeFS(runtimeFS, runtimeRoot)
+}
+
+func newBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, error) {
 	const newStoreName = "4x4-sudoku"
 	const oldStoreName = "sudoku-desktop"
 
@@ -94,18 +105,20 @@ func NewBackend() (*Backend, error) {
 		return nil, err
 	}
 	b := &Backend{
-		store:       store,
-		cfg:         cfg,
-		coreProc:    NewManagedProcess("sudoku"),
-		tunProc:     NewManagedProcess("hev"),
-		tunAdmin:    newAdminDetachedProcess(),
-		revProc:     NewManagedProcess("reverse"),
-		connections: map[string]*ActiveConnection{},
-		latencyByID: map[string]LatencyResult{},
-		tickerStop:  make(chan struct{}),
-		logs:        make([]LogEntry, 0, 512),
-		emitStateCh: make(chan RuntimeState, 8),
-		emitLogCh:   make(chan LogEntry, 512),
+		store:              store,
+		cfg:                cfg,
+		coreProc:           NewManagedProcess("sudoku"),
+		tunProc:            NewManagedProcess("hev"),
+		tunAdmin:           newAdminDetachedProcess(),
+		revProc:            NewManagedProcess("reverse"),
+		connections:        map[string]*ActiveConnection{},
+		latencyByID:        map[string]LatencyResult{},
+		tickerStop:         make(chan struct{}),
+		logs:               make([]LogEntry, 0, 512),
+		emitStateCh:        make(chan RuntimeState, 8),
+		emitLogCh:          make(chan LogEntry, 512),
+		bundledRuntimeFS:   runtimeFS,
+		bundledRuntimeRoot: runtimeRoot,
 	}
 	b.usageDays = trimUsageDays(loadUsageHistory(store.UsageHistoryPath()), 120)
 	b.pfMgr = newPortForwardManager(func(line string) {

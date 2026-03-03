@@ -95,7 +95,8 @@ if [[ "$GOOS" == "darwin" ]]; then
   fi
   DEST_DIR="${APP_PATH}/Contents/Resources/runtime/bin/${PLATFORM_DIR}"
 else
-  DEST_DIR="${BUILD_BIN}"
+  echo "[ok] Runtime binaries are embedded into executable for ${PLATFORM_DIR}; skip filesystem bundle."
+  exit 0
 fi
 
 mkdir -p "$DEST_DIR"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"runtime"
 
 	"github.com/saba-futai/sudoku/pkg/logx"
 	"github.com/wailsapp/wails/v2"
@@ -12,17 +13,21 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed all:runtime/bin
+var bundledRuntime embed.FS
+
 func main() {
 	// Create an instance of the app structure
-	app := NewApp()
+	app := NewApp(bundledRuntime, "runtime/bin")
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:     "4x4 sudoku",
-		Width:     1160,
-		Height:    760,
-		MinWidth:  390,
-		MinHeight: 680,
+		Title:             "4x4 sudoku",
+		Width:             1160,
+		Height:            760,
+		MinWidth:          390,
+		MinHeight:         680,
+		HideWindowOnClose: runtime.GOOS == "darwin",
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

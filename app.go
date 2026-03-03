@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
 )
@@ -10,12 +11,19 @@ import (
 type App struct {
 	ctx     context.Context
 	backend *core.Backend
+
+	runtimeFS   fs.FS
+	runtimeRoot string
 }
 
 // NewApp creates a new App application struct
-func NewApp() *App {
-	backend, _ := core.NewBackend()
-	return &App{backend: backend}
+func NewApp(runtimeFS fs.FS, runtimeRoot string) *App {
+	backend, _ := core.NewBackendWithRuntimeFS(runtimeFS, runtimeRoot)
+	return &App{
+		backend:     backend,
+		runtimeFS:   runtimeFS,
+		runtimeRoot: runtimeRoot,
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -23,7 +31,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	if a.backend == nil {
-		b, err := core.NewBackend()
+		b, err := core.NewBackendWithRuntimeFS(a.runtimeFS, a.runtimeRoot)
 		if err == nil {
 			a.backend = b
 		}
