@@ -95,7 +95,7 @@ if [[ "$GOOS" == "darwin" ]]; then
   fi
   DEST_DIR="${APP_PATH}/Contents/Resources/runtime/bin/${PLATFORM_DIR}"
 else
-  DEST_DIR="${BUILD_BIN}/runtime/bin/${PLATFORM_DIR}"
+  DEST_DIR="${BUILD_BIN}"
 fi
 
 mkdir -p "$DEST_DIR"

@@ -31,8 +31,8 @@ const emit = defineEmits<{
           <option value="error">error</option>
         </select>
       </label>
-      <label class="field compact" style="min-width: 240px"><span>搜索</span><input :value="props.logSearch" placeholder="按消息/组件检索日志" @input="emit('update:logSearch', ($event.target as HTMLInputElement).value.trim())" /></label>
-      <label class="field compact"><span>Render</span>
+      <label class="field compact" style="min-width: 240px"><span>{{ props.t('search') }}</span><input :value="props.logSearch" :placeholder="props.t('logSearchPlaceholder')" @input="emit('update:logSearch', ($event.target as HTMLInputElement).value.trim())" /></label>
+      <label class="field compact"><span>{{ props.t('renderCount') }}</span>
         <select :value="props.logDisplayLimit" @change="emit('update:logDisplayLimit', Number(($event.target as HTMLSelectElement).value))">
           <option :value="300">300</option>
           <option :value="600">600</option>

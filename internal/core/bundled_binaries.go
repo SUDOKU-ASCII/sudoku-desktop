@@ -97,11 +97,15 @@ func (b *Backend) installBundledRuntimeDir(destDir string) error {
 	if err != nil {
 		return err
 	}
+	hostExe := currentExecutableBaseName()
 	for _, ent := range entries {
 		if ent.IsDir() {
 			continue
 		}
 		name := ent.Name()
+		if hostExe != "" && strings.EqualFold(name, hostExe) {
+			continue
+		}
 		srcPath := filepath.Join(srcDir, name)
 		dstPath := filepath.Join(destDir, name)
 		if !fileMissing(dstPath) {
@@ -194,6 +198,7 @@ func findBundledRuntimePlatformDir() (string, error) {
 		if runtime.GOOS == "darwin" {
 			candidates = append(candidates, filepath.Join(exeDir, "..", "Resources", "runtime", "bin", platform))
 		}
+		candidates = append(candidates, exeDir)
 		candidates = append(candidates, filepath.Join(exeDir, "runtime", "bin", platform))
 	}
 
@@ -206,9 +211,40 @@ func findBundledRuntimePlatformDir() (string, error) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
+		if !hasBundledRuntimeFiles(dir) {
+			continue
+		}
 		return dir, nil
 	}
 	return "", os.ErrNotExist
+}
+
+func hasBundledRuntimeFiles(dir string) bool {
+	required := []string{
+		runtimeBinaryName("sudoku"),
+		runtimeBinaryName("hev-socks5-tunnel"),
+	}
+	for _, name := range required {
+		if fileMissing(filepath.Join(dir, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func runtimeBinaryName(base string) string {
+	if runtime.GOOS == "windows" {
+		return base + ".exe"
+	}
+	return base
+}
+
+func currentExecutableBaseName() string {
+	exe, err := os.Executable()
+	if err != nil || strings.TrimSpace(exe) == "" {
+		return ""
+	}
+	return filepath.Base(exe)
 }
 
 func copyFileAtomic(srcPath, dstPath string, mode os.FileMode) error {

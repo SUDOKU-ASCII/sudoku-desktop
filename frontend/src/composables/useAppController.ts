@@ -127,7 +127,7 @@ const config = reactive<AppConfig>({
   nodes: [],
   routing: { proxyMode: 'pac', ruleUrls: [], customRulesEnabled: false, customRules: '' },
   tun: {
-    enabled: true,
+    enabled: false,
     interfaceName: 'sudoku0',
     mtu: 8500,
     ipv4: '198.18.0.1',
@@ -137,7 +137,7 @@ const config = reactive<AppConfig>({
     socksMark: 438,
     routeTable: 20,
     logLevel: 'warn',
-    mapDnsEnabled: true,
+    mapDnsEnabled: false,
     mapDnsAddress: '198.18.0.2',
     mapDnsPort: 53,
     mapDnsNetwork: '100.64.0.0',
@@ -384,9 +384,9 @@ const saveConfig = async (silentOrEvent: boolean | Event = false) => {
   busy.value = true
   try {
     await backendApi.saveConfig(cloneDeep(config))
-    if (!silent) flash('Saved')
+    if (!silent) flash(t('saved'))
   } catch (e: any) {
-    flash(e?.message || 'Save failed', 'error')
+    flash(e?.message || t('saveFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -396,9 +396,9 @@ const startProxy = async () => {
   proxyOpBusy.value = true
   try {
     await backendApi.startProxy({ withTun: config.tun.enabled })
-    flash('Started')
+    flash(t('started'))
   } catch (e: any) {
-    flash(e?.message || 'Start failed', 'error')
+    flash(e?.message || t('startFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
   }
@@ -408,9 +408,9 @@ const stopProxy = async () => {
   proxyOpBusy.value = true
   try {
     await backendApi.stopProxy()
-    flash('Stopped')
+    flash(t('stopped'))
   } catch (e: any) {
-    flash(e?.message || 'Stop failed', 'error')
+    flash(e?.message || t('stopFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
   }
@@ -420,9 +420,9 @@ const restartProxy = async () => {
   proxyOpBusy.value = true
   try {
     await backendApi.restartProxy({ withTun: config.tun.enabled })
-    flash('Restarted')
+    flash(t('restarted'))
   } catch (e: any) {
-    flash(e?.message || 'Restart failed', 'error')
+    flash(e?.message || t('restartFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
   }
@@ -435,23 +435,23 @@ const saveNode = async () => {
     await refreshBasics()
     pickNode(node)
     nodeEditorOpen.value = false
-    flash('Node saved')
+    flash(t('nodeSaved'))
   } catch (e: any) {
-    flash(e?.message || 'Node save failed', 'error')
+    flash(e?.message || t('nodeSaveFailed'), 'error')
   } finally {
     busy.value = false
   }
 }
 
 const removeNode = async (id: string) => {
-  if (!window.confirm('确认删除该节点？')) return
+  if (!window.confirm(t('confirmDeleteNode'))) return
   busy.value = true
   try {
     await backendApi.deleteNode(id)
     await refreshBasics()
-    flash('Node deleted')
+    flash(t('nodeDeleted'))
   } catch (e: any) {
-    flash(e?.message || 'Delete failed', 'error')
+    flash(e?.message || t('deleteFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -462,9 +462,9 @@ const switchNode = async (id: string) => {
   try {
     await backendApi.switchNode(id)
     config.activeNodeId = id
-    flash('Node switched')
+    flash(t('nodeSwitched'))
   } catch (e: any) {
-    flash(e?.message || 'Switch failed', 'error')
+    flash(e?.message || t('switchFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -475,9 +475,9 @@ const exportShortlink = async (id: string) => {
   try {
     const link = await backendApi.exportShortLink(id)
     await navigator.clipboard.writeText(link)
-    flash('Copied')
+    flash(t('copied'))
   } catch (e: any) {
-    flash(e?.message || 'Export failed', 'error')
+    flash(e?.message || t('exportFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -488,9 +488,9 @@ const probeAll = async () => {
   try {
     const results = await backendApi.probeAllNodes()
     state.latencies = results
-    flash('Latency checked')
+    flash(t('latencyChecked'))
   } catch (e: any) {
-    flash(e?.message || 'Probe failed', 'error')
+    flash(e?.message || t('probeFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -503,9 +503,9 @@ const probeNode = async (id: string) => {
     const idx = state.latencies.findIndex((x) => x.nodeId === result.nodeId)
     if (idx >= 0) state.latencies.splice(idx, 1, result)
     else state.latencies.push(result)
-    flash(`${result.nodeName || 'Node'}: ${result.connectOk ? `${result.latencyMs}ms` : result.error || 'failed'}`)
+    flash(`${result.nodeName || t('node')} : ${result.connectOk ? `${result.latencyMs}ms` : result.error || t('failed')}`)
   } catch (e: any) {
-    flash(e?.message || 'Probe failed', 'error')
+    flash(e?.message || t('probeFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -515,9 +515,9 @@ const autoBest = async () => {
   busy.value = true
   try {
     const best: LatencyResult = await backendApi.autoSelectLowestLatency()
-    flash(`Switched to ${best.nodeName} (${best.latencyMs}ms)`)
+    flash(`${t('switchedTo')} ${best.nodeName} (${best.latencyMs}ms)`)
   } catch (e: any) {
-    flash(e?.message || 'Auto select failed', 'error')
+    flash(e?.message || t('autoSelectFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -546,7 +546,7 @@ const startReverse = async () => {
   try {
     await backendApi.startReverseForwarder()
   } catch (e: any) {
-    flash(e?.message || 'Reverse start failed', 'error')
+    flash(e?.message || t('reverseStartFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -557,7 +557,7 @@ const stopReverse = async () => {
   try {
     await backendApi.stopReverseForwarder()
   } catch (e: any) {
-    flash(e?.message || 'Reverse stop failed', 'error')
+    flash(e?.message || t('reverseStopFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -568,9 +568,9 @@ const closeConnection = async (id: string) => {
   try {
     await backendApi.closeConnection(id)
     state.connections = state.connections.filter((x) => x.id !== id)
-    flash('Connection closed')
+    flash(t('connectionClosed'))
   } catch (e: any) {
-    flash(e?.message || 'Close connection failed', 'error')
+    flash(e?.message || t('closeConnectionFailed'), 'error')
   } finally {
     connectionOpBusy.value = false
   }
@@ -581,9 +581,9 @@ const closeAllConnections = async () => {
   try {
     await backendApi.closeAllConnections()
     state.connections = []
-    flash('All active connections closed')
+    flash(t('allConnectionsClosed'))
   } catch (e: any) {
-    flash(e?.message || 'Close all connections failed', 'error')
+    flash(e?.message || t('closeAllConnectionsFailed'), 'error')
   } finally {
     connectionOpBusy.value = false
   }
@@ -667,12 +667,12 @@ const decodeRawUrlBase64 = (raw: string): string => {
 const applyShortlinkToEditable = (link: string, nameOverride = '') => {
   const raw = link.trim()
   if (!raw.startsWith('sudoku://')) {
-    throw new Error('Invalid short link scheme')
+    throw new Error(t('invalidShortlinkScheme'))
   }
   const payloadText = decodeRawUrlBase64(raw.slice('sudoku://'.length))
   const payload = JSON.parse(payloadText) as ShortlinkPayload
   if (!payload.h || !payload.p || !payload.k) {
-    throw new Error('Short link missing required fields')
+    throw new Error(t('shortlinkMissingFields'))
   }
 
   editableNode.serverAddress = `${payload.h}:${payload.p}`
@@ -700,9 +700,9 @@ const applyShortlinkToEditable = (link: string, nameOverride = '') => {
 const parseShortlinkFromInput = () => {
   try {
     applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value)
-    flash('Short link parsed')
+    flash(t('shortlinkParsed'))
   } catch (e: any) {
-    flash(e?.message || 'Short link parse failed', 'error')
+    flash(e?.message || t('shortlinkParseFailed'), 'error')
   }
 }
 
@@ -710,14 +710,14 @@ const parseShortlinkFromClipboard = async () => {
   try {
     const text = await navigator.clipboard.readText()
     if (!text.trim()) {
-      flash('Clipboard is empty', 'error')
+      flash(t('clipboardEmpty'), 'error')
       return
     }
     shortlinkInput.value = text.trim()
     applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value)
-    flash('Imported from clipboard')
+    flash(t('importedFromClipboard'))
   } catch (e: any) {
-    flash(e?.message || 'Clipboard import failed', 'error')
+    flash(e?.message || t('clipboardImportFailed'), 'error')
   }
 }
 
@@ -745,32 +745,32 @@ const validateCustomRules = async () => {
   const raw = config.routing.customRules
   const yamlLike = /(^|\n)\s*[^#\n][^\n]*:\s*/.test(raw) || /(^|\n)\s*-\s+/.test(raw)
   if (!yamlLike) {
-    customRulesValidation.value = { status: 'ok', message: '规则列表格式可用' }
+    customRulesValidation.value = { status: 'ok', message: t('customRulesListValid') }
     return
   }
-  customRulesValidation.value = { status: 'checking', message: 'YAML 检查中...' }
+  customRulesValidation.value = { status: 'checking', message: t('customRulesYamlChecking') }
   try {
     await backendApi.validateYAML(raw)
-    customRulesValidation.value = { status: 'ok', message: 'YAML 语法正确' }
+    customRulesValidation.value = { status: 'ok', message: t('customRulesYamlValid') }
   } catch (e: any) {
-    customRulesValidation.value = { status: 'error', message: e?.message || 'YAML 语法错误' }
+    customRulesValidation.value = { status: 'error', message: e?.message || t('customRulesYamlInvalid') }
   }
 }
 
 const resetTunFactory = () => {
   const macLike = /Mac|Darwin/i.test(navigator.userAgent)
   Object.assign(config.tun, {
-    enabled: true,
+    enabled: false,
     interfaceName: macLike ? 'tun0' : 'sudoku0',
     mtu: 8500,
     ipv4: '198.18.0.1',
     ipv6: 'fc00::1',
-    blockQuic: macLike,
+    blockQuic: true,
     socksUdp: 'udp',
     socksMark: 438,
     routeTable: 20,
     logLevel: 'warn',
-    mapDnsEnabled: true,
+    mapDnsEnabled: false,
     mapDnsAddress: '198.18.0.2',
     mapDnsPort: 53,
     mapDnsNetwork: '100.64.0.0',
@@ -780,7 +780,7 @@ const resetTunFactory = () => {
     maxSession: 0,
     connectTimeout: 10000,
   })
-  flash('TUN restored to defaults')
+  flash(t('tunRestoredDefaults'))
 }
 
 watch(
@@ -805,7 +805,7 @@ watch(
   async (_next, _prev) => {
     if (!loadReady.value || tunAutoSaveLock.value) return
     await saveConfig(true)
-    flash('TUN setting auto-saved')
+    flash(t('tunAutoSaved'))
   }
 )
 

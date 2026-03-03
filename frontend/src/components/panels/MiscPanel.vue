@@ -13,19 +13,19 @@ const props = defineProps<{
     <section class="group-card">
       <h3>{{ props.t('misc') }}</h3>
       <div class="form-grid compact-grid">
-        <label class="field"><span>Language</span>
+        <label class="field"><span>{{ props.t('language') }}</span>
           <select v-model="props.config.ui.language">
-            <option value="auto">auto</option>
-            <option value="zh">中文</option>
-            <option value="en">English</option>
-            <option value="ru">Русский</option>
+            <option value="auto">{{ props.t('auto') }}</option>
+            <option value="zh">{{ props.t('langZh') }}</option>
+            <option value="en">{{ props.t('langEn') }}</option>
+            <option value="ru">{{ props.t('langRu') }}</option>
           </select>
         </label>
-        <label class="field"><span>Theme</span>
+        <label class="field"><span>{{ props.t('theme') }}</span>
           <select v-model="props.config.ui.theme">
-            <option value="auto">auto</option>
-            <option value="light">light</option>
-            <option value="dark">dark</option>
+            <option value="auto">{{ props.t('auto') }}</option>
+            <option value="light">{{ props.t('light') }}</option>
+            <option value="dark">{{ props.t('dark') }}</option>
           </select>
         </label>
       </div>

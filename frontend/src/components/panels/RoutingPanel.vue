@@ -18,16 +18,16 @@ const props = defineProps<{
     <section class="group-card">
       <h3>{{ props.t('proxyMode') }}</h3>
       <div class="mode-segment">
-        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'global' }" @click="props.setRoutingMode('global')">Global</button>
-        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'direct' }" @click="props.setRoutingMode('direct')">Direct</button>
-        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'pac' }" @click="props.setRoutingMode('pac')">PAC</button>
+        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'global' }" @click="props.setRoutingMode('global')">{{ props.t('modeGlobal') }}</button>
+        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'direct' }" @click="props.setRoutingMode('direct')">{{ props.t('modeDirect') }}</button>
+        <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'pac' }" @click="props.setRoutingMode('pac')">{{ props.t('modePac') }}</button>
       </div>
     </section>
 
     <section class="group-card">
       <div class="group-head">
         <h3>{{ props.t('pacRules') }}</h3>
-        <button class="btn mini" @click="props.addPacRule">新增规则</button>
+        <button class="btn mini" @click="props.addPacRule">{{ props.t('addRule') }}</button>
       </div>
       <div class="pac-list">
         <div class="pac-row" v-for="(_rule, idx) in props.config.routing.ruleUrls" :key="idx">
@@ -38,7 +38,7 @@ const props = defineProps<{
           />
           <button class="btn mini danger" @click="props.removePacRule(idx)">{{ props.t('delete') }}</button>
         </div>
-        <p v-if="props.config.routing.ruleUrls.length === 0" class="muted">暂无 PAC URL</p>
+        <p v-if="props.config.routing.ruleUrls.length === 0" class="muted">{{ props.t('noPacUrl') }}</p>
       </div>
     </section>
 
@@ -61,7 +61,7 @@ const props = defineProps<{
         class="wide-editor"
       />
       <p class="yaml-state" :class="props.customRulesValidation.status">
-        {{ props.customRulesValidation.message || '支持规则列表与 YAML 语法校验' }}
+        {{ props.customRulesValidation.message || props.t('customRulesYamlHint') }}
       </p>
     </section>
 

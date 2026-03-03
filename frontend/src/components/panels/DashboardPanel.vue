@@ -33,7 +33,7 @@ const props = defineProps<{
       <div class="hero-main">
         <div class="hero-text">
           <h3>{{ props.t('dashboard') }}</h3>
-          <p>核心状态与流量总览</p>
+          <p>{{ props.t('dashboardSummary') }}</p>
         </div>
         <div class="hero-controls">
           <label class="field compact">
@@ -65,7 +65,7 @@ const props = defineProps<{
         >
           <span class="power-indicator" />
           <strong>{{ props.state.running ? props.t('stop') : props.t('start') }}</strong>
-          <small>{{ props.state.running ? '立即断开当前代理会话' : '立即启动代理会话' }}</small>
+          <small>{{ props.state.running ? props.t('stopSessionNow') : props.t('startSessionNow') }}</small>
         </button>
         <button class="btn ghost" :disabled="props.proxyOpBusy || !props.state.running" @click="props.restartProxy">{{ props.t('restart') }}</button>
       </div>
@@ -75,7 +75,7 @@ const props = defineProps<{
       <article class="metric">
         <h3>{{ props.t('totalUpload') }}</h3>
         <strong>{{ props.humanBytes(props.state.traffic.totalTx) }}</strong>
-        <small>{{ props.state.traffic.interface }} · {{ props.state.traffic.interfaceFound ? 'OK' : 'Missing' }}</small>
+        <small>{{ props.state.traffic.interface }} · {{ props.state.traffic.interfaceFound ? props.t('interfaceOk') : props.t('interfaceMissing') }}</small>
       </article>
       <article class="metric">
         <h3>{{ props.t('totalDownload') }}</h3>
@@ -122,7 +122,7 @@ const props = defineProps<{
     <div class="section-head">
       <h3 class="section-title">{{ props.t('connections') }}</h3>
       <button class="btn mini danger" :disabled="props.connectionOpBusy || props.state.connections.length === 0" @click="props.closeAllConnections">
-        关闭全部连接
+        {{ props.t('closeAllConnections') }}
       </button>
     </div>
     <div class="table-wrap">
@@ -135,7 +135,7 @@ const props = defineProps<{
             <th>{{ props.t('direction') }}</th>
             <th>{{ props.t('seen') }}</th>
             <th>{{ props.t('hits') }}</th>
-            <th>操作</th>
+            <th>{{ props.t('action') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -146,7 +146,7 @@ const props = defineProps<{
             <td><span class="pill" :class="item.direction">{{ item.direction }}</span></td>
             <td>{{ new Date(item.lastSeen).toLocaleTimeString() }}</td>
             <td>{{ item.hits }}</td>
-            <td><button class="btn mini danger" :disabled="props.connectionOpBusy" @click="props.closeConnection(item.id)">断开</button></td>
+            <td><button class="btn mini danger" :disabled="props.connectionOpBusy" @click="props.closeConnection(item.id)">{{ props.t('disconnect') }}</button></td>
           </tr>
           <tr v-if="props.state.connections.length === 0"><td colspan="7">{{ props.t('none') }}</td></tr>
         </tbody>

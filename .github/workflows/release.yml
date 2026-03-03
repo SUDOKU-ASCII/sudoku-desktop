@@ -75,7 +75,6 @@ jobs:
           ./scripts/build_sudoku_target.sh
           ./scripts/fetch_hev_release.sh
 
-      # 在这里区分 Windows 和其他系统，为 Windows 添加 .exe 后缀
       - name: Build app
         shell: bash
         run: |
@@ -108,18 +107,25 @@ jobs:
 
           version = os.environ["GITHUB_REF_NAME"]
           artifact = os.environ["ARTIFACT"]
+          platform = os.environ["PLATFORM"].replace("/", "-")
           root = Path("build/bin")
+          runtime_src = Path("runtime/bin") / platform
           out = Path("dist") / f"sudoku4x4_{version}_{artifact}.zip"
 
           with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
             z.write(root / "sudoku4x4.exe", arcname="sudoku4x4.exe")
-            for p in (root / "runtime").rglob("*"):
-              if p.is_file():
-                z.write(p, arcname=str(p.relative_to(root)))
+            for p in sorted(runtime_src.iterdir()):
+              if not p.is_file():
+                continue
+              bundled = root / p.name
+              if not bundled.exists():
+                raise FileNotFoundError(bundled)
+              z.write(bundled, arcname=p.name)
           print(out)
           PY
         env:
           ARTIFACT: ${{ matrix.artifact }}
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -127,7 +133,32 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          tar -czf "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku4x4" "runtime"
+          python - <<'PY'
+          import os
+          import tarfile
+          from pathlib import Path
+
+          version = os.environ["GITHUB_REF_NAME"]
+          artifact = os.environ["ARTIFACT"]
+          platform = os.environ["PLATFORM"].replace("/", "-")
+          root = Path("build/bin")
+          runtime_src = Path("runtime/bin") / platform
+          out = Path("dist") / f"sudoku4x4_{version}_{artifact}.tar.gz"
+
+          with tarfile.open(out, "w:gz") as t:
+            t.add(root / "sudoku4x4", arcname="sudoku4x4")
+            for p in sorted(runtime_src.iterdir()):
+              if not p.is_file():
+                continue
+              bundled = root / p.name
+              if not bundled.exists():
+                raise FileNotFoundError(bundled)
+              t.add(bundled, arcname=p.name)
+          print(out)
+          PY
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

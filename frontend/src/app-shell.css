@@ -87,9 +87,19 @@ body,
   width: 100%;
   min-height: 100%;
   height: 100%;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   color: var(--ink);
   background: #f5f3ef;
   font-family: 'SF Pro Display', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#app::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 html[data-app-theme='dark'],
@@ -1138,7 +1148,7 @@ textarea {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 980px) {
   .app-shell {
     padding: 8px 8px 78px;
     border-radius: 14px;
