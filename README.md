@@ -43,7 +43,7 @@ This project is currently positioned as a Wails-based desktop Sudoku game.
 - Built with `Wails` + `Vue`
 - Built-in Sudoku gameplay (4x4 / 9x9)
 - Difficulty selection, hints, and basic game controls
-- Cross-platform desktop packaging via GitHub Actions
+- Best user experience should be unmatched
 
 ## 当前定位
 
@@ -52,33 +52,8 @@ This project is currently positioned as a Wails-based desktop Sudoku game.
 - 使用 `Wails` + `Vue` 构建
 - 内置数独玩法（4x4 / 9x9）
 - 提供难度选择、提示和基础操作
-- 通过 GitHub Actions 进行跨平台桌面打包
+- 用户体验应当无敌
 
-## GitHub Release CI
-
-The release workflow builds artifacts for macOS / Windows / Linux.
-
-No Apple signing/notarization keys are required by default.
-
-Optional signing:
-
-- `KEYSTORE_BASE64`
-- `KEYSTORE_PASSWORD`
-
-If these two are not provided, CI still builds and publishes release artifacts, but checksum signature files are skipped.
-
-## GitHub 发布说明
-
-发布工作流会构建 macOS / Windows / Linux 的安装包。
-
-默认不再要求 Apple 签名与公证相关密钥。
-
-可选签名参数：
-
-- `KEYSTORE_BASE64`
-- `KEYSTORE_PASSWORD`
-
-如果不配置这两个参数，CI 仍会正常构建并发布产物，但会跳过校验文件签名步骤。
 
 ## License
 
