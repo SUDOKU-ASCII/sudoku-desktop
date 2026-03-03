@@ -880,6 +880,14 @@ select {
   min-height: var(--control-height);
 }
 
+select {
+  cursor: pointer;
+}
+
+select:disabled {
+  cursor: not-allowed;
+}
+
 input:not([type='checkbox']):not([type='radio']):focus,
 textarea:focus,
 select:focus {
@@ -922,6 +930,7 @@ textarea {
   padding: 8px 10px;
   min-height: var(--control-height);
   font-size: 12px;
+  cursor: pointer;
 }
 
 .switch-row.compact {
@@ -938,6 +947,7 @@ textarea {
   width: 40px;
   height: 24px;
   flex: 0 0 auto;
+  cursor: pointer;
 }
 
 .switch-control input {
@@ -955,6 +965,7 @@ textarea {
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 84%, var(--line) 16%);
   transition: all 0.18s ease;
+  cursor: pointer;
 }
 
 .switch-ui::after {
