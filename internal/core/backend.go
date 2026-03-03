@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/net/proxy"
 )
 
@@ -41,7 +40,8 @@ type Backend struct {
 	startCancel  context.CancelFunc
 	shutdownOnce sync.Once
 
-	ctx                 context.Context
+	eventMu             sync.RWMutex
+	eventEmitter        func(name string, payload any)
 	emitStateCh         chan RuntimeState
 	emitLogCh           chan LogEntry
 	dnsProxy            *dnsProxyServer
@@ -137,15 +137,27 @@ func (b *Backend) emitterLoop() {
 		case <-b.tickerStop:
 			return
 		case state := <-b.emitStateCh:
-			if b.ctx != nil {
-				wailsruntime.EventsEmit(b.ctx, EventStateUpdated, state)
-			}
+			b.emitEvent(EventStateUpdated, state)
 		case entry := <-b.emitLogCh:
-			if b.ctx != nil {
-				wailsruntime.EventsEmit(b.ctx, EventLogAdded, entry)
-			}
+			b.emitEvent(EventLogAdded, entry)
 		}
 	}
+}
+
+func (b *Backend) SetEventEmitter(emit func(name string, payload any)) {
+	b.eventMu.Lock()
+	b.eventEmitter = emit
+	b.eventMu.Unlock()
+}
+
+func (b *Backend) emitEvent(name string, payload any) {
+	b.eventMu.RLock()
+	emit := b.eventEmitter
+	b.eventMu.RUnlock()
+	if emit == nil {
+		return
+	}
+	emit(name, payload)
 }
 
 func (b *Backend) newStartContext() (context.Context, uint64) {
@@ -256,9 +268,8 @@ func migrateStoreIfNeeded(oldStoreName, newStoreName string) error {
 	return nil
 }
 
-func (b *Backend) Startup(ctx context.Context) {
+func (b *Backend) Startup(_ context.Context) {
 	b.mu.Lock()
-	b.ctx = ctx
 	autoStart := b.cfg.Core.AutoStart
 	withTun := b.cfg.Tun.Enabled
 	b.mu.Unlock()
@@ -1087,7 +1098,13 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				// 1.2) Verify a "domestic direct" path is usable. This catches PAC+TUN loop issues where
 				// many DIRECT flows become unreachable while PROXY still works.
 				if err := healthCheckSOCKS5ConnectAny(hctx, socksAddr, []string{"223.5.5.5:443", "119.29.29.29:443"}, 3*time.Second); err != nil {
-					return fmt.Errorf("socks direct-path check failed: %w", err)
+					// Some networks block these specific probes even when TUN dataplane is healthy.
+					// On macOS keep this check non-fatal by default; strict mode can be restored by env.
+					if runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_STRICT_DIRECT_CHECK")) != "1" {
+						b.addLog("warn", "tun", fmt.Sprintf("socks direct-path check failed (non-fatal on darwin): %v", err))
+					} else {
+						return fmt.Errorf("socks direct-path check failed: %w", err)
+					}
 				}
 			}
 			if runtime.GOOS == "darwin" {
@@ -1998,7 +2015,10 @@ func (b *Backend) snapshotStateLocked() RuntimeState {
 }
 
 func (b *Backend) emitStateLocked() {
-	if b.ctx == nil {
+	b.eventMu.RLock()
+	hasEmitter := b.eventEmitter != nil
+	b.eventMu.RUnlock()
+	if !hasEmitter {
 		return
 	}
 	state := b.snapshotStateLocked()
@@ -2017,7 +2037,10 @@ func (b *Backend) emitStateLocked() {
 }
 
 func (b *Backend) emitLog(entry LogEntry) {
-	if b.ctx == nil {
+	b.eventMu.RLock()
+	hasEmitter := b.eventEmitter != nil
+	b.eventMu.RUnlock()
+	if !hasEmitter {
 		return
 	}
 	select {

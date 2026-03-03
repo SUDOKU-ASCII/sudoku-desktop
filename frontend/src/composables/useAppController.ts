@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { EventsOff, EventsOn } from '../../wailsjs/runtime/runtime'
+import { Events } from '@wailsio/runtime'
 import { backendApi } from '../api'
 import { useI18n } from '../i18n'
 import type {
@@ -830,8 +830,8 @@ onMounted(async () => {
   loadReady.value = true
   usageHistoryTimer = window.setInterval(() => refreshUsage(), 60_000)
 
-  EventsOn('core:state', (payload: RuntimeState) => {
-    pendingState = payload
+  Events.On('core:state', (event) => {
+    pendingState = event.data as RuntimeState
     if (stateFlushTimer) return
     stateFlushTimer = window.setTimeout(() => {
       stateFlushTimer = null
@@ -842,8 +842,8 @@ onMounted(async () => {
     }, 80)
   })
 
-  EventsOn('core:log', (entry: LogEntry) => {
-    logQueue.push(entry)
+  Events.On('core:log', (event) => {
+    logQueue.push(event.data as LogEntry)
     if (logFlushTimer) return
     logFlushTimer = window.setTimeout(() => {
       logFlushTimer = null
@@ -860,8 +860,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  EventsOff('core:state')
-  EventsOff('core:log')
+  Events.Off('core:state')
+  Events.Off('core:log')
   if (stateFlushTimer) {
     window.clearTimeout(stateFlushTimer)
     stateFlushTimer = null

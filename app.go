@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"io/fs"
+	"strings"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // App struct
 type App struct {
-	ctx     context.Context
 	backend *core.Backend
 
 	runtimeFS   fs.FS
@@ -26,24 +27,66 @@ func NewApp(runtimeFS fs.FS, runtimeRoot string) *App {
 	}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
+func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	if a.backend == nil {
 		b, err := core.NewBackendWithRuntimeFS(a.runtimeFS, a.runtimeRoot)
-		if err == nil {
-			a.backend = b
+		if err != nil {
+			return err
 		}
+		a.backend = b
 	}
 	if a.backend != nil {
+		app := application.Get()
+		a.backend.SetEventEmitter(func(name string, payload any) {
+			if app != nil {
+				app.Event.Emit(name, payload)
+			}
+		})
 		a.backend.Startup(ctx)
 	}
+	return nil
 }
 
-func (a *App) shutdown(_ context.Context) {
+func (a *App) ServiceShutdown() error {
 	if a.backend != nil {
 		a.backend.Shutdown()
+	}
+	return nil
+}
+
+func (a *App) trayIsRunning() bool {
+	state := a.GetState()
+	return state.Running
+}
+
+func (a *App) trayToggleProxy() error {
+	if a.trayIsRunning() {
+		return a.StopProxy()
+	}
+	cfg := a.GetConfig()
+	return a.StartProxy(core.StartRequest{WithTun: cfg.Tun.Enabled})
+}
+
+func (a *App) traySetProxyMode(mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "global", "direct", "pac":
+	default:
+		return nil
+	}
+	cfg := a.GetConfig()
+	cfg.Routing.ProxyMode = mode
+	return a.SaveConfig(cfg)
+}
+
+func (a *App) trayCurrentProxyMode() string {
+	cfg := a.GetConfig()
+	mode := strings.ToLower(strings.TrimSpace(cfg.Routing.ProxyMode))
+	switch mode {
+	case "global", "direct", "pac":
+		return mode
+	default:
+		return "pac"
 	}
 }
 
