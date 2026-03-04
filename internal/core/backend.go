@@ -751,13 +751,25 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		} else {
 			b.addLog("info", "dns", "HEV MapDNS disabled")
 		}
+		preferIPv4DNS := false
+		if withTun {
+			switch runtime.GOOS {
+			case "darwin":
+				preferIPv4DNS = strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ALLOW_IPV6_DNS")) != "1"
+			case "windows":
+				preferIPv4DNS = strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_ALLOW_IPV6_DNS")) != "1"
+			}
+		}
+		if preferIPv4DNS && runtime.GOOS == "windows" {
+			b.addLog("warn", "dns", "windows stability mode: prefer IPv4 DNS in TUN (set SUDOKU_WINDOWS_ALLOW_IPV6_DNS=1 to allow AAAA)")
+		}
 
 		dnsProxy := newDNSProxyServer(dnsProxyConfig{
 			ProxyMode:     routingCfg.ProxyMode,
 			CNRules:       cnRules,
 			MapDNSEnabled: mapDNSEnabled,
 			MapDNSAddr:    mapDNSAddr,
-			PreferIPv4:    runtime.GOOS == "darwin" && withTun && strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ALLOW_IPV6_DNS")) != "1",
+			PreferIPv4:    preferIPv4DNS,
 			DirectDial:    directDialer.DialContext,
 			ProxyDial:     proxyDial,
 			Logf: func(line string) {
