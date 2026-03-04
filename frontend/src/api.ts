@@ -22,6 +22,7 @@ export const backendApi = {
   deleteNode: (id: string) => App.DeleteNode(id) as Promise<void>,
   switchNode: (id: string) => App.SwitchNode(id) as Promise<void>,
   exportShortLink: (id: string) => App.ExportShortLink(id) as Promise<string>,
+  importShortLink: (name: string, link: string) => App.ImportShortLink(name, link) as Promise<NodeConfig>,
   probeNode: (id: string) => App.ProbeNode(id) as Promise<LatencyResult>,
   probeAllNodes: () => App.ProbeAllNodes() as Promise<LatencyResult[]>,
   autoSelectLowestLatency: () => App.AutoSelectLowestLatency() as Promise<LatencyResult>,

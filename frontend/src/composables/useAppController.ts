@@ -752,6 +752,43 @@ const normalizePacRules = () => {
   config.routing.ruleUrls = config.routing.ruleUrls.map((x) => x.trim()).filter(Boolean)
 }
 
+const canHandleNodePaste = (target: EventTarget | null): boolean => {
+  const active = (target as HTMLElement | null) || (document.activeElement as HTMLElement | null)
+  if (!active) return true
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) {
+    return false
+  }
+  return !active.isContentEditable
+}
+
+const importNodeFromShortlink = async (rawText: string) => {
+  const link = rawText.trim()
+  if (!link.startsWith('sudoku://')) return
+  busy.value = true
+  try {
+    const node = await backendApi.importShortLink('', link)
+    await refreshBasics()
+    const imported = config.nodes.find((x) => x.id === node.id)
+    if (imported) {
+      pickNode(imported)
+    }
+    flash(t('importedFromClipboard'))
+  } catch (e: any) {
+    flash(e?.message || t('clipboardImportFailed'), 'error')
+  } finally {
+    busy.value = false
+  }
+}
+
+const onWindowPaste = (event: ClipboardEvent) => {
+  if (currentTab.value !== 'nodes') return
+  if (!canHandleNodePaste(event.target)) return
+  const text = event.clipboardData?.getData('text/plain') ?? event.clipboardData?.getData('text') ?? ''
+  if (!text.trim().startsWith('sudoku://')) return
+  event.preventDefault()
+  void importNodeFromShortlink(text)
+}
+
 const validateCustomRules = async () => {
   if (!config.routing.customRulesEnabled || !config.routing.customRules.trim()) {
     customRulesValidation.value = { status: 'idle', message: '' }
@@ -844,6 +881,7 @@ onMounted(async () => {
   tunAutoSaveLock.value = false
   loadReady.value = true
   usageHistoryTimer = window.setInterval(() => refreshUsage(), 60_000)
+  window.addEventListener('paste', onWindowPaste)
 
   Events.On('core:state', (event) => {
     pendingState = event.data as RuntimeState
@@ -877,6 +915,7 @@ onMounted(async () => {
 onUnmounted(() => {
   Events.Off('core:state')
   Events.Off('core:log')
+  window.removeEventListener('paste', onWindowPaste)
   if (stateFlushTimer) {
     window.clearTimeout(stateFlushTimer)
     stateFlushTimer = null
