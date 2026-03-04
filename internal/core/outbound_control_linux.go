@@ -3,7 +3,6 @@
 package core
 
 import (
-	"net"
 	"strings"
 	"syscall"
 
@@ -12,23 +11,7 @@ import (
 
 func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, address string, c syscall.RawConn) error {
 	mark := cfg.LinuxMark
-	src := strings.TrimSpace(cfg.LinuxSourceIP)
-
-	var src4 *[4]byte
-	var src6 *[16]byte
-	if src != "" {
-		if ip := net.ParseIP(src); ip != nil && !ip.IsLoopback() {
-			if ip4 := ip.To4(); ip4 != nil {
-				var b [4]byte
-				copy(b[:], ip4)
-				src4 = &b
-			} else if ip16 := ip.To16(); ip16 != nil {
-				var b [16]byte
-				copy(b[:], ip16)
-				src6 = &b
-			}
-		}
-	}
+	src4, src6 := parseOutboundSourceIPs(cfg.LinuxSourceIP)
 
 	if mark <= 0 && src4 == nil && src6 == nil {
 		return nil

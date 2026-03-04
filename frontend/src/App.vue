@@ -40,6 +40,10 @@ const {
   logDisplayLimit,
   filteredLogs,
   proxyOpBusy,
+  proxyOpState,
+  runtimeStatusLabel,
+  primaryProxyActionLabel,
+  primaryProxyActionHint,
   directIP,
   proxyIP,
   usageHistory,
@@ -180,7 +184,7 @@ const {
       <div class="sidebar-foot">
         <div class="statusbox" :class="state.running ? 'ok' : 'off'">
           <span class="dot" />
-          <span v-if="!sidebarCollapsed">{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+          <span v-if="!sidebarCollapsed">{{ runtimeStatusLabel }}</span>
         </div>
         <small v-if="!sidebarCollapsed" class="sidebar-node">{{ t('runningNode') }}: {{ state.activeNodeName || '-' }}</small>
       </div>
@@ -193,7 +197,7 @@ const {
           <p>{{ state.activeNodeName || '-' }}</p>
         </div>
         <div class="topbar-right">
-          <span class="pill" :class="state.running ? 'ok' : 'off'">{{ state.running ? t('statusRunning') : t('statusStopped') }}</span>
+          <span class="pill" :class="state.running ? 'ok' : 'off'">{{ runtimeStatusLabel }}</span>
           <span class="pill" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>
         </div>
       </header>
@@ -206,6 +210,9 @@ const {
         :config="config"
         :state="state"
         :proxy-op-busy="proxyOpBusy"
+        :proxy-op-state="proxyOpState"
+        :primary-proxy-action-label="primaryProxyActionLabel"
+        :primary-proxy-action-hint="primaryProxyActionHint"
         :direct-ip="directIP"
         :proxy-ip="proxyIP"
         :usage-history="usageHistory"

@@ -4,7 +4,6 @@ package core
 
 import (
 	"encoding/binary"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -29,7 +28,7 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 			err4 := winBind4(handle, ifIndex)
 			err6 := winBind6(handle, ifIndex)
 			if err4 != nil && err6 != nil {
-				if strings.HasSuffix(network, "6") || strings.Contains(address, ":") {
+				if networkLooksIPv6(network, address) {
 					inner = err6
 				} else {
 					inner = err4

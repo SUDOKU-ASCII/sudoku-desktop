@@ -12,22 +12,7 @@ import (
 
 func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, address string, c syscall.RawConn) error {
 	name := strings.TrimSpace(cfg.DarwinInterface)
-	src := strings.TrimSpace(cfg.DarwinSourceIP)
-	var src4 *[4]byte
-	var src6 *[16]byte
-	if src != "" {
-		if ip := net.ParseIP(src); ip != nil && !ip.IsLoopback() {
-			if ip4 := ip.To4(); ip4 != nil {
-				var b [4]byte
-				copy(b[:], ip4)
-				src4 = &b
-			} else if ip16 := ip.To16(); ip16 != nil {
-				var b [16]byte
-				copy(b[:], ip16)
-				src6 = &b
-			}
-		}
-	}
+	src4, src6 := parseOutboundSourceIPs(cfg.DarwinSourceIP)
 
 	if name == "" {
 		if src4 == nil && src6 == nil {
@@ -46,20 +31,7 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 		var inner error
 		if err := c.Control(func(fd uintptr) {
 			fdInt := int(fd)
-			isV6 := strings.HasSuffix(network, "6")
-			if !isV6 {
-				host := address
-				if h, _, err := net.SplitHostPort(address); err == nil && strings.TrimSpace(h) != "" {
-					host = h
-				}
-				host = strings.TrimPrefix(host, "[")
-				host = strings.TrimSuffix(host, "]")
-				if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-					isV6 = true
-				} else if strings.Count(host, ":") > 1 {
-					isV6 = true
-				}
-			}
+			isV6 := networkLooksIPv6(network, address)
 
 			// Prefer binding to the physical interface when available. This avoids "can't assign requested address"
 			// issues that can happen when binding a specific source IP on some macOS networks.

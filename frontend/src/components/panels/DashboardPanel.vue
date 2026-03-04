@@ -8,6 +8,9 @@ const props = defineProps<{
   config: AppConfig
   state: RuntimeState
   proxyOpBusy: boolean
+  proxyOpState: 'idle' | 'starting' | 'stopping' | 'restarting'
+  primaryProxyActionLabel: string
+  primaryProxyActionHint: string
   directIp: IPDetectResult | null
   proxyIp: IPDetectResult | null
   usageHistory: UsageDay[]
@@ -64,10 +67,12 @@ const props = defineProps<{
           @click="props.state.running ? props.stopProxy() : props.startProxy()"
         >
           <span class="power-indicator" />
-          <strong>{{ props.state.running ? props.t('stop') : props.t('start') }}</strong>
-          <small>{{ props.state.running ? props.t('stopSessionNow') : props.t('startSessionNow') }}</small>
+          <strong>{{ props.primaryProxyActionLabel }}</strong>
+          <small>{{ props.primaryProxyActionHint }}</small>
         </button>
-        <button class="btn ghost" :disabled="props.proxyOpBusy || !props.state.running" @click="props.restartProxy">{{ props.t('restart') }}</button>
+        <button class="btn ghost" :disabled="props.proxyOpBusy || !props.state.running" @click="props.restartProxy">
+          {{ props.proxyOpState === 'restarting' ? props.t('restartInProgress') : props.t('restart') }}
+        </button>
       </div>
     </section>
 

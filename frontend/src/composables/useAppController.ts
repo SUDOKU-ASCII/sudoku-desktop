@@ -93,6 +93,8 @@ const toggleSidebar = () => {
 
 const busy = ref(false)
 const proxyOpBusy = ref(false)
+type ProxyOpState = 'idle' | 'starting' | 'stopping' | 'restarting'
+const proxyOpState = ref<ProxyOpState>('idle')
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
 const loadReady = ref(false)
@@ -361,6 +363,41 @@ const trafficProxyShare = computed(() => {
 
 const trafficDirectShare = computed(() => 100 - trafficProxyShare.value)
 
+const runtimeStatusLabel = computed(() => {
+  switch (proxyOpState.value) {
+    case 'starting':
+      return t('statusStarting')
+    case 'stopping':
+      return t('statusStopping')
+    case 'restarting':
+      return t('statusRestarting')
+    default:
+      return state.running ? t('statusRunning') : t('statusStopped')
+  }
+})
+
+const primaryProxyActionLabel = computed(() => {
+  switch (proxyOpState.value) {
+    case 'starting':
+      return t('startInProgress')
+    case 'stopping':
+      return t('stopInProgress')
+    default:
+      return state.running ? t('stop') : t('start')
+  }
+})
+
+const primaryProxyActionHint = computed(() => {
+  switch (proxyOpState.value) {
+    case 'starting':
+      return t('startSessionInProgress')
+    case 'stopping':
+      return t('stopSessionInProgress')
+    default:
+      return state.running ? t('stopSessionNow') : t('startSessionNow')
+  }
+})
+
 const humanBytes = (value: number): string => {
   if (!value) return '0 B'
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
@@ -465,79 +502,51 @@ const saveConfig = async (silentOrEvent: boolean | Event = false) => {
   }
 }
 
-const startProxy = async () => {
+type I18nKey = Parameters<typeof t>[0]
+
+const runProxyAction = async (
+  opState: Exclude<ProxyOpState, 'idle'>,
+  action: () => Promise<void>,
+  successKey: I18nKey,
+  failKey: I18nKey
+) => {
+  if (proxyOpBusy.value) return
   proxyOpBusy.value = true
+  proxyOpState.value = opState
   try {
-    await backendApi.startProxy({ withTun: config.tun.enabled })
-    flash(t('started'))
+    await action()
+    flash(t(successKey))
   } catch (e: any) {
     if (isMacLike && isAdminRequiredError(e)) {
       const ok = await ensureTunAdmin()
       if (ok) {
         try {
-          await backendApi.startProxy({ withTun: config.tun.enabled })
-          flash(t('started'))
+          await action()
+          flash(t(successKey))
           return
         } catch (e2: any) {
-          flash(e2?.message || t('startFailed'), 'error')
+          flash(e2?.message || t(failKey), 'error')
           return
         }
       }
     }
-    flash(e?.message || t('startFailed'), 'error')
+    flash(e?.message || t(failKey), 'error')
   } finally {
+    proxyOpState.value = 'idle'
     proxyOpBusy.value = false
   }
+}
+
+const startProxy = async () => {
+  await runProxyAction('starting', () => backendApi.startProxy({ withTun: config.tun.enabled }), 'started', 'startFailed')
 }
 
 const stopProxy = async () => {
-  proxyOpBusy.value = true
-  try {
-    await backendApi.stopProxy()
-    flash(t('stopped'))
-  } catch (e: any) {
-    if (isMacLike && isAdminRequiredError(e)) {
-      const ok = await ensureTunAdmin()
-      if (ok) {
-        try {
-          await backendApi.stopProxy()
-          flash(t('stopped'))
-          return
-        } catch (e2: any) {
-          flash(e2?.message || t('stopFailed'), 'error')
-          return
-        }
-      }
-    }
-    flash(e?.message || t('stopFailed'), 'error')
-  } finally {
-    proxyOpBusy.value = false
-  }
+  await runProxyAction('stopping', () => backendApi.stopProxy(), 'stopped', 'stopFailed')
 }
 
 const restartProxy = async () => {
-  proxyOpBusy.value = true
-  try {
-    await backendApi.restartProxy({ withTun: config.tun.enabled })
-    flash(t('restarted'))
-  } catch (e: any) {
-    if (isMacLike && isAdminRequiredError(e)) {
-      const ok = await ensureTunAdmin()
-      if (ok) {
-        try {
-          await backendApi.restartProxy({ withTun: config.tun.enabled })
-          flash(t('restarted'))
-          return
-        } catch (e2: any) {
-          flash(e2?.message || t('restartFailed'), 'error')
-          return
-        }
-      }
-    }
-    flash(e?.message || t('restartFailed'), 'error')
-  } finally {
-    proxyOpBusy.value = false
-  }
+  await runProxyAction('restarting', () => backendApi.restartProxy({ withTun: config.tun.enabled }), 'restarted', 'restartFailed')
 }
 
 const saveNode = async () => {
@@ -1081,6 +1090,10 @@ onUnmounted(() => {
     toggleSidebar,
     busy,
     proxyOpBusy,
+    proxyOpState,
+    runtimeStatusLabel,
+    primaryProxyActionLabel,
+    primaryProxyActionHint,
     notice,
     noticeType,
     tunAdminModalOpen,
