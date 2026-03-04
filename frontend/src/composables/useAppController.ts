@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Events } from '@wailsio/runtime'
+import { Clipboard, Events } from '@wailsio/runtime'
 import { backendApi } from '../api'
 import { useI18n } from '../i18n'
 import type {
@@ -489,7 +489,7 @@ const exportShortlink = async (id: string) => {
   busy.value = true
   try {
     const link = await backendApi.exportShortLink(id)
-    await navigator.clipboard.writeText(link)
+    await Clipboard.SetText(link)
     flash(t('copied'))
   } catch (e: any) {
     flash(e?.message || t('exportFailed'), 'error')
@@ -723,7 +723,7 @@ const parseShortlinkFromInput = () => {
 
 const parseShortlinkFromClipboard = async () => {
   try {
-    const text = await navigator.clipboard.readText()
+    const text = await Clipboard.Text()
     if (!text.trim()) {
       flash(t('clipboardEmpty'), 'error')
       return
