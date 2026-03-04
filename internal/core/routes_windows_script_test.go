@@ -8,6 +8,7 @@ import (
 func TestBuildWindowsRouteScriptPinsPhysicalDefaultRoute(t *testing.T) {
 	script := buildWindowsRouteScript(
 		true,
+		true,
 		"1.1.1.1",
 		"",
 		"",
@@ -42,6 +43,7 @@ func TestBuildWindowsRouteScriptPinsPhysicalDefaultRoute(t *testing.T) {
 
 func TestBuildWindowsRouteScriptRestoresDefaultWithInterface(t *testing.T) {
 	script := buildWindowsRouteScript(
+		false,
 		false,
 		"",
 		"",

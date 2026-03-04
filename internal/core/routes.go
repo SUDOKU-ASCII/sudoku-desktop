@@ -56,6 +56,13 @@ func darwinTunIPv6Enabled() bool {
 	return strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_TUN_IPV6")) == "1"
 }
 
+func windowsTunIPv6Enabled() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_TUN_IPV6")) == "1"
+}
+
 func setupRoutes(activeNode NodeConfig, tun TunSettings, routing RoutingSettings, bypass tunBypass, logf func(string)) (*routeContext, error) {
 	ctx := &routeContext{}
 	ctx.ServerIP = resolveServerIPFromAddress(activeNode.ServerAddress)
@@ -816,9 +823,14 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 	}
 	ctx.DefaultGateway = gw
 	ctx.WindowsDefaultIfIndex = if4
-	if gw6, if6, err6 := windowsPreferredDefaultRouteIPv6(idx); err6 == nil {
-		ctx.DefaultGatewayV6 = strings.TrimSpace(gw6)
-		ctx.WindowsDefaultIfIndex6 = if6
+	enableTunIPv6 := windowsTunIPv6Enabled()
+	if enableTunIPv6 {
+		if gw6, if6, err6 := windowsPreferredDefaultRouteIPv6(idx); err6 == nil {
+			ctx.DefaultGatewayV6 = strings.TrimSpace(gw6)
+			ctx.WindowsDefaultIfIndex6 = if6
+		}
+	} else if logf != nil {
+		logf("[route] windows: TUN IPv6 route management disabled by default; set SUDOKU_WINDOWS_TUN_IPV6=1 to enable")
 	}
 	firewallRule := "4x4-sudoku Block QUIC (UDP/443)"
 	if tun.BlockQUIC {
@@ -833,6 +845,7 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 	}
 	ps := buildWindowsRouteScript(
 		true,
+		enableTunIPv6,
 		ctx.ServerIP,
 		ctx.BypassV4Path,
 		ctx.BypassV6Path,
@@ -866,6 +879,7 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 	mapDNSEnabled := strings.TrimSpace(ctx.WindowsDNSBackup) != ""
 	ps := buildWindowsRouteScript(
 		false,
+		windowsTunIPv6Enabled(),
 		ctx.ServerIP,
 		ctx.BypassV4Path,
 		ctx.BypassV6Path,
@@ -971,6 +985,7 @@ func windowsAdminWrapper(body string) string {
 
 func buildWindowsRouteScript(
 	start bool,
+	enableTunIPv6 bool,
 	serverIP string,
 	bypassV4 string,
 	bypassV6 string,
@@ -1009,12 +1024,13 @@ func buildWindowsRouteScript(
 		fmt.Sprintf("$if4 = %d", defaultIf4),
 		fmt.Sprintf("$gw6 = '%s'", strings.ReplaceAll(defaultGw6, "'", "''")),
 		fmt.Sprintf("$if6 = %d", defaultIf6),
+		fmt.Sprintf("$enableTunIPv6 = %s", map[bool]string{true: "$true", false: "$false"}[enableTunIPv6]),
 		"if (-not $gw4 -or -not $if4 -or $if4 -le 0) {",
 		"  $default4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf -and $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
 		"  if ($default4 -eq $null) { $default4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
 		"  if ($default4 -ne $null) { $gw4 = $default4.NextHop; $if4 = [int]$default4.InterfaceIndex }",
 		"}",
-		"if (-not $if6 -or $if6 -le 0) {",
+		"if ($enableTunIPv6 -and (-not $if6 -or $if6 -le 0)) {",
 		"  $default6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf -and $_.NextHop -and $_.NextHop -ne '::' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1",
 		"  if ($default6 -eq $null) { $default6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceIndex -ne $tunIf } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 }",
 		"  if ($default6 -ne $null) { $gw6 = $default6.NextHop; $if6 = [int]$default6.InterfaceIndex }",
@@ -1053,12 +1069,12 @@ func buildWindowsRouteScript(
 		"",
 		"if ($op -eq 'start') {",
 		"  if ($serverIP) {",
-		"    if ($serverIP -match ':') { Add-RoutePrefix ($serverIP + '/128') $if6 $gw6 } else { Add-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
+		"    if ($serverIP -match ':') { if ($enableTunIPv6) { Add-RoutePrefix ($serverIP + '/128') $if6 $gw6 } } else { Add-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
 		"  }",
 		"  if ($bypassV4 -and (Test-Path $bypassV4)) {",
 		"    Get-Content $bypassV4 | ForEach-Object { $p = $_.Trim(); if ($p) { Add-RoutePrefix $p $if4 $gw4 } }",
 		"  }",
-		"  if ($bypassV6 -and (Test-Path $bypassV6)) {",
+		"  if ($enableTunIPv6 -and $bypassV6 -and (Test-Path $bypassV6)) {",
 		"    Get-Content $bypassV6 | ForEach-Object { $p = $_.Trim(); if ($p) { Add-RoutePrefix $p $if6 $gw6 } }",
 		"  }",
 		"  if ($mapDNSEnabled -and $mapDNS) {",
@@ -1093,7 +1109,7 @@ func buildWindowsRouteScript(
 		"    $out4 = & route.exe add 0.0.0.0 mask 0.0.0.0 0.0.0.0 metric 1 if $tunIf 2>&1",
 		"    if ($LASTEXITCODE -ne 0) { throw ('route.exe add default route failed: ' + ($out4 | Out-String).Trim()) }",
 		"  }",
-		"  if ($if6 -gt 0) {",
+		"  if ($enableTunIPv6 -and $if6 -gt 0) {",
 		"    $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
 		"    $out6 = & netsh interface ipv6 add route prefix=::/0 interface=$tunIf metric=1 store=active 2>&1",
 		"    if ($LASTEXITCODE -ne 0) { Write-Output ('[warn] netsh add ipv6 default route failed: ' + ($out6 | Out-String).Trim()) }",
@@ -1101,13 +1117,13 @@ func buildWindowsRouteScript(
 		"  $best4 = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
 		"  if ($best4 -eq $null) { throw 'windows default route not found after tun switch' }",
 		"  if ([int]$best4.InterfaceIndex -ne $tunIf) { throw ('windows default route still not on tun interface: expected=' + $tunIf + ' got=' + [int]$best4.InterfaceIndex) }",
-		"  if ($if6 -gt 0) {",
+		"  if ($enableTunIPv6 -and $if6 -gt 0) {",
 		"    $best6 = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
 		"    if ($best6 -ne $null -and [int]$best6.InterfaceIndex -ne $tunIf) { Write-Output ('[warn] ipv6 default route not on tun interface: expected=' + $tunIf + ' got=' + [int]$best6.InterfaceIndex) }",
 		"  }",
 		"  # Keep a physical default route for core-bypass sockets (IP_UNICAST_IF).",
 		"  try { if ($if4 -gt 0 -and $gw4) { New-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
-		"  try { if ($if6 -gt 0 -and $gw6) { New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
+		"  try { if ($enableTunIPv6 -and $if6 -gt 0 -and $gw6) { New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -RouteMetric $physMetric -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } } catch { }",
 		"  if ($blockQUIC) {",
 		"    if (-not (Get-NetFirewallRule -DisplayName $fwRule -ErrorAction SilentlyContinue)) {",
 		"      New-NetFirewallRule -DisplayName $fwRule -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -Profile Any | Out-Null",
@@ -1155,20 +1171,27 @@ func buildWindowsRouteScript(
 		"    try { Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } catch { }",
 		"    try { if ($if4 -gt 0) { Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } } catch { }",
 		"  }",
+		"  # Always attempt to restore interface auto-metric on stop.",
+		"  try { Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } catch { }",
+		"  try { if ($if4 -gt 0) { Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } } catch { }",
 		"  try { Clear-DnsClientCache | Out-Null } catch { }",
 		"  # Remove the tunnel default route (ActiveStore only).",
 		"  try { Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $tunIf -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } catch { }",
-		"  # Remove the auxiliary physical default route (if we added it).",
-		"  try { if ($if4 -gt 0 -and $gw4) { Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
-		"  try { if ($if6 -gt 0 -and $gw6) { Get-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
-		"  $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
+		"  if ($enableTunIPv6) { $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null }",
+		"  # Safety: ensure a non-tunnel IPv4 default route exists after stop.",
+		"  $best4After = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { [int]$_.InterfaceIndex -ne $tunIf } | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"  if ($best4After -eq $null -and $if4 -gt 0 -and $gw4) {",
+		"    try { New-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -RouteMetric 25 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } catch { }",
+		"    $best4After = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { [int]$_.InterfaceIndex -ne $tunIf } | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
+		"  }",
+		"  if ($best4After -eq $null) { throw 'windows restore default route failed after tun stop' }",
 		"  if ($serverIP) {",
-		"    if ($serverIP -match ':') { Remove-RoutePrefix ($serverIP + '/128') $if6 $gw6 } else { Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
+		"    if ($serverIP -match ':') { if ($enableTunIPv6) { Remove-RoutePrefix ($serverIP + '/128') $if6 $gw6 } } else { Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
 		"  }",
 		"  if ($bypassV4 -and (Test-Path $bypassV4)) {",
 		"    Get-Content $bypassV4 | ForEach-Object { $p = $_.Trim(); if ($p) { Remove-RoutePrefix $p $if4 $gw4 } }",
 		"  }",
-		"  if ($bypassV6 -and (Test-Path $bypassV6)) {",
+		"  if ($enableTunIPv6 -and $bypassV6 -and (Test-Path $bypassV6)) {",
 		"    Get-Content $bypassV6 | ForEach-Object { $p = $_.Trim(); if ($p) { Remove-RoutePrefix $p $if6 $gw6 } }",
 		"  }",
 		"  if (Get-NetFirewallRule -DisplayName $fwRule -ErrorAction SilentlyContinue) {",
