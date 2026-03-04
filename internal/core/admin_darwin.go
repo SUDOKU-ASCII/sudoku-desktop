@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -19,50 +18,67 @@ type darwinAdminDetachedProcess struct {
 	pidFile string
 	logFile string
 	label   string
+
+	expectCmdBase    string
+	expectRuntimeDir string
+	verifiedPID      int
 }
 
 func (p *darwinAdminDetachedProcess) PID() int { return p.pid }
 
+func (p *darwinAdminDetachedProcess) pidMatchesExpected(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	args, err := darwinProcessArgs(pid)
+	if err != nil {
+		return false
+	}
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return false
+	}
+	if base := strings.TrimSpace(p.expectCmdBase); base != "" && !strings.Contains(args, base) {
+		return false
+	}
+	dir := strings.TrimSpace(p.expectRuntimeDir)
+	if dir == "" && strings.TrimSpace(p.pidFile) != "" {
+		dir = strings.TrimSpace(filepath.Dir(strings.TrimSpace(p.pidFile)))
+	}
+	if dir != "" && !strings.Contains(args, dir) {
+		return false
+	}
+	return true
+}
+
 func (p *darwinAdminDetachedProcess) IsRunning() bool {
 	if pidLooksAlive(p.pid) {
-		return true
-	}
-	label := strings.TrimSpace(p.label)
-	if label == "" {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "launchctl", "list", label)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		p.pid = 0
-		return false
-	}
-	out := string(output)
-	re := regexp.MustCompile(`(?m)\bPID\b\s*=\s*(-?\d+)`)
-	if m := re.FindStringSubmatch(out); len(m) == 2 {
-		pid, perr := strconv.Atoi(strings.TrimSpace(m[1]))
-		if perr == nil && pid > 0 {
-			p.pid = pid
-			return pidLooksAlive(pid)
+		if p.verifiedPID == p.pid {
+			return true
 		}
-		// launchctl list with PID <= 0 means job exists but process is not running.
-		p.pid = 0
-		return false
-	}
-	// Fallback for output forms like: "123\t0\tlabel" or "-\t0\tlabel".
-	reTab := regexp.MustCompile(`(?m)^([0-9-]+)\s+\S+\s+` + regexp.QuoteMeta(label) + `\s*$`)
-	if m := reTab.FindStringSubmatch(strings.ReplaceAll(out, "\r", "\n")); len(m) == 2 {
-		pid, perr := strconv.Atoi(strings.TrimSpace(m[1]))
-		if perr == nil && pid > 0 {
-			p.pid = pid
-			return pidLooksAlive(pid)
+		if p.pidMatchesExpected(p.pid) {
+			p.verifiedPID = p.pid
+			return true
 		}
-		p.pid = 0
-		return false
 	}
+
 	p.pid = 0
+	p.verifiedPID = 0
+
+	if strings.TrimSpace(p.pidFile) == "" {
+		return false
+	}
+	if pid, err := readPIDFile(p.pidFile); err == nil && pidLooksAlive(pid) && p.pidMatchesExpected(pid) {
+		p.pid = pid
+		p.verifiedPID = pid
+		return true
+	} else if err == nil && pidLooksAlive(pid) {
+		// PID reuse can make the pidfile point to an unrelated process. Never treat that as "running".
+		_ = os.Remove(p.pidFile)
+	} else if err != nil {
+		// Corrupt/partial pid file; drop it so future checks don't flap.
+		_ = os.Remove(p.pidFile)
+	}
 	return false
 }
 
@@ -83,13 +99,15 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 	if err := ensureDir(filepath.Dir(logFile)); err != nil {
 		return 0, err
 	}
+	p.expectCmdBase = strings.TrimSpace(filepath.Base(command))
+	p.expectRuntimeDir = strings.TrimSpace(filepath.Dir(pidFile))
 	if pidLooksAlive(p.pid) {
-		return 0, fmt.Errorf("process already running (pid=%d)", p.pid)
-	}
-
-	quotedArgs := make([]string, 0, len(args))
-	for _, a := range args {
-		quotedArgs = append(quotedArgs, shellQuote(a))
+		if p.verifiedPID == p.pid || p.pidMatchesExpected(p.pid) {
+			p.verifiedPID = p.pid
+			return 0, fmt.Errorf("process already running (pid=%d)", p.pid)
+		}
+		p.pid = 0
+		p.verifiedPID = 0
 	}
 
 	label := p.label
@@ -98,46 +116,71 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 	}
 	p.label = label
 
+	if pid, err := readPIDFile(pidFile); err == nil && pidLooksAlive(pid) {
+		if p.pidMatchesExpected(pid) {
+			p.pid = pid
+			p.pidFile = pidFile
+			p.logFile = logFile
+			p.verifiedPID = pid
+			return pid, nil
+		}
+		_ = os.Remove(pidFile)
+	}
+
+	cmdline := shellJoin(append([]string{command}, args...)...)
+
 	inner := fmt.Sprintf(
 		"set -e; cd %s && umask 022 && ("+
-			" launchctl remove %s >/dev/null 2>&1 || true;"+
-			" launchctl submit -l %s -o %s -e %s -- %s %s;"+
+			" pid=0;"+
+			" if [ -f %s ]; then p=$(cat %s 2>/dev/null || true); case \"$p\" in (''|*[!0-9]*) p=0 ;; esac; if [ \"$p\" -gt 0 ] && kill -0 \"$p\" >/dev/null 2>&1; then pid=$p; fi; fi;"+
+			" if [ \"$pid\" -gt 0 ]; then echo \"$pid\" > %s; exit 0; fi;"+
+			" rm -f %s >/dev/null 2>&1 || true;"+
+			" : > %s;"+
+			" ( %s ) >> %s 2>&1 &"+
+			" pid=$!; echo ${pid:-0} > %s;"+
 			" sleep 0.2;"+
-			" pid=0; for i in $(seq 1 50); do p=$(launchctl list | awk -v label=%s '$3==label {print $1; exit}'); case \"$p\" in (''|'-'|*[!0-9]*) p=0 ;; esac; if [ \"$p\" -gt 0 ]; then pid=$p; break; fi; sleep 0.1; done;"+
-			" echo ${pid:-0} > %s;"+
+			" if [ \"$pid\" -le 0 ] || ! kill -0 \"$pid\" >/dev/null 2>&1; then rm -f %s >/dev/null 2>&1 || true; exit 23; fi;"+
 			" )",
 		shellQuote(workdirOrDot(workdir)),
-		shellQuote(label),
-		shellQuote(label),
+		shellQuote(pidFile),
+		shellQuote(pidFile),
+		shellQuote(pidFile),
+		shellQuote(pidFile),
 		shellQuote(logFile),
+		cmdline,
 		shellQuote(logFile),
-		shellQuote(command),
-		strings.Join(quotedArgs, " "),
-		shellQuote(label),
+		shellQuote(pidFile),
 		shellQuote(pidFile),
 	)
-	cmdline := shellJoin("sh", "-lc", inner)
-
-	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`, appleScriptEscape(cmdline))
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := darwinAdminRunShLC(ctx, inner)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return 0, fmt.Errorf("start (admin): timeout")
 		}
-		return 0, fmt.Errorf("start (admin): %w: %s", err, strings.TrimSpace(string(output)))
+		if tail := strings.TrimSpace(tailFile(logFile, 80)); tail != "" {
+			return 0, fmt.Errorf("start (admin): %w: %s; hev log tail:\n%s", err, strings.TrimSpace(output), tail)
+		}
+		return 0, fmt.Errorf("start (admin): %w: %s", err, strings.TrimSpace(output))
 	}
 
 	pid, err := readPIDEventually(pidFile, 1500*time.Millisecond)
 	if err != nil {
+		if tail := strings.TrimSpace(tailFile(logFile, 80)); tail != "" {
+			return 0, fmt.Errorf("start (admin): %w; hev log tail:\n%s", err, tail)
+		}
 		return 0, err
 	}
 	if pid <= 0 {
+		if tail := strings.TrimSpace(tailFile(logFile, 80)); tail != "" {
+			return 0, fmt.Errorf("start (admin): failed to obtain pid for %s; hev log tail:\n%s", p.label, tail)
+		}
 		return 0, fmt.Errorf("start (admin): failed to obtain pid for %s", p.label)
 	}
 
 	p.pid = pid
+	p.verifiedPID = pid
 	p.pidFile = pidFile
 	p.logFile = logFile
 	return pid, nil
@@ -162,8 +205,8 @@ func ensureShellStmt(cmd string) string {
 	return " " + cmd + ";"
 }
 
-// StartWithRoutes starts HEV with admin privileges and sets up routes in the same admin session.
-// This avoids repeated password prompts from multiple `osascript` invocations.
+// StartWithRoutes starts HEV with admin privileges and sets up routes in a single privileged
+// invocation, avoiding repeated prompts and half-configured network state.
 func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultGatewayV6 string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (pid int, tunIf string, scriptOutput string, err error) {
 	if pidFile == "" {
 		return 0, "", "", errors.New("pidFile required")
@@ -348,17 +391,13 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		}(),
 		setDNSSnippet,
 	)
-	cmdline := shellJoin("sh", "-lc", inner)
-
-	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`, appleScriptEscape(cmdline))
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "osascript", "-e", script)
-	output, runErr := cmd.CombinedOutput()
-	scriptOutput = strings.TrimSpace(string(output))
+	output, runErr := darwinAdminRunShLC(runCtx, inner)
+	scriptOutput = strings.TrimSpace(output)
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): timeout")
@@ -377,7 +416,7 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		return 0, "", scriptOutput, fmt.Errorf("start+routes (admin): failed to obtain pid for %s", p.label)
 	}
 
-	out := strings.ReplaceAll(string(output), "\r", "\n")
+	out := strings.ReplaceAll(output, "\r", "\n")
 	if m := darwinHevMarkerIF.FindStringSubmatch(out); len(m) == 2 {
 		tunIf = strings.TrimSpace(m[1])
 	}
@@ -398,49 +437,48 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 func (p *darwinAdminDetachedProcess) Stop(timeout time.Duration) error {
 	pid := p.pid
 	pidFile := p.pidFile
-	label := p.label
+	label := strings.TrimSpace(p.label)
 
-	if strings.TrimSpace(label) == "" && pid <= 0 {
+	if pid <= 0 && strings.TrimSpace(pidFile) != "" {
+		if filePID, err := readPIDFile(pidFile); err == nil {
+			pid = filePID
+		}
+	}
+
+	if pid <= 0 && label == "" {
 		return nil
 	}
 
 	killSnippet := ""
-	if pid > 0 {
-		killSnippet = fmt.Sprintf(" kill -TERM %d >/dev/null 2>&1 || true; sleep 0.3; kill -KILL %d >/dev/null 2>&1 || true;", pid, pid)
+	if pid > 0 && p.pidMatchesExpected(pid) {
+		killSnippet = fmt.Sprintf(" kill -TERM %d >/dev/null 2>&1 || true; sleep 0.4; kill -KILL %d >/dev/null 2>&1 || true;", pid, pid)
+	} else if pid > 0 && strings.TrimSpace(pidFile) != "" {
+		// PID reuse safety: don't kill unrelated processes. Just drop the stale pidfile.
+		pid = 0
+	}
+	removeJob := ""
+	if label != "" {
+		removeJob = " launchctl remove " + shellQuote(label) + " >/dev/null 2>&1 || true;"
+	}
+	rmPID := ""
+	if strings.TrimSpace(pidFile) != "" {
+		rmPID = " rm -f " + shellQuote(pidFile) + " >/dev/null 2>&1 || true;"
 	}
 
-	inner := fmt.Sprintf(
-		"launchctl remove %s >/dev/null 2>&1 || true;%s rm -f %s || true",
-		shellQuote(label),
-		killSnippet,
-		shellQuote(pidFile),
-	)
-	cmdline := shellJoin("sh", "-lc", inner)
+	inner := "set -e;" + removeJob + killSnippet + rmPID + " true"
 
-	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`, appleScriptEscape(cmdline))
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
-	done := make(chan error, 1)
-	go func() {
-		if output, err := cmd.CombinedOutput(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				done <- fmt.Errorf("stop (admin): timeout")
-				return
-			}
-			done <- fmt.Errorf("stop (admin): %w: %s", err, strings.TrimSpace(string(output)))
-			return
+	output, err := darwinAdminRunShLC(ctx, inner)
+	p.pid = 0
+	p.verifiedPID = 0
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("stop (admin): timeout")
 		}
-		done <- nil
-	}()
-
-	select {
-	case err := <-done:
-		p.pid = 0
-		return err
-	case <-time.After(timeout):
-		return fmt.Errorf("stop timeout (pid=%d)", pid)
+		return fmt.Errorf("stop (admin): %w: %s", err, strings.TrimSpace(output))
 	}
+	return nil
 }
 
 func workdirOrDot(workdir string) string {
@@ -448,6 +486,22 @@ func workdirOrDot(workdir string) string {
 		return "."
 	}
 	return workdir
+}
+
+func readPIDFile(path string) (int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return 0, fmt.Errorf("invalid pid in %s", path)
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid pid in %s", path)
+	}
+	return pid, nil
 }
 
 func readPIDEventually(path string, timeout time.Duration) (int, error) {

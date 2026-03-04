@@ -85,4 +85,3 @@ func bind6(handle syscall.Handle, ifaceIdx int) error {
 	// IPV6_UNICAST_IF expects host byte order.
 	return syscall.SetsockoptInt(handle, syscall.IPPROTO_IPV6, ipv6UnicastIf, ifaceIdx)
 }
-

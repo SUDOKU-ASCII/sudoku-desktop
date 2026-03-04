@@ -8,6 +8,7 @@ import NodesPanel from './components/panels/NodesPanel.vue'
 import RelayPanel from './components/panels/RelayPanel.vue'
 import RoutingPanel from './components/panels/RoutingPanel.vue'
 import TunPanel from './components/panels/TunPanel.vue'
+import TunAdminModal from './components/panels/TunAdminModal.vue'
 import { useAppController } from './composables/useAppController'
 import './app-shell.css'
 
@@ -21,6 +22,12 @@ const {
   toggleSidebar,
   notice,
   noticeType,
+  tunAdminModalOpen,
+  tunAdminPassword,
+  tunAdminBusy,
+  tunAdminError,
+  closeTunAdminModal,
+  submitTunAdminModal,
   config,
   state,
   editableNode,
@@ -307,6 +314,17 @@ const {
       @parse-clipboard="parseShortlinkFromClipboard"
       @update:shortlink-input="shortlinkInput = $event"
       @update:shortlink-name="shortlinkName = $event"
+    />
+
+    <TunAdminModal
+      :open="tunAdminModalOpen"
+      :password="tunAdminPassword"
+      :busy="tunAdminBusy"
+      :error="tunAdminError"
+      :t="t"
+      @close="closeTunAdminModal"
+      @submit="submitTunAdminModal"
+      @update:password="tunAdminPassword = $event"
     />
   </div>
 </template>

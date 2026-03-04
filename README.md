@@ -19,7 +19,7 @@ Beginner tip: type `xattr -cr ` first, then drag the `.app` file into the Termin
 
 Then start the app normally.
 
-When you start or stop `TUN` on macOS, the system may ask for your login password. This is expected because the app is modifying network routes/interfaces. Please enter your password and allow it.
+When enabling `TUN` on macOS, the app will ask for your macOS login password **inside the app** (once per app session) to grant administrator privileges required to modify routes/DNS. After that, TUN start/stop is silent (no macOS system password dialog). The password is kept in memory only and never written to disk.
 
 ## macOS 首次运行（重要）
 
@@ -37,7 +37,7 @@ xattr -cr "/Applications/sudoku4x4.app"
 
 然后再正常双击启动。
 
-在 macOS 上启用或停止 `TUN` 时，系统可能会弹出密码输入框。这是正常行为，因为应用需要修改网络路由和网卡配置。请放心输入密码并授权。
+在 macOS 上启用 `TUN` 开关时，应用会在**软件内**弹窗要求输入 macOS 登录密码（每次打开软件仅需一次），用于获取修改系统路由 / DNS 所需的管理员权限。之后的 TUN 启停为静默启停（不会再弹 macOS 系统级密码框）。密码仅保存在内存中，不会写入磁盘。
 
 ## What is this project?
 

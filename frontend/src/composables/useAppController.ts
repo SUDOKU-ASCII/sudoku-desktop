@@ -96,6 +96,14 @@ const proxyOpBusy = ref(false)
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
 const loadReady = ref(false)
+const isMacLike = /Mac|Darwin/i.test(navigator.userAgent)
+
+const tunAdminModalOpen = ref(false)
+const tunAdminPassword = ref('')
+const tunAdminBusy = ref(false)
+const tunAdminError = ref('')
+let tunAdminPromise: Promise<boolean> | null = null
+let tunAdminPromiseResolve: ((ok: boolean) => void) | null = null
 
 const emptyNode = (): NodeConfig => ({
   id: '',
@@ -220,6 +228,7 @@ const customRulesValidation = ref<{ status: 'idle' | 'checking' | 'ok' | 'error'
   message: '',
 })
 const tunAutoSaveLock = ref(true)
+const skipTunEnabledAutoSaveOnce = ref(false)
 
 const applyLocaleFromConfig = () => {
   if (config.ui.language === 'auto') {
@@ -250,6 +259,58 @@ const flash = (message: string, type: 'ok' | 'error' = 'ok') => {
       notice.value = ''
     }
   }, 2600)
+}
+
+const isAdminRequiredError = (e: any): boolean => {
+  const msg = String(e?.message || '').toLowerCase()
+  return msg.includes('administrator privileges required') || msg.includes('admin privileges required')
+}
+
+const openTunAdminModal = async (): Promise<boolean> => {
+  if (tunAdminPromise) return tunAdminPromise
+  tunAdminModalOpen.value = true
+  tunAdminPassword.value = ''
+  tunAdminError.value = ''
+  tunAdminBusy.value = false
+  tunAdminPromise = new Promise<boolean>((resolve) => {
+    tunAdminPromiseResolve = resolve
+  })
+  return tunAdminPromise
+}
+
+const closeTunAdminModal = (ok = false) => {
+  tunAdminModalOpen.value = false
+  tunAdminBusy.value = false
+  tunAdminError.value = ''
+  tunAdminPassword.value = ''
+  tunAdminPromiseResolve?.(ok)
+  tunAdminPromise = null
+  tunAdminPromiseResolve = null
+}
+
+const submitTunAdminModal = async () => {
+  if (tunAdminBusy.value) return
+  tunAdminBusy.value = true
+  tunAdminError.value = ''
+  try {
+    await backendApi.tunAcquirePrivileges(tunAdminPassword.value)
+    closeTunAdminModal(true)
+  } catch (e: any) {
+    tunAdminError.value = e?.message || t('tunAdminFailed')
+  } finally {
+    tunAdminBusy.value = false
+  }
+}
+
+const ensureTunAdmin = async (): Promise<boolean> => {
+  if (!isMacLike) return true
+  try {
+    const has = await backendApi.tunHasPrivileges()
+    if (has) return true
+  } catch {
+    // ignore
+  }
+  return await openTunAdminModal()
 }
 
 const assignConfig = (next: AppConfig) => {
@@ -410,6 +471,19 @@ const startProxy = async () => {
     await backendApi.startProxy({ withTun: config.tun.enabled })
     flash(t('started'))
   } catch (e: any) {
+    if (isMacLike && isAdminRequiredError(e)) {
+      const ok = await ensureTunAdmin()
+      if (ok) {
+        try {
+          await backendApi.startProxy({ withTun: config.tun.enabled })
+          flash(t('started'))
+          return
+        } catch (e2: any) {
+          flash(e2?.message || t('startFailed'), 'error')
+          return
+        }
+      }
+    }
     flash(e?.message || t('startFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
@@ -422,6 +496,19 @@ const stopProxy = async () => {
     await backendApi.stopProxy()
     flash(t('stopped'))
   } catch (e: any) {
+    if (isMacLike && isAdminRequiredError(e)) {
+      const ok = await ensureTunAdmin()
+      if (ok) {
+        try {
+          await backendApi.stopProxy()
+          flash(t('stopped'))
+          return
+        } catch (e2: any) {
+          flash(e2?.message || t('stopFailed'), 'error')
+          return
+        }
+      }
+    }
     flash(e?.message || t('stopFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
@@ -434,6 +521,19 @@ const restartProxy = async () => {
     await backendApi.restartProxy({ withTun: config.tun.enabled })
     flash(t('restarted'))
   } catch (e: any) {
+    if (isMacLike && isAdminRequiredError(e)) {
+      const ok = await ensureTunAdmin()
+      if (ok) {
+        try {
+          await backendApi.restartProxy({ withTun: config.tun.enabled })
+          flash(t('restarted'))
+          return
+        } catch (e2: any) {
+          flash(e2?.message || t('restartFailed'), 'error')
+          return
+        }
+      }
+    }
     flash(e?.message || t('restartFailed'), 'error')
   } finally {
     proxyOpBusy.value = false
@@ -867,10 +967,31 @@ watch(
 
 watch(
   () => config.tun.enabled,
-  async (_next, _prev) => {
+  async (next, prev) => {
     if (!loadReady.value || tunAutoSaveLock.value) return
+    if (skipTunEnabledAutoSaveOnce.value) {
+      skipTunEnabledAutoSaveOnce.value = false
+      return
+    }
+    if (next && !prev && isMacLike) {
+      const ok = await ensureTunAdmin()
+      if (!ok) {
+        skipTunEnabledAutoSaveOnce.value = true
+        config.tun.enabled = false
+        return
+      }
+    }
     await saveConfig(true)
     flash(t('tunAutoSaved'))
+  }
+)
+
+watch(
+  () => state.needsAdmin,
+  async (next) => {
+    if (!loadReady.value) return
+    if (!next || !isMacLike) return
+    void ensureTunAdmin()
   }
 )
 
@@ -962,6 +1083,12 @@ onUnmounted(() => {
     proxyOpBusy,
     notice,
     noticeType,
+    tunAdminModalOpen,
+    tunAdminPassword,
+    tunAdminBusy,
+    tunAdminError,
+    closeTunAdminModal,
+    submitTunAdminModal,
     config,
     state,
     editableNode,

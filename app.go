@@ -306,3 +306,29 @@ func (a *App) OpenConfigPath() string {
 	}
 	return a.backend.OpenConfigPath()
 }
+
+// TunHasPrivileges reports whether the app can perform privileged TUN operations
+// silently on the current platform (macOS uses in-app sudo password caching).
+func (a *App) TunHasPrivileges() bool {
+	if a.backend == nil {
+		return false
+	}
+	return a.backend.TunHasPrivileges()
+}
+
+// TunAcquirePrivileges validates and caches the macOS login password for TUN
+// operations. The password is stored in-memory only and never written to disk.
+func (a *App) TunAcquirePrivileges(password string) error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.TunAcquirePrivileges(password)
+}
+
+// TunDropPrivileges clears any cached admin credentials used for TUN operations.
+func (a *App) TunDropPrivileges() error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.TunDropPrivileges()
+}

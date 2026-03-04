@@ -1157,6 +1157,15 @@ textarea {
   display: grid;
 }
 
+.modal-card.tun-admin-modal {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.tun-admin-error {
+  color: var(--bad);
+  margin-top: 10px;
+}
+
 .modal-head {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);

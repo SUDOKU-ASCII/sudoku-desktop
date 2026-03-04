@@ -67,4 +67,3 @@ func platformUDPWriteToBypass(conn *net.UDPConn, payload []byte, addr *net.UDPAd
 	_ = pc.SetControlMessage(ipv6.FlagSrc, true)
 	return pc.WriteTo(payload, &ipv6.ControlMessage{Src: src6}, addr)
 }
-

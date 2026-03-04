@@ -175,6 +175,9 @@ func isLikelyPermissionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, ErrAdminRequired) {
+		return true
+	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "operation not permitted") ||

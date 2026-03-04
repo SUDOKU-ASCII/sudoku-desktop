@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"os"
 	"runtime"
 	"strings"
@@ -143,6 +144,9 @@ func main() {
 	proxyToggleItem.OnClick(func(_ *application.Context) {
 		if err := appService.trayToggleProxy(); err != nil {
 			logx.Errorf("Desktop", "tray toggle proxy failed: %v", err)
+			if errors.Is(err, core.ErrAdminRequired) {
+				mainWindow.Show().Focus()
+			}
 		}
 		refreshTrayMenu()
 	})

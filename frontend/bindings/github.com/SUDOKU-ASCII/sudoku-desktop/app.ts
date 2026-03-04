@@ -154,6 +154,29 @@ export function SwitchNode(nodeID: string): $CancellablePromise<void> {
     return $Call.ByID(1881690177, nodeID);
 }
 
+/**
+ * TunAcquirePrivileges validates and caches the macOS login password for TUN
+ * operations. The password is stored in-memory only and never written to disk.
+ */
+export function TunAcquirePrivileges(password: string): $CancellablePromise<void> {
+    return $Call.ByID(4221577784, password);
+}
+
+/**
+ * TunDropPrivileges clears any cached admin credentials used for TUN operations.
+ */
+export function TunDropPrivileges(): $CancellablePromise<void> {
+    return $Call.ByID(3464546521);
+}
+
+/**
+ * TunHasPrivileges reports whether the app can perform privileged TUN operations
+ * silently on the current platform (macOS uses in-app sudo password caching).
+ */
+export function TunHasPrivileges(): $CancellablePromise<boolean> {
+    return $Call.ByID(3950116500);
+}
+
 export function UpsertNode(node: core$0.NodeConfig): $CancellablePromise<core$0.NodeConfig> {
     return $Call.ByID(2714662214, node).then(($result: any) => {
         return $$createType11($result);

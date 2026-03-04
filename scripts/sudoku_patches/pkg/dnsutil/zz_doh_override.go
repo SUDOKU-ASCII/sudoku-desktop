@@ -32,7 +32,7 @@ const (
 
 var (
 	fakeIPBenchNet = &net.IPNet{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)} // 198.18.0.0/15
-	fakeIPCGNATNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}  // 100.64.0.0/10
+	fakeIPCGNATNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)} // 100.64.0.0/10
 )
 
 func init() {

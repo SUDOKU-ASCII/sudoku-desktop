@@ -36,4 +36,3 @@ func udpWriteTo(conn *net.UDPConn, payload []byte, addr *net.UDPAddr, bypass boo
 	}
 	return platformUDPWriteToBypass(conn, payload, addr)
 }
-

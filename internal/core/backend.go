@@ -53,6 +53,11 @@ type Backend struct {
 	tunAdmin            adminDetachedProcess
 	runningTunInterface string
 	tunRecovering       bool
+	darwinNetRepairing  bool
+	darwinNetLastCheck  time.Time
+	darwinNetLastSig    string
+	darwinNetLastErr    string
+	darwinNetLastErrAt  time.Time
 	revProc             *ManagedProcess
 	routeState          *routeContext
 	pfMgr               *portForwardManager
@@ -119,6 +124,15 @@ func newBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, err
 		emitLogCh:          make(chan LogEntry, 512),
 		bundledRuntimeFS:   runtimeFS,
 		bundledRuntimeRoot: runtimeRoot,
+	}
+	if runtime.GOOS == "darwin" && b.tunAdmin != nil {
+		// Allow detecting/stopping leftover root HEV processes after crash/force-quit.
+		if p, ok := b.tunAdmin.(*darwinAdminDetachedProcess); ok {
+			p.pidFile = filepath.Join(store.RuntimeDir(), "hev.pid")
+			p.logFile = filepath.Join(store.LogDir(), "hev.log")
+			p.expectRuntimeDir = store.RuntimeDir()
+			p.expectCmdBase = filepath.Base(cfg.Core.HevBinary)
+		}
 	}
 	b.usageDays = trimUsageDays(loadUsageHistory(store.UsageHistoryPath()), 120)
 	b.pfMgr = newPortForwardManager(func(line string) {
@@ -286,25 +300,68 @@ func (b *Backend) Startup(_ context.Context) {
 }
 
 func (b *Backend) Shutdown() {
+	// Security: never keep the sudo password in memory longer than the app lifetime.
+	// This runs after StopProxy/cleanup finishes (or times out).
+	defer func() {
+		_ = darwinAdminForget()
+	}()
+
 	b.shutdownOnce.Do(func() {
 		close(b.tickerStop)
 	})
 
+	b.mu.RLock()
+	hasActiveRoutes := b.routeState != nil || b.state.TunRunning
+	b.mu.RUnlock()
+	shutdownTimeout := 4 * time.Second
+	if hasActiveRoutes {
+		// If TUN routes are active, prioritize restoring the user's network over fast quit.
+		// Route/DNS restore can take time on macOS during network transitions.
+		shutdownTimeout = 90 * time.Second
+	}
+
 	done := make(chan struct{})
 	go func() {
 		_ = b.StopReverseForwarder()
-		_ = b.StopProxy()
+		// StopProxy can fail transiently on macOS during Wi‑Fi transitions (default route/DNS not ready).
+		// On shutdown we keep retrying for a bounded time so we don't exit while the machine would be left offline.
+		deadline := time.Now().Add(shutdownTimeout)
+		for {
+			err := b.StopProxy()
+			b.mu.RLock()
+			stillHasRoutes := b.routeState != nil || b.state.TunRunning
+			b.mu.RUnlock()
+			if err == nil || !stillHasRoutes {
+				break
+			}
+			if errors.Is(err, ErrAdminRequired) {
+				// Without admin privileges we can't safely fix routes/DNS; avoid busy-looping.
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(600 * time.Millisecond)
+		}
 		close(done)
 	}()
 
-	// Never hang the app on quit (e.g. if an admin prompt is pending).
+	// Never hang the app on quit forever, but avoid leaving the machine offline.
 	select {
 	case <-done:
-	case <-time.After(4 * time.Second):
-		// Best-effort cleanup without blocking shutdown.
+	case <-time.After(shutdownTimeout):
+		// Best-effort cleanup without blocking shutdown. If we still have active routes,
+		// do NOT kill core/tun processes (that can leave the system offline).
 		_ = b.revProc.Stop(800 * time.Millisecond)
-		_ = b.stopTunLocked(800 * time.Millisecond)
-		_ = b.coreProc.Stop(800 * time.Millisecond)
+		b.mu.RLock()
+		stillHasRoutes := b.routeState != nil || b.state.TunRunning
+		b.mu.RUnlock()
+		if !stillHasRoutes {
+			_ = b.stopTunLocked(800 * time.Millisecond)
+			_ = b.coreProc.Stop(800 * time.Millisecond)
+		} else {
+			b.addLog("warn", "app", "shutdown timed out while restoring TUN routes; leaving proxy processes running to avoid offline state")
+		}
 		b.pfMgr.StopAll()
 	}
 	b.stopPACServer()
@@ -517,6 +574,11 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		b.opMu.Unlock()
 		return nil
 	}
+	// If the app was force-quit previously, a detached TUN process and/or routes may still be active.
+	// Clean them up before starting a new session to avoid "process already running" and offline states.
+	prevRouteState := b.routeState
+	prevTunRunning := b.tunRunningLocked()
+	prevTunIf := strings.TrimSpace(b.runningTunInterface)
 	if err := b.ensureCoreBinariesLocked(); err != nil {
 		b.state.LastError = err.Error()
 		b.emitStateLocked()
@@ -552,6 +614,88 @@ func (b *Backend) StartProxy(req StartRequest) error {
 
 	b.mu.Unlock()
 
+	if runtime.GOOS == "darwin" {
+		detectedTunIf := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tunCfg.IPv4))
+		if prevRouteState != nil || prevTunRunning || detectedTunIf != "" {
+			tunIf := strings.TrimSpace(prevTunIf)
+			if tunIf == "" {
+				tunIf = detectedTunIf
+			}
+			if tunIf == "" {
+				if routes, err := darwinNetstatRoutesIPv4(); err == nil {
+					for _, r := range routes {
+						if r.Destination != "default" {
+							continue
+						}
+						if !darwinIsTunLikeInterface(r.Netif) {
+							continue
+						}
+						if strings.TrimSpace(r.Netif) == "" {
+							continue
+						}
+						tunIf = strings.TrimSpace(r.Netif)
+						break
+					}
+				}
+			}
+			if tunIf != "" {
+				tunCfg.InterfaceName = tunIf
+			}
+
+			ctx := prevRouteState
+			if ctx == nil {
+				physIf, _ := darwinResolveOutboundBypassInterface(2 * time.Second)
+				physIf = strings.TrimSpace(physIf)
+				emerg := &routeContext{
+					DefaultInterface: physIf,
+					PFAnchor:         fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid()),
+				}
+				if physIf != "" {
+					if svc, err := darwinNetworkServiceForDevice(physIf); err == nil && strings.TrimSpace(svc) != "" {
+						emerg.DarwinDNSSnapshots = []darwinDNSSnapshot{{
+							Service:      strings.TrimSpace(svc),
+							Servers:      nil,
+							WasAutomatic: true,
+						}}
+					}
+				}
+				ctx = emerg
+			}
+
+			b.addLog("warn", "tun", "darwin: detected stale TUN state; tearing down before start")
+			if err := teardownRoutes(ctx, tunCfg, func(line string) {
+				b.addLog("info", "route", line)
+			}); err != nil {
+				b.mu.Lock()
+				b.state.NeedsAdmin = isLikelyPermissionError(err)
+				b.state.RouteSetupError = err.Error()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				b.opMu.Unlock()
+				return err
+			}
+			if err := b.stopTunLocked(6 * time.Second); err != nil && b.tunRunningLocked() {
+				b.mu.Lock()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				b.opMu.Unlock()
+				return err
+			}
+
+			b.mu.Lock()
+			b.routeState = nil
+			b.runningTunInterface = ""
+			b.tunRecovering = false
+			b.state.TunRunning = false
+			b.state.NeedsAdmin = false
+			b.state.RouteSetupError = ""
+			b.emitStateLocked()
+			b.mu.Unlock()
+		}
+	}
+
 	startCtx, startID := b.newStartContext()
 	defer b.clearStartIfMatch(startID)
 
@@ -583,25 +727,22 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(srcIP))
 			}
 		case "darwin":
-			gw, ifName, derr := darwinDefaultRoute()
-			if derr != nil || strings.TrimSpace(gw) == "" || strings.TrimSpace(ifName) == "" {
-				b.mu.Lock()
-				b.state.LastError = fmt.Sprintf("unable to resolve default route for outbound bypass: %v", derr)
-				b.emitStateLocked()
-				b.mu.Unlock()
-				b.opMu.Unlock()
-				if derr != nil {
-					return derr
-				}
-				return errors.New("unable to resolve default route for outbound bypass")
-			}
-			ifName = strings.TrimSpace(ifName)
-			coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
-			if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
-				if useDarwinSrcIPBind {
-					coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
-				} else {
-					b.addLog("warn", "route", "darwin stability mode: skip source-ip bind for core outbound (set SUDOKU_DARWIN_USE_OUTBOUND_SRC_IP=1 to force old behavior)")
+			// Best-effort: resolving the physical interface can transiently fail during Wi‑Fi transitions.
+			// Never abort start because of this; host routes + route repair keep the core reachable.
+			ifName, derr := darwinResolveOutboundBypassInterface(4 * time.Second)
+			if derr != nil {
+				b.addLog("warn", "route", fmt.Sprintf("darwin: resolve outbound bypass interface failed; continuing without interface-bind: %v", derr))
+			} else if strings.TrimSpace(ifName) == "" {
+				b.addLog("warn", "route", "darwin: outbound bypass interface not found; continuing without interface-bind")
+			} else {
+				ifName = strings.TrimSpace(ifName)
+				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
+				if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
+					if useDarwinSrcIPBind {
+						coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+strings.TrimSpace(ip4))
+					} else {
+						b.addLog("warn", "route", "darwin stability mode: skip source-ip bind for core outbound (set SUDOKU_DARWIN_USE_OUTBOUND_SRC_IP=1 to force old behavior)")
+					}
 				}
 			}
 		case "windows":
@@ -659,7 +800,6 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	}
 
 	if withTun {
-		serverIP := resolveServerIPFromAddress(nodeCopy.ServerAddress)
 		beforeTunIfs := map[string]struct{}{}
 		if runtime.GOOS == "darwin" {
 			beforeTunIfs = darwinListTunInterfaces()
@@ -701,8 +841,12 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				bypassCfg.LinuxSourceIP = strings.TrimSpace(srcIP)
 			}
 		case "darwin":
-			if _, ifName, err := darwinDefaultRoute(); err == nil && strings.TrimSpace(ifName) != "" {
-				bypassCfg.DarwinInterface = strings.TrimSpace(ifName)
+			ifName, derr := darwinResolveOutboundBypassInterface(2 * time.Second)
+			if derr != nil {
+				b.addLog("warn", "dns", fmt.Sprintf("resolve outbound bypass interface failed; DNS upstream bypass may loop: %v", derr))
+			} else if strings.TrimSpace(ifName) != "" {
+				ifName = strings.TrimSpace(ifName)
+				bypassCfg.DarwinInterface = ifName
 				if useDarwinSrcIPBind {
 					if ip4 := darwinInterfaceIPv4(ifName); strings.TrimSpace(ip4) != "" {
 						bypassCfg.DarwinSourceIP = strings.TrimSpace(ip4)
@@ -876,136 +1020,21 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			pidFile := filepath.Join(b.store.RuntimeDir(), "hev.pid")
 			logFile := filepath.Join(b.store.LogDir(), "hev.log")
 			hevLogFile = logFile
-			b.addLog("warn", "tun", "starting TUN requires administrator privileges; requesting approval...")
-			type startWithRoutesAdmin interface {
-				StartWithRoutes(ctx context.Context, command string, args []string, workdir string, pidFile string, logFile string, tunIPv4 string, serverIP string, defaultGateway string, defaultGatewayV6 string, defaultInterface string, dnsSetCmd string, dnsRestoreCmd string, pfSetCmd string, pfRestoreCmd string) (int, string, string, error)
+			b.addLog("warn", "tun", "starting TUN requires administrator privileges; waiting for password...")
+			pid, err := b.tunAdmin.Start(hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile)
+			if err != nil {
+				_ = b.coreProc.Stop(3 * time.Second)
+				b.mu.Lock()
+				b.state.CoreRunning = false
+				b.state.Running = false
+				b.state.NeedsAdmin = isLikelyPermissionError(err)
+				b.state.RouteSetupError = err.Error()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				return err
 			}
-			if dp, ok := b.tunAdmin.(startWithRoutesAdmin); ok {
-				gw, ifName, gwErr := darwinDefaultRoute()
-				if gwErr != nil {
-					_ = b.coreProc.Stop(3 * time.Second)
-					b.mu.Lock()
-					b.state.CoreRunning = false
-					b.state.Running = false
-					b.state.NeedsAdmin = true
-					b.state.RouteSetupError = gwErr.Error()
-					b.state.LastError = gwErr.Error()
-					b.emitStateLocked()
-					b.mu.Unlock()
-					return gwErr
-				}
-				gw6 := ""
-				if darwinTunIPv6Enabled() {
-					gw6, _, _ = darwinDefaultRouteIPv6()
-				}
-
-				dnsSetCmd := ""
-				dnsRestoreCmd := ""
-				dnsService := ""
-				var dnsPrev []string
-				dnsWasAuto := false
-				if effectiveDNS != "" && strings.TrimSpace(ifName) != "" {
-					if svc, derr := darwinNetworkServiceForDevice(ifName); derr == nil && strings.TrimSpace(svc) != "" {
-						dnsService = svc
-						if prev, wasAuto, gerr := darwinGetDNSServers(svc); gerr == nil {
-							dnsPrev = prev
-							dnsWasAuto = wasAuto
-						}
-						dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
-						dnsSetCmd = shellJoin("networksetup", "-setdnsservers", svc, effectiveDNS) + "; " + dnsFlushCmd
-						if dnsWasAuto || len(dnsPrev) == 0 {
-							dnsRestoreCmd = shellJoin("networksetup", "-setdnsservers", svc, "Empty") + "; " + dnsFlushCmd
-						} else {
-							args := append([]string{"networksetup", "-setdnsservers", svc}, dnsPrev...)
-							dnsRestoreCmd = shellJoin(args...) + "; " + dnsFlushCmd
-						}
-						b.addLog("info", "dns", fmt.Sprintf("set system DNS for %s to %s (restore on stop)", dnsService, effectiveDNS))
-					} else if derr != nil {
-						b.addLog("warn", "dns", fmt.Sprintf("unable to resolve network service for %s: %v", ifName, derr))
-					}
-				}
-
-				pfSetCmd := ""
-				pfRestoreCmd := ""
-				pfAnchor := ""
-				dnsProxyPort := 0
-				if effectiveDNS == localDNSServerIPv4 {
-					dnsProxyPort = localDNSProxyListenPort()
-				}
-				if tunCfg.BlockQUIC || dnsProxyPort > 0 || strings.TrimSpace(bypass.V4Path) != "" || strings.TrimSpace(bypass.V6Path) != "" {
-					pfAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-					pfSetCmd = darwinBuildPFSetCmd(pfAnchor, "${tun_if}", ifName, gw, gw6, tunCfg.IPv4, bypass.V4Path, bypass.V6Path, tunCfg.BlockQUIC, dnsProxyPort)
-					pfRestoreCmd = darwinBuildPFRestoreCmd(pfAnchor)
-					if tunCfg.BlockQUIC {
-						b.addLog("info", "pf", "blocking QUIC: drop outbound UDP/443 via pf")
-					}
-				}
-
-				pid, tunIf, scriptOut, err := dp.StartWithRoutes(startCtx, hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile, tunCfg.IPv4, serverIP, gw, gw6, ifName, dnsSetCmd, dnsRestoreCmd, pfSetCmd, pfRestoreCmd)
-				if err != nil {
-					_ = b.coreProc.Stop(3 * time.Second)
-					b.mu.Lock()
-					b.state.CoreRunning = false
-					b.state.Running = false
-					b.state.NeedsAdmin = true
-					b.state.RouteSetupError = err.Error()
-					b.state.LastError = err.Error()
-					b.emitStateLocked()
-					b.mu.Unlock()
-					return err
-				}
-				if strings.TrimSpace(scriptOut) != "" {
-					for _, ln := range strings.Split(strings.ReplaceAll(scriptOut, "\r", "\n"), "\n") {
-						ln = strings.TrimSpace(ln)
-						if ln == "" {
-							continue
-						}
-						switch {
-						case strings.HasPrefix(ln, "__SUDOKU_STEP__="):
-							b.addLog("info", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_STEP__="))
-						case strings.HasPrefix(ln, "__SUDOKU_WARN__="):
-							b.addLog("warn", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_WARN__="))
-						case strings.HasPrefix(ln, "__SUDOKU_GUARD__="):
-							b.addLog("warn", "tun", "admin "+strings.TrimPrefix(ln, "__SUDOKU_GUARD__="))
-						default:
-							b.addLog("info", "tun", "admin "+ln)
-						}
-					}
-				}
-				b.runningTunInterface = strings.TrimSpace(tunIf)
-				if b.runningTunInterface != "" {
-					b.addLog("info", "tun", fmt.Sprintf("detected tunnel interface: %s", b.runningTunInterface))
-				}
-				preRouteCtx = &routeContext{
-					DefaultGateway:   gw,
-					DefaultGatewayV6: gw6,
-					DefaultInterface: ifName,
-					ServerIP:         serverIP,
-					DNSService:       dnsService,
-					DNSServers:       dnsPrev,
-					DNSWasAutomatic:  dnsWasAuto,
-					PFAnchor:         pfAnchor,
-					BypassV4Path:     bypass.V4Path,
-					BypassV6Path:     bypass.V6Path,
-				}
-				routeAlreadySetup = true
-				b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
-			} else {
-				pid, err := b.tunAdmin.Start(hevCmd, []string{hevCfgPath}, hevWorkDir, pidFile, logFile)
-				if err != nil {
-					_ = b.coreProc.Stop(3 * time.Second)
-					b.mu.Lock()
-					b.state.CoreRunning = false
-					b.state.Running = false
-					b.state.NeedsAdmin = true
-					b.state.RouteSetupError = err.Error()
-					b.state.LastError = err.Error()
-					b.emitStateLocked()
-					b.mu.Unlock()
-					return err
-				}
-				b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
-			}
+			b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
 		} else {
 			if runtime.GOOS == "linux" && os.Geteuid() != 0 {
 				if _, err := exec.LookPath("pkexec"); err == nil {
@@ -1064,7 +1093,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				_ = b.stopTunLocked(2 * time.Second)
 				_ = b.coreProc.Stop(2 * time.Second)
 				b.mu.Lock()
-				b.state.NeedsAdmin = true
+				b.state.NeedsAdmin = isLikelyPermissionError(err)
 				b.state.RouteSetupError = err.Error()
 				b.state.TunRunning = false
 				b.state.CoreRunning = false
@@ -1091,7 +1120,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				_ = b.stopTunLocked(2 * time.Second)
 				_ = b.coreProc.Stop(2 * time.Second)
 				b.mu.Lock()
-				b.state.NeedsAdmin = true
+				b.state.NeedsAdmin = isLikelyPermissionError(routeErr)
 				b.state.RouteSetupError = routeErr.Error()
 				b.state.TunRunning = false
 				b.state.CoreRunning = false
@@ -1156,10 +1185,31 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		if hcErr != nil {
 			// Best-effort immediate rollback. This avoids leaving the user's machine offline.
 			b.addLog("warn", "app", fmt.Sprintf("post-start health check failed; reverting: %v", hcErr))
+			var rollbackErr error
 			if routeCtx != nil {
-				teardownRoutes(routeCtx, tunCfg, func(line string) {
+				if err := teardownRoutes(routeCtx, tunCfg, func(line string) {
 					b.addLog("info", "route", line)
-				})
+				}); err != nil {
+					rollbackErr = err
+					b.addLog("warn", "route", fmt.Sprintf("rollback routes failed: %v", err))
+				}
+			}
+			if rollbackErr != nil {
+				// Safety: never stop TUN/dns when we couldn't restore system routes.
+				// Otherwise the machine can look completely offline.
+				b.addLog("warn", "app", "rollback failed; keeping TUN running to avoid offline state")
+				b.mu.Lock()
+				b.routeState = routeCtx
+				b.state.NeedsAdmin = isLikelyPermissionError(rollbackErr)
+				b.state.RouteSetupError = hcErr.Error()
+				b.state.TunRunning = b.tunRunningLocked()
+				b.state.CoreRunning = b.coreProc.IsRunning()
+				b.state.Running = b.state.CoreRunning
+				b.state.LastError = fmt.Sprintf("post-start health check failed; rollback failed, keeping TUN running: %v", rollbackErr)
+				b.emitStateLocked()
+				b.mu.Unlock()
+				dnsProxyOK = true
+				return fmt.Errorf("post-start health check failed: %w; rollback failed: %v", hcErr, rollbackErr)
 			}
 			_ = b.stopTunLocked(4 * time.Second)
 			if runtime.GOOS == "darwin" {
@@ -1303,7 +1353,7 @@ func (b *Backend) retryApplySystemProxy(ctx context.Context, localPort int, maxD
 }
 
 func (b *Backend) StopProxy() error {
-	// Interrupt any pending start (e.g. waiting for admin prompt).
+	// Interrupt any pending start (e.g. waiting for admin privileges/network readiness).
 	b.cancelStart()
 	b.opMu.Lock()
 	defer b.opMu.Unlock()
@@ -1325,14 +1375,63 @@ func (b *Backend) StopProxy() error {
 	b.mu.Lock()
 	routeState := b.routeState
 	tunCfg := b.cfg.Tun
-	b.routeState = nil
+	if strings.TrimSpace(b.runningTunInterface) != "" {
+		tunCfg.InterfaceName = strings.TrimSpace(b.runningTunInterface)
+	}
 	b.mu.Unlock()
+
+	// Production safety (darwin):
+	// If we lost in-memory routeState (app crash/force-quit) but the TUN interface is still present,
+	// attempt an emergency teardown so StopProxy doesn't leave the machine offline.
+	if runtime.GOOS == "darwin" && routeState == nil {
+		if tunIf := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tunCfg.IPv4)); tunIf != "" {
+			tunCfg.InterfaceName = tunIf
+			physIf, _ := darwinResolveOutboundBypassInterface(2 * time.Second)
+			physIf = strings.TrimSpace(physIf)
+			emerg := &routeContext{
+				DefaultInterface: physIf,
+				PFAnchor:         fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid()),
+			}
+			if physIf != "" {
+				if svc, err := darwinNetworkServiceForDevice(physIf); err == nil && strings.TrimSpace(svc) != "" {
+					// Without a snapshot, restore DNS to automatic for this service.
+					emerg.DarwinDNSSnapshots = []darwinDNSSnapshot{{
+						Service:      strings.TrimSpace(svc),
+						Servers:      nil,
+						WasAutomatic: true,
+					}}
+				}
+			}
+			routeState = emerg
+			b.addLog("warn", "route", fmt.Sprintf("darwin: recovered missing route state (tunIf=%s); attempting emergency route teardown", tunIf))
+		}
+	}
 
 	// Route teardown may require admin; it also logs via b.addLog.
 	if routeState != nil {
-		teardownRoutes(routeState, tunCfg, func(line string) {
+		if err := teardownRoutes(routeState, tunCfg, func(line string) {
 			b.addLog("info", "route", line)
-		})
+		}); err != nil {
+			// Safety: never stop the TUN/dns proxy if we couldn't restore system routes.
+			// Otherwise the machine can look completely offline.
+			b.addLog("warn", "route", fmt.Sprintf("route teardown failed; abort stop to avoid offline state: %v", err))
+			b.mu.Lock()
+			b.state.NeedsAdmin = isLikelyPermissionError(err)
+			b.state.RouteSetupError = err.Error()
+			b.state.LastError = err.Error()
+			b.emitStateLocked()
+			b.mu.Unlock()
+			return err
+		}
+
+		// Routes are no longer active at this point. Clear routeState immediately so the monitor
+		// loop doesn't mis-detect an "unexpected TUN exit" during an intentional stop/restart.
+		b.mu.Lock()
+		if b.routeState == routeState {
+			b.routeState = nil
+		}
+		b.emitStateLocked()
+		b.mu.Unlock()
 	}
 
 	b.mu.Lock()
@@ -1345,8 +1444,8 @@ func (b *Backend) StopProxy() error {
 
 	tunStopTimeout := 2 * time.Second
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 && b.tunAdmin != nil && b.tunAdmin.PID() > 0 {
-		// Allow time for the admin password prompt.
-		tunStopTimeout = 90 * time.Second
+		// Detached root process teardown can take longer on macOS.
+		tunStopTimeout = 6 * time.Second
 	}
 	if err := b.stopTunLocked(tunStopTimeout); err != nil {
 		b.addLog("warn", "tun", fmt.Sprintf("stop hev failed: %v", err))
@@ -1359,6 +1458,7 @@ func (b *Backend) StopProxy() error {
 	b.pfMgr.StopAll()
 
 	b.mu.Lock()
+	b.routeState = nil
 	b.state.Running = false
 	b.state.TunRunning = false
 	b.state.CoreRunning = false
@@ -1912,8 +2012,265 @@ func (b *Backend) monitorLoop() {
 			return
 		case <-t.C:
 			b.tick()
+			b.maybeRepairDarwinTunNetwork()
 		}
 	}
+}
+
+func (b *Backend) startInProgress() bool {
+	b.startMu.Lock()
+	inProgress := b.startCancel != nil
+	b.startMu.Unlock()
+	return inProgress
+}
+
+func (b *Backend) maybeRepairDarwinTunNetwork() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if b.startInProgress() {
+		return
+	}
+
+	now := time.Now()
+	b.mu.Lock()
+	if !b.darwinNetLastCheck.IsZero() && now.Sub(b.darwinNetLastCheck) < 2*time.Second {
+		b.mu.Unlock()
+		return
+	}
+	b.darwinNetLastCheck = now
+	if b.darwinNetRepairing || b.tunRecovering {
+		b.mu.Unlock()
+		return
+	}
+	routeCtx := b.routeState
+	tunRunning := b.state.TunRunning
+	if routeCtx == nil || !tunRunning {
+		b.mu.Unlock()
+		return
+	}
+	prevIf := strings.TrimSpace(routeCtx.DefaultInterface)
+	prevGW := strings.TrimSpace(routeCtx.DefaultGateway)
+	prevGW6 := strings.TrimSpace(routeCtx.DefaultGatewayV6)
+	tunCfg := b.cfg.Tun
+	if strings.TrimSpace(b.runningTunInterface) != "" {
+		tunCfg.InterfaceName = strings.TrimSpace(b.runningTunInterface)
+	}
+	b.mu.Unlock()
+
+	info, infoErr := darwinPrimaryNetworkInfo()
+	if infoErr != nil {
+		b.mu.Lock()
+		b.darwinNetLastErr = infoErr.Error()
+		b.darwinNetLastErrAt = now
+		b.mu.Unlock()
+	}
+
+	newIf := strings.TrimSpace(info.Interface4)
+	newGW := strings.TrimSpace(info.Router4)
+	newGW6 := ""
+	if darwinTunIPv6Enabled() {
+		newGW6 = strings.TrimSpace(info.Router6)
+	}
+
+	// scutil can report utun as the "primary" interface while TUN is active.
+	// Always prefer a physical interface for repair actions.
+	if newIf == "" || darwinIsTunLikeInterface(newIf) {
+		ifName, _ := darwinResolveOutboundBypassInterface(900 * time.Millisecond)
+		if strings.TrimSpace(ifName) != "" && !darwinIsTunLikeInterface(ifName) {
+			newIf = strings.TrimSpace(ifName)
+		} else if strings.TrimSpace(prevIf) != "" && !darwinIsTunLikeInterface(prevIf) {
+			newIf = strings.TrimSpace(prevIf)
+		} else {
+			newIf = ""
+		}
+	}
+
+	// Router can be empty during transitions; fall back to DHCP on the physical interface.
+	if strings.TrimSpace(newGW) == "" && newIf != "" && !darwinIsTunLikeInterface(newIf) {
+		if gw, _ := darwinDHCPRouterForInterface(newIf); strings.TrimSpace(gw) != "" {
+			newGW = strings.TrimSpace(gw)
+		}
+	}
+
+	if newIf == "" || newGW == "" {
+		return
+	}
+
+	changed := prevIf != newIf || prevGW != newGW
+	if !changed && darwinTunIPv6Enabled() && prevGW6 != "" && newGW6 != "" && prevGW6 != newGW6 {
+		changed = true
+	}
+	if !changed {
+		return
+	}
+
+	sig := strings.Join([]string{newIf, newGW, newGW6}, "|")
+	b.mu.Lock()
+	lastSig := b.darwinNetLastSig
+	lastErr := b.darwinNetLastErr
+	lastErrAt := b.darwinNetLastErrAt
+	if sig == lastSig && lastErr != "" && now.Sub(lastErrAt) < 30*time.Second {
+		b.mu.Unlock()
+		return
+	}
+	b.darwinNetLastSig = sig
+	b.darwinNetRepairing = true
+	b.mu.Unlock()
+
+	go b.repairDarwinTunNetwork(routeCtx, tunCfg, prevIf, prevGW, prevGW6, newIf, newGW, newGW6, sig)
+}
+
+func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSettings, prevIf string, prevGW string, prevGW6 string, newIf string, newGW string, newGW6 string, sig string) {
+	defer func() {
+		b.mu.Lock()
+		b.darwinNetRepairing = false
+		b.mu.Unlock()
+	}()
+
+	newIf = strings.TrimSpace(newIf)
+	newGW = strings.TrimSpace(newGW)
+	newGW6 = strings.TrimSpace(newGW6)
+	if newIf == "" || darwinIsTunLikeInterface(newIf) || newGW == "" {
+		return
+	}
+
+	// Avoid concurrent StopProxy and ensure a consistent route state snapshot.
+	b.opMu.Lock()
+	defer b.opMu.Unlock()
+
+	b.mu.Lock()
+	// Re-check: we may have stopped/restarted since we queued this repair.
+	if b.routeState != routeCtx || !b.state.TunRunning || b.tunRecovering {
+		b.mu.Unlock()
+		return
+	}
+	if strings.TrimSpace(b.runningTunInterface) != "" {
+		tunCfg.InterfaceName = strings.TrimSpace(b.runningTunInterface)
+	}
+	serverIP := strings.TrimSpace(routeCtx.ServerIP)
+	dnsAddr := strings.TrimSpace(routeCtx.DNSOverrideAddress)
+	dnsServiceCurrent := strings.TrimSpace(routeCtx.DNSService)
+	pfAnchor := strings.TrimSpace(routeCtx.PFAnchor)
+	bypassV4 := strings.TrimSpace(routeCtx.BypassV4Path)
+	bypassV6 := strings.TrimSpace(routeCtx.BypassV6Path)
+	b.mu.Unlock()
+
+	b.addLog("warn", "tun", fmt.Sprintf("darwin network changed: %s/%s -> %s/%s; repairing TUN routes", prevIf, prevGW, newIf, newGW))
+
+	newDNSService := ""
+	var newDNSSnap darwinDNSSnapshot
+	if dnsAddr != "" {
+		if svc, derr := darwinNetworkServiceForDevice(newIf); derr == nil {
+			newDNSService = strings.TrimSpace(svc)
+		}
+		if newDNSService != "" {
+			needSnap := true
+			b.mu.RLock()
+			for _, s := range routeCtx.DarwinDNSSnapshots {
+				if strings.EqualFold(strings.TrimSpace(s.Service), newDNSService) {
+					needSnap = false
+					break
+				}
+			}
+			b.mu.RUnlock()
+			if needSnap {
+				prev, wasAuto, _ := darwinGetDNSServers(newDNSService)
+				newDNSSnap = darwinDNSSnapshot{
+					Service:      newDNSService,
+					Servers:      prev,
+					WasAutomatic: wasAuto,
+				}
+			}
+		}
+	}
+
+	cmds := make([]string, 0, 10)
+	if serverIP != "" {
+		cmds = append(cmds,
+			shellJoin("route", "-n", "add", "-host", serverIP, newGW)+" || "+shellJoin("route", "-n", "change", "-host", serverIP, newGW)+" || true",
+		)
+	}
+	if tunIf := strings.TrimSpace(tunCfg.InterfaceName); tunIf != "" {
+		cmds = append(cmds,
+			shellJoin("route", "-n", "change", "default", "-interface", tunIf)+" || ("+
+				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
+				shellJoin("route", "-n", "add", "default", "-interface", tunIf)+") || true",
+		)
+		if darwinTunIPv6Enabled() {
+			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tunIf)+" || true")
+		}
+	}
+	cmds = append(cmds,
+		"("+shellJoin("route", "-n", "add", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1 || "+
+			shellJoin("route", "-n", "change", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1) || true",
+	)
+	if darwinTunIPv6Enabled() && newGW6 != "" {
+		cmds = append(cmds,
+			"("+shellJoin("route", "-n", "add", "-inet6", "-ifscope", newIf, "default", newGW6)+" >/dev/null 2>&1 || "+
+				shellJoin("route", "-n", "change", "-inet6", "-ifscope", newIf, "default", newGW6)+" >/dev/null 2>&1) || true",
+		)
+	}
+	if pfAnchor != "" {
+		dnsProxyPort := 0
+		if dnsAddr == localDNSServerIPv4 {
+			dnsProxyPort = localDNSProxyListenPort()
+		}
+		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), newIf, newGW, newGW6, tunCfg.IPv4, bypassV4, bypassV6, tunCfg.BlockQUIC, dnsProxyPort)); pfCmd != "" {
+			cmds = append(cmds, pfCmd+" || true")
+		}
+	}
+	if dnsAddr != "" && newDNSService != "" {
+		dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
+		cmds = append(cmds,
+			shellJoin("networksetup", "-setdnsservers", newDNSService, dnsAddr)+" || true",
+			dnsFlushCmd,
+		)
+	}
+
+	var runErr error
+	if os.Geteuid() != 0 {
+		runErr = runCmdsDarwinAdmin(func(line string) {
+			b.addLog("info", "route", line)
+		}, cmds...)
+	} else {
+		shell := "set -e; " + strings.Join(cmds, "; ")
+		runErr = runCmdExec(func(line string) {
+			b.addLog("info", "route", line)
+		}, "sh", "-lc", shell)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if runErr != nil {
+		b.darwinNetLastErr = runErr.Error()
+		b.darwinNetLastErrAt = time.Now()
+		b.state.LastError = runErr.Error()
+		b.emitStateLocked()
+		return
+	}
+	b.darwinNetLastErr = ""
+	b.darwinNetLastErrAt = time.Time{}
+	b.darwinNetLastSig = sig
+
+	// Update the in-memory route context so future stop/repair uses the new physical gateway/interface.
+	routeCtx.DefaultInterface = newIf
+	routeCtx.DefaultGateway = newGW
+	if darwinTunIPv6Enabled() && newGW6 != "" {
+		routeCtx.DefaultGatewayV6 = newGW6
+	}
+
+	if newDNSService != "" && dnsAddr != "" {
+		routeCtx.DNSOverrideAddress = dnsAddr
+		if dnsServiceCurrent == "" || !strings.EqualFold(dnsServiceCurrent, newDNSService) {
+			routeCtx.DNSService = newDNSService
+		}
+		if strings.TrimSpace(newDNSSnap.Service) != "" {
+			routeCtx.DarwinDNSSnapshots = append(routeCtx.DarwinDNSSnapshots, newDNSSnap)
+		}
+	}
+	b.addLog("info", "tun", "darwin network repair applied")
+	b.emitStateLocked()
 }
 
 func (b *Backend) tick() {

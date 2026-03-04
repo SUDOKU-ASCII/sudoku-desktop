@@ -24,6 +24,8 @@ type routeContext struct {
 	DNSService             string
 	DNSServers             []string
 	DNSWasAutomatic        bool
+	DNSOverrideAddress     string
+	DarwinDNSSnapshots     []darwinDNSSnapshot
 	PFAnchor               string
 	BypassV4Path           string
 	BypassV6Path           string
@@ -38,6 +40,12 @@ type routeContext struct {
 	WindowsDNSBackup       string
 	WindowsDefaultIfIndex  int
 	WindowsDefaultIfIndex6 int
+}
+
+type darwinDNSSnapshot struct {
+	Service      string
+	Servers      []string
+	WasAutomatic bool
 }
 
 func darwinTunIPv6Enabled() bool {
@@ -86,18 +94,19 @@ func resolveServerIPFromAddress(serverAddress string) string {
 	return ""
 }
 
-func teardownRoutes(ctx *routeContext, tun TunSettings, logf func(string)) {
+func teardownRoutes(ctx *routeContext, tun TunSettings, logf func(string)) error {
 	if ctx == nil {
-		return
+		return nil
 	}
 	switch runtime.GOOS {
 	case "linux":
-		teardownRoutesLinux(ctx, tun, logf)
+		return teardownRoutesLinux(ctx, tun, logf)
 	case "darwin":
-		teardownRoutesDarwin(ctx, tun, logf)
+		return teardownRoutesDarwin(ctx, tun, logf)
 	case "windows":
-		teardownRoutesWindows(ctx, tun, logf)
+		return teardownRoutesWindows(ctx, tun, logf)
 	}
+	return nil
 }
 
 func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
@@ -238,13 +247,13 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 
 	if err := runCmdsLinuxAdmin(logf, cmdlines...); err != nil {
 		// Best-effort cleanup to avoid leaving the system half-configured.
-		teardownRoutesLinux(ctx, tun, logf)
+		_ = teardownRoutesLinux(ctx, tun, logf)
 		return nil, err
 	}
 	return ctx, nil
 }
 
-func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) {
+func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) error {
 	cmdlines := make([]string, 0, 32)
 	if ctx != nil && ctx.ServerIP != "" {
 		if ip := net.ParseIP(ctx.ServerIP); ip != nil && ip.To4() != nil {
@@ -308,17 +317,74 @@ func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) 
 		shellJoin("ip", "-6", "route", "del", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
 	)
 	_ = runCmdsLinuxAdmin(logf, cmdlines...)
+	return nil
 }
 
 func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
-	gw, ifName, err := darwinDefaultRoute()
-	if err != nil {
-		return nil, err
+	info, _ := darwinPrimaryNetworkInfo()
+	gw := strings.TrimSpace(info.Router4)
+	ifName := strings.TrimSpace(info.Interface4)
+	if darwinIsTunLikeInterface(ifName) {
+		ifName = ""
 	}
-	ctx.DefaultGateway = gw
-	ctx.DefaultInterface = ifName
+
+	// Prefer scutil; fallback to netstat and DHCP when scutil is empty/stale (common during Wi‑Fi switches).
+	if gw == "" || ifName == "" {
+		if routes, err := darwinNetstatRoutesIPv4(); err == nil {
+			if g, ifn := darwinPickPhysicalDefaultRouteIPv4(routes); strings.TrimSpace(g) != "" && strings.TrimSpace(ifn) != "" {
+				if gw == "" {
+					gw = strings.TrimSpace(g)
+				}
+				if ifName == "" {
+					ifName = strings.TrimSpace(ifn)
+				}
+			}
+		}
+	}
+	if ifName == "" {
+		ifn, _ := darwinResolveOutboundBypassInterface(2 * time.Second)
+		ifName = strings.TrimSpace(ifn)
+		if darwinIsTunLikeInterface(ifName) {
+			ifName = ""
+		}
+	}
+	if gw == "" && ifName != "" && !darwinIsTunLikeInterface(ifName) {
+		if g, err := darwinDHCPRouterForInterface(ifName); err == nil {
+			gw = strings.TrimSpace(g)
+		}
+	}
+	if gw == "" || ifName == "" {
+		// Last resort: route(8) output (can point to utun while TUN is active; validate strictly).
+		if g, ifn, err := darwinDefaultRoute(); err == nil {
+			g = strings.TrimSpace(g)
+			ifn = strings.TrimSpace(ifn)
+			if ifName == "" && ifn != "" && !darwinIsTunLikeInterface(ifn) {
+				ifName = ifn
+			}
+			if gw == "" {
+				if ip := net.ParseIP(g); ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsUnspecified() {
+					gw = g
+				}
+			}
+		}
+	}
+
+	if strings.TrimSpace(gw) == "" {
+		return nil, errors.New("default gateway not found")
+	}
+	if strings.TrimSpace(ifName) == "" {
+		return nil, errors.New("default interface not found")
+	}
+	ctx.DefaultGateway = strings.TrimSpace(gw)
+	ctx.DefaultInterface = strings.TrimSpace(ifName)
 	if darwinTunIPv6Enabled() {
-		gw6, ifName6, _ := darwinDefaultRouteIPv6()
+		gw6 := ""
+		ifName6 := ""
+		gw6 = strings.TrimSpace(info.Router6)
+		ifName6 = strings.TrimSpace(info.Interface6)
+		if gw6 == "" {
+			gw6, ifName6, _ = darwinDefaultRouteIPv6()
+		}
 		ctx.DefaultGatewayV6 = strings.TrimSpace(gw6)
 		if strings.TrimSpace(ctx.DefaultInterface) == "" && strings.TrimSpace(ifName6) != "" {
 			ctx.DefaultInterface = strings.TrimSpace(ifName6)
@@ -331,11 +397,17 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" && strings.TrimSpace(ctx.DefaultInterface) != "" {
 		if svc, derr := darwinNetworkServiceForDevice(ctx.DefaultInterface); derr == nil && strings.TrimSpace(svc) != "" {
 			ctx.DNSService = svc
+			ctx.DNSOverrideAddress = strings.TrimSpace(tun.MapDNSAddress)
 			prev, wasAuto, gerr := darwinGetDNSServers(svc)
 			if gerr == nil {
 				ctx.DNSServers = prev
 				ctx.DNSWasAutomatic = wasAuto
 			}
+			ctx.DarwinDNSSnapshots = append(ctx.DarwinDNSSnapshots, darwinDNSSnapshot{
+				Service:      svc,
+				Servers:      append([]string(nil), ctx.DNSServers...),
+				WasAutomatic: ctx.DNSWasAutomatic,
+			})
 			dnsSetCmd = shellJoin("networksetup", "-setdnsservers", svc, strings.TrimSpace(tun.MapDNSAddress))
 		}
 	}
@@ -385,6 +457,8 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 			cmds = append(cmds, dnsFlushCmd)
 		}
 		if err := runCmdsDarwinAdmin(logf, cmds...); err != nil {
+			// Best-effort rollback: never leave the machine offline when route setup fails mid-way.
+			_ = teardownRoutesDarwin(ctx, tun, logf)
 			return nil, err
 		}
 		return ctx, nil
@@ -398,7 +472,8 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		// Some macOS setups have multiple scoped default routes; if `change` fails, recreate it.
 		_ = runCmd(logf, "route", "-n", "delete", "default")
 		if err2 := runCmd(logf, "route", "-n", "add", "default", "-interface", tun.InterfaceName); err2 != nil {
-			return nil, err
+			_ = teardownRoutesDarwin(ctx, tun, logf)
+			return nil, err2
 		}
 	}
 	if ctx.DefaultGatewayV6 != "" {
@@ -414,11 +489,13 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 	if pfSetCmd != "" {
 		if err := runCmd(logf, "sh", "-lc", pfSetCmd); err != nil {
+			_ = teardownRoutesDarwin(ctx, tun, logf)
 			return nil, err
 		}
 	}
 	if dnsSetCmd != "" {
 		if err := runCmd(logf, "networksetup", "-setdnsservers", ctx.DNSService, strings.TrimSpace(tun.MapDNSAddress)); err != nil {
+			_ = teardownRoutesDarwin(ctx, tun, logf)
 			return nil, err
 		}
 		_ = runCmd(logf, "sh", "-lc", dnsFlushCmd)
@@ -426,63 +503,296 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	return ctx, nil
 }
 
-func teardownRoutesDarwin(ctx *routeContext, _ TunSettings, logf func(string)) {
-	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
-		dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
-		cmds := make([]string, 0, 6)
-		if ctx.DefaultGateway != "" {
-			cmds = append(cmds, shellJoin("route", "-n", "change", "default", ctx.DefaultGateway)+" || ("+
-				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
-				shellJoin("route", "-n", "add", "default", ctx.DefaultGateway)+")")
+func teardownRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) error {
+	tunIf := strings.TrimSpace(tun.InterfaceName)
+	routes, routesErr := darwinNetstatRoutesIPv4()
+	// Prefer resolving the active TUN interface by its configured IPv4 (most reliable).
+	// This avoids accidentally operating on unrelated utun routes from other VPNs.
+	if runtime.GOOS == "darwin" {
+		if actual := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tun.IPv4)); actual != "" {
+			tunIf = actual
 		}
-		if strings.TrimSpace(ctx.DefaultGatewayV6) != "" {
-			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", ctx.DefaultGatewayV6)+" || true")
-		}
-		// Always attempt to remove the host route (if we added one), regardless of gateway changes.
-		if ctx.ServerIP != "" {
-			cmds = append(cmds, shellJoin("route", "-n", "delete", "-host", ctx.ServerIP)+" || true")
-		}
-		if strings.TrimSpace(ctx.DNSService) != "" {
-			if ctx.DNSWasAutomatic || len(ctx.DNSServers) == 0 {
-				cmds = append(cmds, shellJoin("networksetup", "-setdnsservers", ctx.DNSService, "Empty")+" || true")
-			} else {
-				args := append([]string{"networksetup", "-setdnsservers", ctx.DNSService}, ctx.DNSServers...)
-				cmds = append(cmds, shellJoin(args...)+" || true")
+	}
+	if routesErr == nil {
+		// Fall back to the currently-active tunnel interface from the routing table only when the
+		// provided tun interface doesn't appear to have the default route.
+		if tunIf == "" || !darwinIsTunLikeInterface(tunIf) || !darwinHasDefaultRouteOnInterface(routes, tunIf) {
+			for _, r := range routes {
+				if r.Destination != "default" {
+					continue
+				}
+				if strings.TrimSpace(r.Netif) == "" || !darwinIsTunLikeInterface(r.Netif) {
+					continue
+				}
+				tunIf = strings.TrimSpace(r.Netif)
+				break
 			}
-			cmds = append(cmds, dnsFlushCmd)
 		}
-		if strings.TrimSpace(ctx.PFAnchor) != "" {
-			cmds = append(cmds, shellJoin("pfctl", "-a", ctx.PFAnchor, "-F", "all")+" || true")
-		}
-		if len(cmds) > 0 {
-			_ = runCmdsDarwinAdmin(logf, cmds...)
-		}
-		return
 	}
-	if ctx.DefaultGateway != "" {
-		if err := runCmd(logf, "route", "-n", "change", "default", ctx.DefaultGateway); err != nil {
+
+	// Snapshot whether a non-tunnel default route already exists. If it does, we can safely proceed
+	// even when we can't resolve the physical gateway (rare).
+	hasAltDefault := false
+	if routesErr == nil {
+		hasAltDefault = darwinHasUnscopedDefaultRouteIPv4(routes, tunIf)
+	}
+
+	rollbackDefaultToTun := func() {
+		if tunIf == "" {
+			return
+		}
+		if err := runCmd(logf, "route", "-n", "change", "default", "-interface", tunIf); err != nil {
 			_ = runCmd(logf, "route", "-n", "delete", "default")
-			_ = runCmd(logf, "route", "-n", "add", "default", ctx.DefaultGateway)
+			_ = runCmd(logf, "route", "-n", "add", "default", "-interface", tunIf)
 		}
 	}
-	if strings.TrimSpace(ctx.DefaultGatewayV6) != "" {
-		_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", ctx.DefaultGatewayV6)
+
+	restoreGW, gwErr := darwinResolveRestoreGatewayIPv4(ctx, tunIf)
+	if gwErr != nil && !hasAltDefault {
+		// Safety: do NOT remove the tunnel default route if we don't know what to restore.
+		// Otherwise the machine can be left with no default route and appear completely offline.
+		return gwErr
 	}
-	if ctx.ServerIP != "" {
-		_ = runCmd(logf, "route", "-n", "delete", "-host", ctx.ServerIP)
+
+	scopedIf := strings.TrimSpace(ctx.DefaultInterface)
+	scopedGW := strings.TrimSpace(ctx.DefaultGateway)
+	if scopedGW == "" {
+		scopedGW = strings.TrimSpace(restoreGW)
 	}
-	if strings.TrimSpace(ctx.DNSService) != "" {
-		if ctx.DNSWasAutomatic || len(ctx.DNSServers) == 0 {
-			_ = runCmd(logf, "networksetup", "-setdnsservers", ctx.DNSService, "Empty")
-		} else {
-			args := append([]string{"-setdnsservers", ctx.DNSService}, ctx.DNSServers...)
-			_ = runCmd(logf, "networksetup", args...)
+	if (scopedIf == "" || scopedGW == "") && routesErr == nil {
+		// Best-effort: infer the scoped default route we may have added while TUN was active.
+		for _, r := range routes {
+			if r.Destination != "default" {
+				continue
+			}
+			if strings.TrimSpace(r.Netif) == "" || darwinIsTunLikeInterface(r.Netif) {
+				continue
+			}
+			if !strings.Contains(r.Flags, "I") {
+				continue
+			}
+			if scopedIf == "" {
+				scopedIf = strings.TrimSpace(r.Netif)
+			}
+			if scopedGW == "" {
+				scopedGW = strings.TrimSpace(r.Gateway)
+			}
+			break
 		}
-		_ = runCmd(logf, "sh", "-lc", "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true")
 	}
+
+	restoreGW6 := strings.TrimSpace(ctx.DefaultGatewayV6)
+	if darwinTunIPv6Enabled() {
+		if info, ierr := darwinPrimaryNetworkInfo(); ierr == nil {
+			if strings.TrimSpace(info.Router6) != "" {
+				restoreGW6 = strings.TrimSpace(info.Router6)
+			}
+		}
+	}
+	dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
+
+	// Collect all services we touched (to restore them all on stop).
+	snaps := append([]darwinDNSSnapshot(nil), ctx.DarwinDNSSnapshots...)
+	if svc := strings.TrimSpace(ctx.DNSService); svc != "" {
+		found := false
+		for _, s := range snaps {
+			if strings.EqualFold(strings.TrimSpace(s.Service), svc) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			snaps = append(snaps, darwinDNSSnapshot{
+				Service:      svc,
+				Servers:      append([]string(nil), ctx.DNSServers...),
+				WasAutomatic: ctx.DNSWasAutomatic,
+			})
+		}
+	}
+
+	// 1) Restore default route first. If we can't restore a *global* (unscoped) non-TUN default route,
+	// abort stop to avoid leaving the machine offline.
+	//
+	// NOTE: During TUN operation we add an interface-scoped default route on the physical interface
+	// for bound sockets (core outbound bypass). That scoped route alone is not sufficient for normal
+	// routing after stop (`route -n get default` can still fail with "not in table"). Always ensure an
+	// unscoped default route exists again before removing the tunnel default route.
+	restoreIf := strings.TrimSpace(ctx.DefaultInterface)
+	if restoreIf == "" {
+		restoreIf = scopedIf
+	}
+	if restoreIf == "" {
+		if info, ierr := darwinPrimaryNetworkInfo(); ierr == nil {
+			ifName := strings.TrimSpace(info.Interface4)
+			if ifName != "" && !darwinIsTunLikeInterface(ifName) {
+				restoreIf = ifName
+			}
+		}
+	}
+	if restoreIf == "" {
+		ifName, _ := darwinResolveOutboundBypassInterface(1200 * time.Millisecond)
+		ifName = strings.TrimSpace(ifName)
+		if ifName != "" && !darwinIsTunLikeInterface(ifName) {
+			restoreIf = ifName
+		}
+	}
+
+	restoreScopedRoute := func() {
+		if scopedIf == "" || scopedGW == "" {
+			return
+		}
+		_ = runCmd(logf, "route", "-n", "add", "-ifscope", scopedIf, "default", scopedGW)
+		_ = runCmd(logf, "route", "-n", "change", "-ifscope", scopedIf, "default", scopedGW)
+	}
+
+	// Remove the auxiliary physical scoped default routes early to avoid `route change default` ambiguity
+	// when multiple default routes exist. If stop fails, we restore them before returning.
+	if routesErr == nil {
+		for _, r := range routes {
+			if r.Destination != "default" {
+				continue
+			}
+			if strings.TrimSpace(r.Netif) == "" || darwinIsTunLikeInterface(r.Netif) {
+				continue
+			}
+			if !strings.Contains(r.Flags, "I") {
+				continue
+			}
+			if strings.TrimSpace(r.Gateway) == "" {
+				continue
+			}
+			_ = runCmd(logf, "route", "-n", "delete", "-ifscope", strings.TrimSpace(r.Netif), "default", strings.TrimSpace(r.Gateway))
+		}
+	}
+	if scopedIf != "" && scopedGW != "" {
+		_ = runCmd(logf, "route", "-n", "delete", "-ifscope", scopedIf, "default", scopedGW)
+	}
+
+	physicalDefaultOK := func() bool {
+		gwNow, ifNow, err := darwinDefaultRoute()
+		if err != nil {
+			return false
+		}
+		ifNow = strings.TrimSpace(ifNow)
+		if ifNow == "" || darwinIsTunLikeInterface(ifNow) {
+			return false
+		}
+		if tunIf != "" && strings.EqualFold(ifNow, tunIf) {
+			return false
+		}
+		ip := net.ParseIP(strings.TrimSpace(gwNow))
+		return ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsUnspecified()
+	}
+
+	// Attempt to restore the global default route to the physical gateway.
+	if strings.TrimSpace(restoreGW) != "" {
+		if logf != nil {
+			logf(fmt.Sprintf("[route] restoring default route via %s (tunIf=%s)", restoreGW, tunIf))
+		}
+		if err := runCmd(logf, "route", "-n", "change", "default", restoreGW); err != nil {
+			// Fallback: recreate the global default route. Roll back to TUN on failure.
+			_ = runCmd(logf, "route", "-n", "delete", "default")
+			if err2 := runCmd(logf, "route", "-n", "add", "default", restoreGW); err2 != nil {
+				rollbackDefaultToTun()
+				restoreScopedRoute()
+				return fmt.Errorf("restore default route via %s failed: %v; %w", restoreGW, err, err2)
+			}
+		}
+	} else if !hasAltDefault {
+		// Safety: do not proceed if we have neither a gateway nor an alternate default route.
+		rollbackDefaultToTun()
+		restoreScopedRoute()
+		return errors.New("restore default route: gateway not found")
+	}
+
+	// If the global default route still points to the tunnel (or is missing), force it to the physical gateway.
+	if strings.TrimSpace(restoreGW) != "" && !physicalDefaultOK() {
+		if tunIf != "" {
+			_ = runCmd(logf, "route", "-n", "delete", "default", "-interface", tunIf)
+		}
+		_ = runCmd(logf, "route", "-n", "delete", "default")
+		if err := runCmd(logf, "route", "-n", "add", "default", restoreGW); err != nil {
+			rollbackDefaultToTun()
+			restoreScopedRoute()
+			return fmt.Errorf("restore default route via %s failed: %w", restoreGW, err)
+		}
+	}
+
+	// Best-effort IPv6 restore.
+	if strings.TrimSpace(restoreGW6) != "" {
+		_ = runCmd(logf, "route", "-n", "change", "-inet6", "default", restoreGW6)
+	}
+
+	// Remove the tunnel default routes only after we have a working physical global default.
+	if tunIf != "" && physicalDefaultOK() {
+		_ = runCmd(logf, "route", "-n", "delete", "default", "-interface", tunIf)
+		if strings.TrimSpace(restoreGW6) != "" {
+			_ = runCmd(logf, "route", "-n", "delete", "-inet6", "default", "-interface", tunIf)
+		}
+	}
+
+	// Validation: ensure we are not leaving the global default route on the tunnel interface.
+	// Use netstat-based checks (plus route get) because route output can be transient during Wi-Fi switches.
+	waitErr := darwinWaitDefaultRouteNotOnTun(tunIf, 5*time.Second)
+	if waitErr != nil && restoreIf != "" && !darwinIsTunLikeInterface(restoreIf) {
+		// Kick DHCP once (best-effort) to recover from transient Wi‑Fi transitions where the system
+		// hasn't reinstalled an unscoped default route yet.
+		_ = runCmd(logf, "ipconfig", "set", restoreIf, "DHCP")
+		waitErr = darwinWaitDefaultRouteNotOnTun(tunIf, 7*time.Second)
+	}
+	if waitErr != nil {
+		rollbackDefaultToTun()
+		restoreScopedRoute()
+		return waitErr
+	}
+
+	// 2) Always attempt to remove the host route (if we added one).
+	if strings.TrimSpace(ctx.ServerIP) != "" {
+		_ = runCmd(logf, "route", "-n", "delete", "-host", strings.TrimSpace(ctx.ServerIP))
+	}
+
+	// 3) Restore DNS on all captured services. If DNS can't be restored, abort stop so the local DNS proxy
+	// remains running (avoids "DNS looks down" offline symptoms).
+	if len(snaps) > 0 {
+		seen := map[string]struct{}{}
+		for _, snap := range snaps {
+			svc := strings.TrimSpace(snap.Service)
+			if svc == "" {
+				continue
+			}
+			key := strings.ToLower(svc)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			if snap.WasAutomatic || len(snap.Servers) == 0 {
+				if err := runCmd(logf, "networksetup", "-setdnsservers", svc, "Empty"); err != nil {
+					return fmt.Errorf("restore dns servers for %s: %w", svc, err)
+				}
+			} else {
+				args := append([]string{"-setdnsservers", svc}, snap.Servers...)
+				if err := runCmd(logf, "networksetup", args...); err != nil {
+					return fmt.Errorf("restore dns servers for %s: %w", svc, err)
+				}
+			}
+		}
+		_ = runCmd(logf, "sh", "-lc", dnsFlushCmd)
+	}
+
+	// 4) Flush pf anchor (best-effort). If this fails due to privileges, StopProxy will surface it
+	// and avoid stopping the TUN.
 	if strings.TrimSpace(ctx.PFAnchor) != "" {
-		_ = runCmd(logf, "pfctl", "-a", ctx.PFAnchor, "-F", "all")
+		if err := runCmd(logf, "pfctl", "-a", strings.TrimSpace(ctx.PFAnchor), "-F", "all"); err != nil {
+			if isLikelyPermissionError(err) {
+				return err
+			}
+			if logf != nil {
+				logf(fmt.Sprintf("[route] warn: pfctl restore failed (ignored): %v", err))
+			}
+		}
 	}
+
+	return nil
 }
 
 func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
@@ -536,15 +846,15 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		dnsBackupName,
 	)
 	if err := runCmdsWindowsAdmin(logf, ps); err != nil {
-		teardownRoutesWindows(ctx, tun, logf)
+		_ = teardownRoutesWindows(ctx, tun, logf)
 		return nil, err
 	}
 	return ctx, nil
 }
 
-func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) {
+func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) error {
 	if ctx == nil {
-		return
+		return nil
 	}
 	firewallRule := ctx.WindowsFirewallRule
 	if firewallRule == "" {
@@ -569,6 +879,7 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 		ctx.WindowsDNSBackup,
 	)
 	_ = runCmdsWindowsAdmin(logf, ps)
+	return nil
 }
 
 func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
@@ -844,16 +1155,14 @@ func runCmdExec(logf func(string), name string, args ...string) error {
 }
 
 func runCmdDarwinAdmin(logf func(string), name string, args ...string) error {
-	cmdline := shellJoin(append([]string{name}, args...)...)
-	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`, appleScriptEscape(cmdline))
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
-	output, err := cmd.CombinedOutput()
+	cmdline := shellJoin(append([]string{name}, args...)...)
+	output, err := darwinAdminRunShLC(ctx, cmdline)
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("run %s %s (admin): timeout", name, strings.Join(args, " "))
 	}
-	clean := strings.TrimSpace(string(output))
+	clean := strings.TrimSpace(output)
 	if logf != nil {
 		if clean != "" {
 			logf(fmt.Sprintf("[route] sudo %s %s => %s", name, strings.Join(args, " "), clean))
@@ -875,16 +1184,13 @@ func runCmdsDarwinAdmin(logf func(string), cmdlines ...string) error {
 		return nil
 	}
 	shell := "set -e; " + strings.Join(cmdlines, "; ")
-	cmdline := shellJoin("sh", "-lc", shell)
-	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`, appleScriptEscape(cmdline))
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
-	output, err := cmd.CombinedOutput()
+	output, err := darwinAdminRunShLC(ctx, shell)
 	if ctx.Err() == context.DeadlineExceeded {
 		return errors.New("run (admin batch): timeout")
 	}
-	clean := strings.TrimSpace(string(output))
+	clean := strings.TrimSpace(output)
 	if logf != nil {
 		if clean != "" {
 			logf(fmt.Sprintf("[route] sudo (batch) => %s", clean))
@@ -920,12 +1226,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-func appleScriptEscape(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	return s
-}
-
 func darwinDefaultRoute() (gateway string, iface string, err error) {
 	cmd := exec.Command("route", "-n", "get", "default")
 	output, err := cmd.Output()
@@ -942,8 +1242,8 @@ func darwinDefaultRoute() (gateway string, iface string, err error) {
 			iface = strings.TrimSpace(strings.TrimPrefix(line, "interface:"))
 		}
 	}
-	if gateway == "" {
-		return "", "", errors.New("gateway not found")
+	if iface == "" {
+		return "", "", errors.New("default interface not found")
 	}
 	return gateway, iface, nil
 }
