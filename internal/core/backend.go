@@ -127,12 +127,8 @@ func newBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, err
 	}
 	if runtime.GOOS == "darwin" && b.tunAdmin != nil {
 		// Allow detecting/stopping leftover root HEV processes after crash/force-quit.
-		if p, ok := b.tunAdmin.(*darwinAdminDetachedProcess); ok {
-			p.pidFile = filepath.Join(store.RuntimeDir(), "hev.pid")
-			p.logFile = filepath.Join(store.LogDir(), "hev.log")
-			p.expectRuntimeDir = store.RuntimeDir()
-			p.expectCmdBase = filepath.Base(cfg.Core.HevBinary)
-		}
+		// (Implementation is darwin-only; non-darwin builds use a no-op stub.)
+		configureAdminDetachedProcess(b.tunAdmin, store, cfg)
 	}
 	b.usageDays = trimUsageDays(loadUsageHistory(store.UsageHistoryPath()), 120)
 	b.pfMgr = newPortForwardManager(func(line string) {

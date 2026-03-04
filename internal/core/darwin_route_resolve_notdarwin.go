@@ -13,11 +13,23 @@ func darwinPickPhysicalDefaultRouteIPv4(_ []darwinNetstatRoute) (gateway string,
 	return "", ""
 }
 
+func darwinPickPhysicalDefaultInterface(_ []darwinNetstatRoute) string {
+	return ""
+}
+
 func darwinHasUnscopedDefaultRouteIPv4(_ []darwinNetstatRoute, _ string) bool {
 	return false
 }
 
 func darwinHasDefaultRouteNotOnInterface(_ []darwinNetstatRoute, _ string) bool {
+	return false
+}
+
+func darwinHasDefaultRouteOnInterface(_ []darwinNetstatRoute, _ string) bool {
+	return false
+}
+
+func darwinHasDefaultRouteOnTunLikeInterface(_ []darwinNetstatRoute) bool {
 	return false
 }
 
