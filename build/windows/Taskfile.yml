@@ -14,9 +14,9 @@ tasks:
         vars:
           ARCH: '{{.ARCH | default ARCH}}'
     cmds:
-      - mkdir -p {{.BIN_DIR}}
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path '{{.BIN_DIR}}' | Out-Null"
       - go build {{if ne .DEV "true"}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui"{{end}} -o {{.OUTPUT | default (printf "%s/%s.exe" .BIN_DIR .APP_NAME)}}
-      - rm -f *.syso
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -Force -ErrorAction SilentlyContinue *.syso"
     env:
       GOOS: windows
       GOARCH: '{{.ARCH | default ARCH}}'
@@ -26,13 +26,7 @@ tasks:
     summary: Generate Windows resource .syso
     dir: build
     cmds:
-      - |
-        if [ -f windows/info.json ] && [ -f windows/wails.exe.manifest ]; then
-          if [ ! -f windows/icon.ico ] && [ -f appicon.png ]; then
-            wails3 generate icons -input appicon.png -windowsfilename windows/icon.ico
-          fi
-          wails3 generate syso -arch {{.ARCH | default ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH | default ARCH}}.syso
-        fi
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "if ((Test-Path 'windows/info.json') -and (Test-Path 'windows/wails.exe.manifest')) { if (-not (Test-Path 'windows/icon.ico') -and (Test-Path 'appicon.png')) { wails3 generate icons -input appicon.png -windowsfilename windows/icon.ico }; wails3 generate syso -arch {{.ARCH | default ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out '..\\wails_windows_{{.ARCH | default ARCH}}.syso' }"
 
   package:
     summary: Package Windows NSIS installer

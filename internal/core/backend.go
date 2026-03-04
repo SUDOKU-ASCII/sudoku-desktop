@@ -898,12 +898,28 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				cnRules = nil
 			}
 
-			// NOTE(darwin): Do NOT pre-split traffic at the system route layer by default.
-			// On macOS, TUN mode should capture everything and let the core decide DIRECT/PROXY.
+			// NOTE(darwin/windows): Do NOT pre-split traffic at the system route layer by default.
+			// In TUN mode we should capture everything and let the core decide DIRECT/PROXY.
 			// CIDR bypass (CN split-tunnel) is optional and can be enabled for legacy behavior.
-			enableCIDRBypass := runtime.GOOS != "darwin" || strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_CIDR_BYPASS")) == "1"
+			//
+			// On Windows, adding/removing thousands of CIDR routes is very slow and can make
+			// start/stop appear "stuck" (UI buttons unresponsive). Keep it off by default.
+			enableCIDRBypass := false
+			switch runtime.GOOS {
+			case "linux":
+				enableCIDRBypass = true
+			case "darwin":
+				enableCIDRBypass = strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_CIDR_BYPASS")) == "1"
+			case "windows":
+				enableCIDRBypass = strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_ENABLE_CIDR_BYPASS")) == "1"
+			default:
+				enableCIDRBypass = true
+			}
 			if runtime.GOOS == "darwin" && !enableCIDRBypass {
 				b.addLog("info", "route", "darwin: CIDR bypass pre-split disabled (core-based routing only); set SUDOKU_DARWIN_ENABLE_CIDR_BYPASS=1 to enable legacy behavior")
+			}
+			if runtime.GOOS == "windows" && !enableCIDRBypass {
+				b.addLog("info", "route", "windows: CIDR bypass pre-split disabled by default (core-based routing only); set SUDOKU_WINDOWS_ENABLE_CIDR_BYPASS=1 to enable legacy behavior")
 			}
 			if enableCIDRBypass {
 				// CN CIDR bypass routes help some setups avoid self-looping for DIRECT egress.
@@ -1264,6 +1280,9 @@ func (b *Backend) StartProxy(req StartRequest) error {
 
 		b.mu.Lock()
 		b.routeState = routeCtx
+		if runtime.GOOS == "windows" && routeCtx != nil && strings.TrimSpace(routeCtx.TunAlias) != "" {
+			b.runningTunInterface = strings.TrimSpace(routeCtx.TunAlias)
+		}
 		b.state.TunRunning = true
 		b.state.NeedsAdmin = false
 		b.state.RouteSetupError = ""

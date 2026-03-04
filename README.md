@@ -58,6 +58,20 @@ This project is a Wails-based desktop Sudoku game.
 - 用户体验应当无敌
 
 
+## Windows Dev (No `make`)
+
+This repo embeds runtime binaries from `runtime/bin/<os>-<arch>/`. If you don't have `make` on Windows, you can generate the required binaries with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/core.ps1
+```
+
+Then run dev mode as usual:
+
+```powershell
+wails3 dev -config ./build/config.yml
+```
+
 ## License
 
 GPL

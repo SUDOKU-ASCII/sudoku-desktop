@@ -21,6 +21,7 @@ type routeContext struct {
 	DefaultInterface       string
 	ServerIP               string
 	TunIndex               int
+	TunAlias               string
 	DNSService             string
 	DNSServers             []string
 	DNSWasAutomatic        bool
@@ -801,6 +802,7 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		return nil, err
 	}
 	ctx.TunIndex = idx
+	ctx.TunAlias = strings.TrimSpace(alias)
 	if logf != nil {
 		if strings.TrimSpace(alias) != "" {
 			logf(fmt.Sprintf("[route] windows tun interface: %s (ifindex=%d)", alias, idx))
@@ -845,7 +847,7 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		strings.TrimSpace(tun.MapDNSAddress),
 		dnsBackupName,
 	)
-	if err := runCmdsWindowsAdmin(logf, ps); err != nil {
+	if err := runCmdsWindowsAdmin(logf, ps, 5*time.Minute); err != nil {
 		_ = teardownRoutesWindows(ctx, tun, logf)
 		return nil, err
 	}
@@ -878,8 +880,7 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 		localDNSServerIPv4,
 		ctx.WindowsDNSBackup,
 	)
-	_ = runCmdsWindowsAdmin(logf, ps)
-	return nil
+	return runCmdsWindowsAdmin(logf, ps, 5*time.Minute)
 }
 
 func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
@@ -897,7 +898,7 @@ func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
 	return runCmdExec(logf, "sh", "-lc", shell)
 }
 
-func runCmdsWindowsAdmin(logf func(string), scriptBody string) error {
+func runCmdsWindowsAdmin(logf func(string), scriptBody string, timeout time.Duration) error {
 	script := windowsAdminWrapper(scriptBody)
 	f, err := os.CreateTemp("", "sudoku-admin-*.ps1")
 	if err != nil {
@@ -916,9 +917,20 @@ func runCmdsWindowsAdmin(logf func(string), scriptBody string) error {
 	defer os.Remove(path)
 
 	// PowerShell script self-elevates if needed (UAC prompt).
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
 	applyManagedProcessSysProcAttr(cmd)
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		if clean := strings.TrimSpace(string(output)); clean != "" {
+			return fmt.Errorf("windows admin: timeout: %s", clean)
+		}
+		return errors.New("windows admin: timeout")
+	}
 	clean := strings.TrimSpace(string(output))
 	if logf != nil {
 		if clean != "" {
@@ -1053,13 +1065,34 @@ func buildWindowsRouteScript(
 		"    $prev4 = @((Get-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)",
 		"    $prev6 = @((Get-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv6 -ErrorAction SilentlyContinue).ServerAddresses)",
 		"    if ($dnsBackup) {",
-		"      @{ v4 = $prev4; v6 = $prev6 } | ConvertTo-Json -Compress | Set-Content -Path $dnsBackup -Encoding ASCII",
+		"      $tunAuto = $null; $tunMetric = $null",
+		"      $physAuto = $null; $physMetric0 = $null",
+		"      $tunIfInfo = Get-NetIPInterface -InterfaceIndex $tunIf -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1",
+		"      if ($tunIfInfo -ne $null) { $tunAuto = $tunIfInfo.AutomaticMetric; $tunMetric = [int]$tunIfInfo.InterfaceMetric }",
+		"      $physIfInfo = $null",
+		"      if ($if4 -gt 0) { $physIfInfo = Get-NetIPInterface -InterfaceIndex $if4 -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1 }",
+		"      if ($physIfInfo -ne $null) { $physAuto = $physIfInfo.AutomaticMetric; $physMetric0 = [int]$physIfInfo.InterfaceMetric }",
+		"      $backupOk = $false",
+		"      try {",
+		"        @{ v4 = $prev4; v6 = $prev6; metrics = @{ tun = @{ auto = $tunAuto; metric = $tunMetric }; phys = @{ auto = $physAuto; metric = $physMetric0 } } } | ConvertTo-Json -Compress | Set-Content -Path $dnsBackup -Encoding ASCII",
+		"        $backupOk = $true",
+		"      } catch { $backupOk = $false }",
 		"    }",
-		"    Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ServerAddresses @($mapDNS) -ErrorAction SilentlyContinue | Out-Null",
+		"    # Set-DnsClientServerAddress has no -AddressFamily parameter on Windows PowerShell 5.1.",
+		"    Set-DnsClientServerAddress -InterfaceIndex $tunIf -ServerAddresses @($mapDNS) -ErrorAction SilentlyContinue | Out-Null",
 		"    try { Clear-DnsClientCache | Out-Null } catch { }",
+		"    # Ensure Windows prefers the tunnel for the default route (metrics are restored on stop).",
+		"    if ($backupOk) {",
+		"      try { Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Disabled -InterfaceMetric 1 -ErrorAction SilentlyContinue | Out-Null } catch { }",
+		"      try { if ($if4 -gt 0) { Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Disabled -InterfaceMetric $physMetric -ErrorAction SilentlyContinue | Out-Null } } catch { }",
+		"    }",
 		"  }",
-		"  $out4 = & route.exe change 0.0.0.0 mask 0.0.0.0 0.0.0.0 if $tunIf 2>&1",
-		"  if ($LASTEXITCODE -ne 0) { throw ('route.exe change default route failed: ' + ($out4 | Out-String).Trim()) }",
+		"  # Add a low-metric default route to the tunnel interface (ActiveStore only).",
+		"  try { Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $tunIf -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } catch { }",
+		"  try { New-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $tunIf -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null } catch {",
+		"    $out4 = & route.exe add 0.0.0.0 mask 0.0.0.0 0.0.0.0 metric 1 if $tunIf 2>&1",
+		"    if ($LASTEXITCODE -ne 0) { throw ('route.exe add default route failed: ' + ($out4 | Out-String).Trim()) }",
+		"  }",
 		"  if ($if6 -gt 0) {",
 		"    $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
 		"    $out6 = & netsh interface ipv6 add route prefix=::/0 interface=$tunIf metric=1 store=active 2>&1",
@@ -1086,25 +1119,49 @@ func buildWindowsRouteScript(
 		"    try { $json = (Get-Content $dnsBackup -Raw | ConvertFrom-Json) } catch { $json = $null }",
 		"    if ($json -ne $null) {",
 		"      $p4 = @($json.v4)",
-		"      if ($p4.Count -eq 0) { Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null } else { Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ServerAddresses $p4 -ErrorAction SilentlyContinue | Out-Null }",
 		"      $p6 = @($json.v6)",
-		"      if ($p6.Count -eq 0) { Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv6 -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null } else { Set-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv6 -ServerAddresses $p6 -ErrorAction SilentlyContinue | Out-Null }",
+		"      $all = @()",
+		"      $all += $p4",
+		"      $all += $p6",
+		"      $all = @($all | Where-Object { $_ } | Select-Object -Unique)",
+		"      if ($all.Count -eq 0) { Set-DnsClientServerAddress -InterfaceIndex $tunIf -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null } else { Set-DnsClientServerAddress -InterfaceIndex $tunIf -ServerAddresses $all -ErrorAction SilentlyContinue | Out-Null }",
+		"      # Restore interface metrics if we changed them during start.",
+		"      try {",
+		"        $m = $json.metrics",
+		"        if ($m -ne $null) {",
+		"          if ($m.tun -ne $null) {",
+		"            if ($m.tun.auto -ne $null -and [bool]$m.tun.auto) {",
+		"              Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null",
+		"            } elseif ($m.tun.metric -ne $null) {",
+		"              Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Disabled -InterfaceMetric ([int]$m.tun.metric) -ErrorAction SilentlyContinue | Out-Null",
+		"            }",
+		"          }",
+		"          if ($m.phys -ne $null -and $if4 -gt 0) {",
+		"            if ($m.phys.auto -ne $null -and [bool]$m.phys.auto) {",
+		"              Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null",
+		"            } elseif ($m.phys.metric -ne $null) {",
+		"              Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Disabled -InterfaceMetric ([int]$m.phys.metric) -ErrorAction SilentlyContinue | Out-Null",
+		"            }",
+		"          }",
+		"        }",
+		"      } catch { }",
 		"    } else {",
 		"      Set-DnsClientServerAddress -InterfaceIndex $tunIf -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null",
 		"    }",
 		"    Remove-Item $dnsBackup -Force -ErrorAction SilentlyContinue | Out-Null",
 		"  } elseif ($mapDNSEnabled) {",
 		"    Set-DnsClientServerAddress -InterfaceIndex $tunIf -ResetServerAddresses -ErrorAction SilentlyContinue | Out-Null",
+		"    # Best-effort metric restore when we don't have a backup.",
+		"    try { Set-NetIPInterface -InterfaceIndex $tunIf -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } catch { }",
+		"    try { if ($if4 -gt 0) { Set-NetIPInterface -InterfaceIndex $if4 -AutomaticMetric Enabled -ErrorAction SilentlyContinue | Out-Null } } catch { }",
 		"  }",
 		"  try { Clear-DnsClientCache | Out-Null } catch { }",
+		"  # Remove the tunnel default route (ActiveStore only).",
+		"  try { Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $tunIf -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } catch { }",
 		"  # Remove the auxiliary physical default route (if we added it).",
 		"  try { if ($if4 -gt 0 -and $gw4) { Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex $if4 -NextHop $gw4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
 		"  try { if ($if6 -gt 0 -and $gw6) { Get-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $if6 -NextHop $gw6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric -eq $physMetric } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue } } catch { }",
 		"  $null = & netsh interface ipv6 delete route prefix=::/0 interface=$tunIf store=active 2>$null",
-		"  if ($if4 -gt 0 -and $gw4) {",
-		"    $out = & route.exe change 0.0.0.0 mask 0.0.0.0 $gw4 if $if4 2>&1",
-		"    if ($LASTEXITCODE -ne 0) { Write-Output ('[warn] route.exe restore default route failed: ' + ($out | Out-String).Trim()) }",
-		"  }",
 		"  if ($serverIP) {",
 		"    if ($serverIP -match ':') { Remove-RoutePrefix ($serverIP + '/128') $if6 $gw6 } else { Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4 }",
 		"  }",
@@ -1369,7 +1426,17 @@ func windowsInterfaceIndex(name string) (int, error) {
 	if name == "" {
 		return 0, errors.New("empty interface name")
 	}
-	script := fmt.Sprintf("(Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex", strings.ReplaceAll(name, "'", "''"))
+	// Use Get-NetAdapter first because a freshly-created Wintun adapter may not have
+	// a NetIPInterface/IPv4 object immediately.
+	safe := strings.ReplaceAll(name, "'", "''")
+	script := strings.Join([]string{
+		fmt.Sprintf("$name = '%s'", safe),
+		"$a = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name -and $_.Status -eq 'Up' } | Select-Object -First 1",
+		"if ($a -ne $null -and ($a.InterfaceDescription -match '(?i)wintun|wireguard|hev')) { [int]$a.ifIndex } else {",
+		"  $ipif = Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias $name -ErrorAction SilentlyContinue | Select-Object -First 1",
+		"  if ($ipif -eq $null) { '' } else { [int]$ipif.InterfaceIndex }",
+		"}",
+	}, "; ")
 	output, err := windowsPowerShellOutput(script)
 	if err != nil {
 		return 0, err
@@ -1380,23 +1447,44 @@ func windowsInterfaceIndex(name string) (int, error) {
 func windowsResolveTunInterfaceIndex(tun TunSettings, timeout time.Duration) (int, string, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	tunIPv4 := strings.TrimSpace(tun.IPv4)
 	for {
+		// Prefer resolving the actual TUN interface by its configured IPv4. This avoids
+		// accidentally picking an unrelated Wintun adapter (e.g. from other apps).
+		if tunIPv4 != "" {
+			if idx, alias, err := windowsInterfaceIndexByIPv4(tunIPv4); err == nil && idx > 0 {
+				return idx, alias, nil
+			} else if err != nil {
+				lastErr = err
+			}
+		}
+
 		if idx, err := windowsInterfaceIndex(tun.InterfaceName); err == nil && idx > 0 {
-			return idx, strings.TrimSpace(tun.InterfaceName), nil
+			alias := strings.TrimSpace(tun.InterfaceName)
+			if tunIPv4 == "" {
+				return idx, alias, nil
+			}
+			// Only accept the name match once the expected IPv4 shows up, otherwise we may
+			// be racing adapter initialization.
+			if idx2, alias2, err2 := windowsInterfaceIndexByIPv4(tunIPv4); err2 == nil && idx2 == idx {
+				if strings.TrimSpace(alias2) != "" {
+					alias = strings.TrimSpace(alias2)
+				}
+				return idx, alias, nil
+			} else if err2 != nil {
+				lastErr = err2
+			}
 		} else if err != nil {
 			lastErr = err
 		}
 
-		if idx, alias, err := windowsInterfaceIndexByIPv4(tun.IPv4); err == nil && idx > 0 {
-			return idx, alias, nil
-		} else if err != nil {
-			lastErr = err
-		}
-
-		if idx, alias, err := windowsLikelyTunInterfaceIndex(tun.InterfaceName); err == nil && idx > 0 {
-			return idx, alias, nil
-		} else if err != nil {
-			lastErr = err
+		// No reliable IPv4 configured; fall back to heuristics.
+		if tunIPv4 == "" {
+			if idx, alias, err := windowsLikelyTunInterfaceIndex(tun.InterfaceName); err == nil && idx > 0 {
+				return idx, alias, nil
+			} else if err != nil {
+				lastErr = err
+			}
 		}
 
 		if time.Now().After(deadline) {
@@ -1419,9 +1507,12 @@ func windowsInterfaceIndexByIPv4(ipv4 string) (int, string, error) {
 		"$addr = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ip -ErrorAction SilentlyContinue | Select-Object -First 1",
 		"if ($addr -eq $null) { '' } else {",
 		"  $ifx = [int]$addr.InterfaceIndex",
-		"  $alias = (Get-NetAdapter -InterfaceIndex $ifx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Name)",
+		"  $ad = (Get-NetAdapter -InterfaceIndex $ifx -ErrorAction SilentlyContinue | Select-Object -First 1)",
+		"  if ($ad -eq $null -or $ad.Status -ne 'Up') { '' } else {",
+		"  $alias = $ad.Name",
 		"  if (-not $alias) { $alias = (Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty InterfaceAlias) }",
 		"  \"${ifx}`t${alias}\"",
+		"  }",
 		"}",
 	}, "; ")
 	output, err := windowsPowerShellOutput(script)
@@ -1448,8 +1539,10 @@ func windowsLikelyTunInterfaceIndex(preferredName string) (int, string, error) {
 	name := strings.ToLower(strings.TrimSpace(preferredName))
 	script := strings.Join([]string{
 		"$pref = '" + strings.ReplaceAll(name, "'", "''") + "'",
-		"$cands = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Disabled' -and (($_.Name -match '(?i)wintun|sudoku|hev') -or ($_.InterfaceDescription -match '(?i)wintun|wireguard|hev') -or ($pref -and $_.Name -eq $pref)) }",
-		"$sel = $cands | Sort-Object ifIndex | Select-Object -First 1",
+		"$cands = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and (($_.Name -match '(?i)wintun|sudoku|hev') -or ($_.InterfaceDescription -match '(?i)wintun|wireguard|hev') -or ($pref -and $_.Name -eq $pref)) }",
+		"$sel = $null",
+		"if ($pref) { $sel = $cands | Where-Object { $_.Name -eq $pref } | Select-Object -First 1 }",
+		"if ($sel -eq $null) { $sel = $cands | Sort-Object ifIndex -Descending | Select-Object -First 1 }",
 		"if ($sel -eq $null) { '' } else { \"$($sel.ifIndex)`t$($sel.Name)\" }",
 	}, "; ")
 	output, err := windowsPowerShellOutput(script)
@@ -1473,7 +1566,9 @@ func windowsLikelyTunInterfaceIndex(preferredName string) (int, string, error) {
 }
 
 func windowsPowerShellOutput(script string) ([]byte, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
 	applyManagedProcessSysProcAttr(cmd)
 	return cmd.CombinedOutput()
 }
