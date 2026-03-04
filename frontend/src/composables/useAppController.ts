@@ -1,5 +1,5 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Clipboard, Events } from '@wailsio/runtime'
+import { Clipboard, Dialogs, Events } from '@wailsio/runtime'
 import { backendApi } from '../api'
 import { useI18n } from '../i18n'
 import type {
@@ -459,7 +459,20 @@ const saveNode = async () => {
 }
 
 const removeNode = async (id: string) => {
-  if (!window.confirm(t('confirmDeleteNode'))) return
+  let confirmed = false
+  try {
+    const action = await Dialogs.Question({
+      Message: t('confirmDeleteNode'),
+      Buttons: [
+        { Label: t('cancel'), IsCancel: true, IsDefault: true },
+        { Label: t('delete') },
+      ],
+    })
+    confirmed = action === t('delete')
+  } catch {
+    confirmed = window.confirm(t('confirmDeleteNode'))
+  }
+  if (!confirmed) return
   busy.value = true
   try {
     await backendApi.deleteNode(id)
