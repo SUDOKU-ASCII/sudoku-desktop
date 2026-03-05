@@ -12,7 +12,7 @@ English version: [README.md](./README.md)
 - 专注数独体验，同时内置小游戏。
 - 仅支持 `sudoku://` 协议。
 - 严格防护 DNS 泄露与 DNS 污染。
-- 使用 `hev-tunnel-socks` 提供全平台 TUN 适配，覆盖更广泛的代理场景。
+- 使用 [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) 提供全平台 TUN 适配，覆盖更广泛的代理场景。
 - 强制 IPv4 优先，规避常见 IPv6 兼容问题。
 - 支持多语言界面与深浅色主题。
 

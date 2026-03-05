@@ -12,7 +12,7 @@ Desktop Sudoku game built with `Wails3` + `Vue`.
 - Sudoku-focused desktop experience with built-in mini games.
 - Supports `sudoku://` protocol only.
 - Strict protection against DNS leaks and DNS pollution.
-- Uses `hev-tunnel-socks` for cross-platform TUN support in broader proxy scenarios.
+- Uses [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) for cross-platform TUN support in broader proxy scenarios.
 - Forces IPv4 preference to avoid common IPv6 compatibility issues.
 - Multi-language UI and light/dark theme support.
 
