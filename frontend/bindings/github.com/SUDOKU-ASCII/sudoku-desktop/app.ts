@@ -70,27 +70,33 @@ export function GetConnections(): $CancellablePromise<core$0.ActiveConnection[]>
     });
 }
 
+export function GetLANProxyInfo(): $CancellablePromise<core$0.LANProxyInfo> {
+    return $Call.ByID(1588789326).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
 export function GetLogs(level: string, limit: number): $CancellablePromise<core$0.LogEntry[]> {
     return $Call.ByID(1743981476, level, limit).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
 export function GetState(): $CancellablePromise<core$0.RuntimeState> {
     return $Call.ByID(2490316256).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
 export function GetUsageHistory(limit: number): $CancellablePromise<core$0.UsageDay[]> {
     return $Call.ByID(3645314582, limit).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType11($result);
     });
 }
 
 export function ImportShortLink(name: string, link: string): $CancellablePromise<core$0.NodeConfig> {
     return $Call.ByID(4069088750, name, link).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -104,7 +110,7 @@ export function OpenRuntimeDir(): $CancellablePromise<string> {
 
 export function ProbeAllNodes(): $CancellablePromise<core$0.LatencyResult[]> {
     return $Call.ByID(3983201005).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -179,7 +185,7 @@ export function TunHasPrivileges(): $CancellablePromise<boolean> {
 
 export function UpsertNode(node: core$0.NodeConfig): $CancellablePromise<core$0.NodeConfig> {
     return $Call.ByID(2714662214, node).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -194,10 +200,11 @@ const $$createType2 = core$0.IPDetectResult.createFrom;
 const $$createType3 = core$0.AppConfig.createFrom;
 const $$createType4 = core$0.ActiveConnection.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = core$0.LogEntry.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = core$0.RuntimeState.createFrom;
-const $$createType9 = core$0.UsageDay.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = core$0.NodeConfig.createFrom;
-const $$createType12 = $Create.Array($$createType0);
+const $$createType6 = core$0.LANProxyInfo.createFrom;
+const $$createType7 = core$0.LogEntry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = core$0.RuntimeState.createFrom;
+const $$createType10 = core$0.UsageDay.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = core$0.NodeConfig.createFrom;
+const $$createType13 = $Create.Array($$createType0);

@@ -208,8 +208,8 @@ func (b *Backend) recordUsageDeltaLocked(now time.Time, tx, rx, directTx, direct
 
 func (b *Backend) appendBandwidthSampleLocked(sample BandwidthSample) {
 	b.state.Traffic.RecentBandwidth = append(b.state.Traffic.RecentBandwidth, sample)
-	if len(b.state.Traffic.RecentBandwidth) > 300 {
-		b.state.Traffic.RecentBandwidth = b.state.Traffic.RecentBandwidth[len(b.state.Traffic.RecentBandwidth)-300:]
+	if len(b.state.Traffic.RecentBandwidth) > 150 {
+		b.state.Traffic.RecentBandwidth = b.state.Traffic.RecentBandwidth[len(b.state.Traffic.RecentBandwidth)-150:]
 	}
 }
 

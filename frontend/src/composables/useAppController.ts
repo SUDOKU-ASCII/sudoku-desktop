@@ -4,6 +4,7 @@ import { backendApi } from '../api'
 import { useI18n } from '../i18n'
 import type {
   AppConfig,
+  LANProxyInfo,
   IPDetectResult,
   LatencyResult,
   LogEntry,
@@ -214,6 +215,7 @@ const shortlinkName = ref('')
 const logLevelFilter = ref('all')
 const logSearch = ref('')
 const logDisplayLimit = ref(600)
+const showTrafficLogs = ref(false)
 const logs = ref<LogEntry[]>([])
 const connectionOpBusy = ref(false)
 let logQueue: LogEntry[] = []
@@ -222,6 +224,7 @@ let pendingState: RuntimeState | null = null
 let stateFlushTimer: number | null = null
 const proxyIP = ref<IPDetectResult | null>(null)
 const directIP = ref<IPDetectResult | null>(null)
+const lanProxyInfo = ref<LANProxyInfo>({ port: 1080, ips: [], ready: false })
 const usageHistory = ref<UsageDay[]>([])
 let usageHistoryTimer: number | null = null
 let customRulesValidateTimer: number | null = null
@@ -343,6 +346,8 @@ const filteredLogs = computed(() => {
   const keyword = logSearch.value.trim().toLowerCase()
   const out: LogEntry[] = []
   for (const item of logs.value) {
+    const component = String(item.component || '').toLowerCase()
+    if (!showTrafficLogs.value && (component === 'traffic' || component.includes('traffic'))) continue
     if (level !== 'all' && item.level !== level) continue
     if (keyword) {
       const haystack = `${item.message} ${item.component} ${item.raw}`.toLowerCase()
@@ -438,6 +443,58 @@ const logComponentText = (component: string): string => {
   return name || 'core'
 }
 
+const pushUiLog = (level: string, component: string, message: string) => {
+  const text = String(message || '').trim()
+  if (!text) return
+  const ts = new Date().toISOString()
+  const rid = Math.random().toString(36).slice(2, 9)
+  logs.value.unshift({
+    id: `ui-${Date.now()}-${rid}`,
+    timestamp: ts,
+    level,
+    component,
+    message: text,
+    raw: text,
+  })
+  if (logs.value.length > 20000) {
+    logs.value = logs.value.slice(0, 20000)
+  }
+}
+
+const stateErrorSnapshot: { lastError: string; routeSetupError: string } = {
+  lastError: '',
+  routeSetupError: '',
+}
+
+const ingestStateErrors = (next: RuntimeState) => {
+  const nextLast = String(next.lastError || '').trim()
+  const nextRoute = String(next.routeSetupError || '').trim()
+  if (nextLast && nextLast !== stateErrorSnapshot.lastError) {
+    pushUiLog('error', 'runtime', nextLast)
+  }
+  if (nextRoute && nextRoute !== stateErrorSnapshot.routeSetupError) {
+    pushUiLog('error', 'route', nextRoute)
+  }
+  stateErrorSnapshot.lastError = nextLast
+  stateErrorSnapshot.routeSetupError = nextRoute
+}
+
+const refreshLANProxyInfo = async () => {
+  try {
+    const info = await backendApi.getLANProxyInfo()
+    lanProxyInfo.value = {
+      port: Number(info?.port || 0) || config.core.localPort || 1080,
+      ips: Array.isArray(info?.ips) ? info.ips : [],
+      ready: !!info?.ready,
+    }
+  } catch {
+    lanProxyInfo.value = {
+      ...lanProxyInfo.value,
+      port: config.core.localPort || 1080,
+    }
+  }
+}
+
 const normalizedCustomTables = (tables: unknown, legacyTable = ''): string[] => {
   const out = (Array.isArray(tables) ? tables : [])
     .map((item) => String(item ?? '').trim())
@@ -472,6 +529,8 @@ const refreshBasics = async () => {
   logs.value = [...(Array.isArray(logItems) ? logItems : [])].sort(
     (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
   )
+  ingestStateErrors(st)
+  await refreshLANProxyInfo()
   if (cfg.nodes.length > 0) {
     pickNode(cfg.nodes[0])
   } else {
@@ -1016,6 +1075,13 @@ watch(
   }
 )
 
+watch(
+  () => [state.running, config.core.localPort, config.activeNodeId],
+  () => {
+    void refreshLANProxyInfo()
+  }
+)
+
 onMounted(async () => {
   applyDocumentTheme()
   await refreshBasics()
@@ -1034,6 +1100,7 @@ onMounted(async () => {
       const next = pendingState
       pendingState = null
       assignState(next)
+      ingestStateErrors(next)
     }, 80)
   })
 
@@ -1111,9 +1178,11 @@ onUnmounted(() => {
     logLevelFilter,
     logSearch,
     logDisplayLimit,
+    showTrafficLogs,
     filteredLogs,
     proxyIP,
     directIP,
+    lanProxyInfo,
     usageHistory,
     customRulesValidation,
     sortedNodes,

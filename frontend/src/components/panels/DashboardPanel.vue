@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import TrafficChart from '../TrafficChart.vue'
 import UsageHistoryChart from '../UsageHistoryChart.vue'
-import type { AppConfig, IPDetectResult, RuntimeState, UsageDay } from '../../types'
+import type { AppConfig, IPDetectResult, LANProxyInfo, RuntimeState, UsageDay } from '../../types'
 
 const props = defineProps<{
   t: (key: any) => string
@@ -14,6 +15,7 @@ const props = defineProps<{
   directIp: IPDetectResult | null
   proxyIp: IPDetectResult | null
   usageHistory: UsageDay[]
+  lanProxyInfo: LANProxyInfo
   trafficProxyShare: number
   trafficDirectShare: number
   connectionOpBusy: boolean
@@ -28,6 +30,15 @@ const props = defineProps<{
   closeConnection: (id: string) => void
   closeAllConnections: () => void
 }>()
+
+const lanEndpointsText = computed(() => {
+  const port = props.lanProxyInfo?.port || props.config.core.localPort || 1080
+  const ips = Array.isArray(props.lanProxyInfo?.ips) ? props.lanProxyInfo.ips : []
+  if (ips.length === 0) return `-:${port}`
+  if (ips.length <= 2) return ips.map((ip) => `${ip}:${port}`).join(' / ')
+  const first = ips.slice(0, 2).map((ip) => `${ip}:${port}`).join(' / ')
+  return `${first} +${ips.length - 2}`
+})
 </script>
 
 <template>
@@ -96,6 +107,11 @@ const props = defineProps<{
         <h3>{{ props.t('directShare') }}</h3>
         <strong>{{ props.trafficDirectShare.toFixed(1) }}%</strong>
         <small>{{ props.humanBytes(props.state.traffic.estimatedDirectTx + props.state.traffic.estimatedDirectRx) }}</small>
+      </article>
+      <article class="metric">
+        <h3>{{ props.t('proxyAccess') }}</h3>
+        <strong>{{ lanEndpointsText }}</strong>
+        <small>SOCKS5 · {{ props.lanProxyInfo.ready ? props.t('statusRunning') : props.t('statusStopped') }}</small>
       </article>
     </div>
 

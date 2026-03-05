@@ -176,6 +176,12 @@ export interface IPDetectResult {
   error: string
 }
 
+export interface LANProxyInfo {
+  port: number
+  ips: string[]
+  ready: boolean
+}
+
 export interface RuntimeState {
   running: boolean
   coreRunning: boolean

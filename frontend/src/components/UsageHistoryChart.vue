@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { UsageDay } from '../types'
 
 const props = defineProps<{
   days: UsageDay[]
 }>()
 
-const width = 680
-const height = 170
+const width = 700
+const height = 182
 const paddingX = 18
 const paddingY = 16
+
+const svgRef = ref<SVGSVGElement | null>(null)
+const hoverIndex = ref<number | null>(null)
 
 const recent = computed(() => {
   const all = [...(props.days || [])].sort((a, b) => a.date.localeCompare(b.date))
@@ -18,9 +21,7 @@ const recent = computed(() => {
 
 const totals = computed(() => recent.value.map((d) => (d.tx || 0) + (d.rx || 0)))
 
-const maxTotal = computed(() => {
-  return Math.max(...totals.value, 1)
-})
+const maxTotal = computed(() => Math.max(...totals.value, 1))
 
 const toPoints = computed(() => {
   if (recent.value.length === 0) return [] as Array<{ x: number; y: number; label: string; total: number }>
@@ -71,12 +72,11 @@ const fillPath = computed(() => {
 
 const gridLines = computed(() => {
   const count = 4
-  const out: Array<{ y: number; value: number }> = []
+  const out: Array<{ y: number }> = []
   for (let i = 0; i <= count; i++) {
     const ratio = i / count
     const y = height - paddingY - ratio * (height - paddingY * 2)
-    const value = Math.round(maxTotal.value * ratio)
-    out.push({ y, value })
+    out.push({ y })
   }
   return out
 })
@@ -99,11 +99,49 @@ const humanBytes = (value: number): string => {
 }
 
 const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0))
+
+const clampIndex = (idx: number): number => {
+  if (toPoints.value.length === 0) return 0
+  return Math.min(toPoints.value.length - 1, Math.max(0, idx))
+}
+
+const onPointerMove = (event: MouseEvent) => {
+  if (!svgRef.value || toPoints.value.length === 0) {
+    hoverIndex.value = null
+    return
+  }
+  const rect = svgRef.value.getBoundingClientRect()
+  if (!rect.width) return
+  const ratio = (event.clientX - rect.left) / rect.width
+  const clamped = Math.min(1, Math.max(0, ratio))
+  hoverIndex.value = clampIndex(Math.round(clamped * Math.max(0, toPoints.value.length - 1)))
+}
+
+const onPointerLeave = () => {
+  hoverIndex.value = null
+}
+
+const hoverPoint = computed(() => {
+  if (hoverIndex.value === null) return null
+  return toPoints.value[hoverIndex.value] || null
+})
+
+const hoverDay = computed(() => {
+  if (hoverIndex.value === null) return null
+  return recent.value[hoverIndex.value] || null
+})
 </script>
 
 <template>
   <div class="usage-wrap">
-    <svg :viewBox="`0 0 ${width} ${height}`" class="usage-svg" preserveAspectRatio="none">
+    <svg
+      ref="svgRef"
+      :viewBox="`0 0 ${width} ${height}`"
+      class="usage-svg"
+      preserveAspectRatio="none"
+      @mousemove="onPointerMove"
+      @mouseleave="onPointerLeave"
+    >
       <rect x="0" y="0" :width="width" :height="height" class="usage-bg" />
 
       <g class="grid">
@@ -121,14 +159,8 @@ const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0)
       <path v-if="fillPath" :d="fillPath" class="usage-fill" />
       <path v-if="linePath" :d="linePath" class="usage-line" pathLength="100" />
 
-      <circle
-        v-for="(p, idx) in toPoints"
-        :key="`dot-${idx}`"
-        :cx="p.x"
-        :cy="p.y"
-        r="2.8"
-        class="usage-dot"
-      />
+      <line v-if="hoverPoint" :x1="hoverPoint.x" :x2="hoverPoint.x" :y1="paddingY" :y2="height - paddingY" class="cursor" />
+      <circle v-if="hoverPoint" :cx="hoverPoint.x" :cy="hoverPoint.y" r="3.2" class="usage-hover-dot" />
 
       <line :x1="paddingX" :x2="width - paddingX" :y1="height - paddingY" :y2="height - paddingY" class="axis" />
 
@@ -149,18 +181,28 @@ const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0)
       <span v-if="recent.length">{{ recent[0].date }} - {{ recent[recent.length - 1].date }}</span>
       <span v-else>-</span>
     </div>
+
+    <div class="usage-hover">
+      <template v-if="hoverDay">
+        <span>{{ hoverDay.date }}</span>
+        <span>Total {{ humanBytes((hoverDay.tx || 0) + (hoverDay.rx || 0)) }}</span>
+        <span>Upload {{ humanBytes(hoverDay.tx || 0) }}</span>
+        <span>Download {{ humanBytes(hoverDay.rx || 0) }}</span>
+      </template>
+      <span v-else>Move mouse on chart to inspect daily usage</span>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .usage-wrap {
   width: 100%;
-  min-height: 186px;
+  min-height: 206px;
 }
 
 .usage-svg {
   width: 100%;
-  height: 165px;
+  height: 174px;
   border: 1px solid var(--line);
   border-radius: 12px;
 }
@@ -182,7 +224,7 @@ const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0)
 .usage-line {
   fill: none;
   stroke: var(--accent-strong);
-  stroke-width: 2.6;
+  stroke-width: 2.4;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 100;
@@ -190,13 +232,16 @@ const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0)
   animation: drawLine 1s ease forwards;
 }
 
-.usage-dot {
-  fill: color-mix(in srgb, var(--surface) 78%, var(--accent-strong) 22%);
-  stroke: var(--accent-strong);
-  stroke-width: 0.8;
-  opacity: 0;
-  animation: dotIn 0.35s ease forwards;
-  animation-delay: 0.45s;
+.cursor {
+  stroke: color-mix(in srgb, var(--ink) 58%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.usage-hover-dot {
+  fill: var(--accent-strong);
+  stroke: var(--surface);
+  stroke-width: 1;
 }
 
 .axis {
@@ -210,28 +255,25 @@ const totalInWindow = computed(() => totals.value.reduce((acc, n) => acc + n, 0)
   fill: var(--muted);
 }
 
-.usage-meta {
+.usage-meta,
+.usage-hover {
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.usage-hover {
+  margin-top: 4px;
+  color: color-mix(in srgb, var(--ink) 74%, var(--muted) 26%);
 }
 
 @keyframes drawLine {
   to {
     stroke-dashoffset: 0;
-  }
-}
-
-@keyframes dotIn {
-  from {
-    opacity: 0;
-    transform: scale(0.5);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
   }
 }
 </style>

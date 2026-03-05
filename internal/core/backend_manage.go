@@ -166,6 +166,21 @@ func (b *Backend) DetectIPProxy() IPDetectResult {
 	return b.detectIPStateful(true)
 }
 
+func (b *Backend) GetLANProxyInfo() LANProxyInfo {
+	b.mu.RLock()
+	port := b.effectiveLocalPortLocked()
+	ready := b.state.CoreRunning || b.state.Running
+	b.mu.RUnlock()
+	if port <= 0 {
+		port = 1080
+	}
+	return LANProxyInfo{
+		Port:  port,
+		IPs:   localLANIPv4s(),
+		Ready: ready,
+	}
+}
+
 func (b *Backend) detectIPStateful(useProxy bool) IPDetectResult {
 	b.mu.RLock()
 	port := b.effectiveLocalPortLocked()

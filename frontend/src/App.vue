@@ -38,6 +38,7 @@ const {
   logLevelFilter,
   logSearch,
   logDisplayLimit,
+  showTrafficLogs,
   filteredLogs,
   proxyOpBusy,
   proxyOpState,
@@ -46,6 +47,7 @@ const {
   primaryProxyActionHint,
   directIP,
   proxyIP,
+  lanProxyInfo,
   usageHistory,
   customRulesValidation,
   sortedNodes,
@@ -216,6 +218,7 @@ const {
         :direct-ip="directIP"
         :proxy-ip="proxyIP"
         :usage-history="usageHistory"
+        :lan-proxy-info="lanProxyInfo"
         :traffic-proxy-share="trafficProxyShare"
         :traffic-direct-share="trafficDirectShare"
         :connection-op-busy="connectionOpBusy"
@@ -290,6 +293,7 @@ const {
         :log-level-filter="logLevelFilter"
         :log-search="logSearch"
         :log-display-limit="logDisplayLimit"
+        :show-traffic-logs="showTrafficLogs"
         :filtered-logs="filteredLogs"
         :format-log-timestamp="formatLogTimestamp"
         :log-level-text="logLevelText"
@@ -297,15 +301,13 @@ const {
         @update:log-level-filter="logLevelFilter = $event"
         @update:log-search="logSearch = $event"
         @update:log-display-limit="logDisplayLimit = $event"
+        @update:show-traffic-logs="showTrafficLogs = $event"
       />
 
       <main class="panel" v-if="currentTab === 'game'">
         <SudokuGame />
       </main>
 
-      <footer class="footbar">
-        <span>{{ state.lastError || state.routeSetupError }}</span>
-      </footer>
     </div>
 
     <NodeEditorModal

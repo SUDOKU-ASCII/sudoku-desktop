@@ -330,3 +330,4 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: false
+          prerelease: ${{ contains(github.ref_name, 'rc') }}

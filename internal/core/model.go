@@ -183,6 +183,12 @@ type IPDetectResult struct {
 	Error         string `json:"error"`
 }
 
+type LANProxyInfo struct {
+	Port  int      `json:"port"`
+	IPs   []string `json:"ips"`
+	Ready bool     `json:"ready"`
+}
+
 type RuntimeState struct {
 	Running         bool               `json:"running"`
 	CoreRunning     bool               `json:"coreRunning"`

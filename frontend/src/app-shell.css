@@ -862,6 +862,21 @@ th {
   min-width: 120px;
 }
 
+.logs-traffic-field {
+  min-width: 150px;
+}
+
+.logs-traffic-control {
+  min-height: var(--control-height);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 10px;
+}
+
 input:not([type='checkbox']):not([type='radio']),
 textarea,
 select {
@@ -1062,6 +1077,7 @@ textarea {
   gap: 6px;
   contain: content;
   content-visibility: auto;
+  overflow-anchor: none;
 }
 
 .log-item {
@@ -1117,6 +1133,15 @@ textarea {
 
 .log-message {
   word-break: break-word;
+}
+
+.log-list,
+.log-item,
+.log-time,
+.log-component,
+.log-message {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .hint {

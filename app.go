@@ -223,6 +223,13 @@ func (a *App) DetectIPProxy() core.IPDetectResult {
 	return a.backend.DetectIPProxy()
 }
 
+func (a *App) GetLANProxyInfo() core.LANProxyInfo {
+	if a.backend == nil {
+		return core.LANProxyInfo{}
+	}
+	return a.backend.GetLANProxyInfo()
+}
+
 func (a *App) StartReverseForwarder() error {
 	if a.backend == nil {
 		return nil

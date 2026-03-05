@@ -327,6 +327,39 @@ export class IPDetectResult {
     }
 }
 
+export class LANProxyInfo {
+    "port": number;
+    "ips": string[];
+    "ready": boolean;
+
+    /** Creates a new LANProxyInfo instance. */
+    constructor($$source: Partial<LANProxyInfo> = {}) {
+        if (!("port" in $$source)) {
+            this["port"] = 0;
+        }
+        if (!("ips" in $$source)) {
+            this["ips"] = [];
+        }
+        if (!("ready" in $$source)) {
+            this["ready"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LANProxyInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LANProxyInfo {
+        const $$createField1_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("ips" in $$parsedSource) {
+            $$parsedSource["ips"] = $$createField1_0($$parsedSource["ips"]);
+        }
+        return new LANProxyInfo($$parsedSource as Partial<LANProxyInfo>);
+    }
+}
+
 export class LatencyResult {
     "nodeId": string;
     "nodeName": string;
