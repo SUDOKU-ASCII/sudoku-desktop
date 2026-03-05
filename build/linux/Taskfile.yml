@@ -22,6 +22,20 @@ tasks:
     summary: Package Linux tarball payload
     deps:
       - task: build
+    cmds:
+      - mkdir -p dist
+      - |
+        set -euo pipefail
+        stage="$(mktemp -d)"
+        trap 'rm -rf "${stage}"' EXIT
+
+        bin="{{.OUTPUT | default (printf "%s/%s" .BIN_DIR .APP_NAME)}}"
+        cp -f "${bin}" "${stage}/{{.APP_NAME}}"
+        cp -f "build/appicon.png" "${stage}/{{.APP_NAME}}.png"
+        cp -f "build/linux/{{.APP_NAME}}.desktop.in" "${stage}/{{.APP_NAME}}.desktop.in"
+        cp -f "build/linux/install.sh" "${stage}/install.sh"
+
+        tar -czf "dist/{{.APP_NAME}}_linux-{{.ARCH | default ARCH}}.tar.gz" -C "${stage}" .
 
   run:
     summary: Run Linux binary

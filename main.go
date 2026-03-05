@@ -46,6 +46,7 @@ func main() {
 	app := application.New(application.Options{
 		Name:        "sudoku4x4",
 		Description: "4x4 sudoku desktop client",
+		Icon:        trayIcon,
 		Services: []application.Service{
 			application.NewService(appService),
 		},
@@ -57,6 +58,7 @@ func main() {
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
+			ProgramName:                   "sudoku4x4",
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
@@ -74,6 +76,9 @@ func main() {
 		BackgroundColour:       application.NewRGB(245, 239, 225),
 		Hidden:                 startHidden,
 		OpenInspectorOnStartup: !startHidden,
+		Linux: application.LinuxWindow{
+			Icon: trayIcon,
+		},
 		KeyBindings: map[string]func(window application.Window){
 			"cmd+w": func(window application.Window) {
 				if runtime.GOOS == "darwin" {

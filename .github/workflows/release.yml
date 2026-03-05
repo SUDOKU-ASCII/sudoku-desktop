@@ -28,6 +28,9 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux/amd64
             artifact: linux-amd64
+          - runner: ubuntu-24.04
+            platform: linux/arm64
+            artifact: linux-arm64
 
     runs-on: ${{ matrix.runner }}
 
@@ -98,6 +101,12 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Setup QEMU (Linux arm64)
+        if: runner.os == 'Linux' && matrix.platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Install create-dmg (macOS)
         if: runner.os == 'macOS'
         run: brew install create-dmg
@@ -127,7 +136,49 @@ jobs:
           if [ "${{ runner.os }}" == "Windows" ]; then
             wails3 task windows:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4.exe
           elif [ "${{ runner.os }}" == "Linux" ]; then
-            wails3 task linux:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
+            if [ "${ARCH}" == "arm64" ]; then
+              # Linux arm64 build requires CGO + GTK/WebKit libraries; do it in an arm64 container via QEMU.
+              GO_VERSION="$(go env GOVERSION)"
+              echo "Building Linux/arm64 in docker (${GO_VERSION})"
+              docker run --rm --platform linux/arm64 \
+                -e GO_VERSION="${GO_VERSION}" \
+                -v "${PWD}:/src" -w /src \
+                ubuntu:24.04 bash -lc '
+                  set -euo pipefail
+                  export DEBIAN_FRONTEND=noninteractive
+                  if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+                    if ! grep -q "^Components:.*\\buniverse\\b" /etc/apt/sources.list.d/ubuntu.sources; then
+                      sed -i "s/^Components: \\(.*\\)$/Components: \\1 universe/" /etc/apt/sources.list.d/ubuntu.sources || true
+                    fi
+                  fi
+                  apt-get update
+                  apt-get install -y --no-install-recommends \
+                    ca-certificates \
+                    curl \
+                    git \
+                    build-essential \
+                    pkg-config \
+                    libgtk-3-dev \
+                    libwebkit2gtk-4.1-dev \
+                    libglib2.0-dev
+                  (apt-get install -y --no-install-recommends libayatana-appindicator3-dev || apt-get install -y --no-install-recommends libappindicator3-dev || true)
+
+                  if [ ! -d /usr/local/go ]; then
+                    curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-arm64.tar.gz" -o /tmp/go.tgz
+                    rm -rf /usr/local/go
+                    tar -C /usr/local -xzf /tmp/go.tgz
+                    rm -f /tmp/go.tgz
+                  fi
+                  export PATH="/usr/local/go/bin:$PATH"
+
+                  mkdir -p build/bin
+                  CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+                    go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" \
+                    -o build/bin/sudoku4x4
+                '
+            else
+              wails3 task linux:build ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
+            fi
           else
             wails3 task darwin:package ARCH="${ARCH}" OUTPUT=build/bin/sudoku4x4
           fi
@@ -181,7 +232,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          tar -czf "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "build/bin" "sudoku4x4"
+          stage="$(mktemp -d)"
+          cp -f "build/bin/sudoku4x4" "${stage}/sudoku4x4"
+          cp -f "build/appicon.png" "${stage}/sudoku4x4.png"
+          cp -f "build/linux/sudoku4x4.desktop.in" "${stage}/sudoku4x4.desktop.in"
+          cp -f "build/linux/install.sh" "${stage}/install.sh"
+          tar -czf "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.tar.gz" -C "${stage}" .
+          rm -rf "${stage}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

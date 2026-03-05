@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=4x4 sudoku
+Comment=4x4 sudoku desktop client
+Exec=@EXEC@
+Icon=sudoku4x4
+Terminal=false
+Categories=Network;
+StartupWMClass=sudoku4x4
