@@ -305,7 +305,6 @@ const submitTunAdminModal = async () => {
 }
 
 const ensureTunAdmin = async (): Promise<boolean> => {
-  if (!isMacLike) return true
   try {
     const has = await backendApi.tunHasPrivileges()
     if (has) return true
@@ -517,7 +516,7 @@ const runProxyAction = async (
     await action()
     flash(t(successKey))
   } catch (e: any) {
-    if (isMacLike && isAdminRequiredError(e)) {
+    if (isAdminRequiredError(e)) {
       const ok = await ensureTunAdmin()
       if (ok) {
         try {
@@ -982,7 +981,7 @@ watch(
       skipTunEnabledAutoSaveOnce.value = false
       return
     }
-    if (next && !prev && isMacLike) {
+    if (next && !prev) {
       const ok = await ensureTunAdmin()
       if (!ok) {
         skipTunEnabledAutoSaveOnce.value = true
@@ -999,7 +998,7 @@ watch(
   () => state.needsAdmin,
   async (next) => {
     if (!loadReady.value) return
-    if (!next || !isMacLike) return
+    if (!next) return
     void ensureTunAdmin()
   }
 )

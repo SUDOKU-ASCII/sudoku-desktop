@@ -111,9 +111,8 @@ func newBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, err
 		bundledRuntimeFS:   runtimeFS,
 		bundledRuntimeRoot: runtimeRoot,
 	}
-	if runtime.GOOS == "darwin" && b.tunAdmin != nil {
+	if (runtime.GOOS == "darwin" || runtime.GOOS == "linux") && b.tunAdmin != nil {
 		// Allow detecting/stopping leftover root HEV processes after crash/force-quit.
-		// (Implementation is darwin-only; non-darwin builds use a no-op stub.)
 		configureAdminDetachedProcess(b.tunAdmin, store, cfg)
 	}
 	b.usageDays = trimUsageDays(loadUsageHistory(store.UsageHistoryPath()), 120)
@@ -286,6 +285,7 @@ func (b *Backend) Shutdown() {
 	// This runs after StopProxy/cleanup finishes (or times out).
 	defer func() {
 		_ = darwinAdminForget()
+		_ = linuxAdminForget()
 	}()
 
 	b.shutdownOnce.Do(func() {
@@ -447,6 +447,90 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			}
 
 			b.addLog("warn", "tun", "darwin: detected stale TUN state; tearing down before start")
+			if err := teardownRoutes(ctx, tunCfg, func(line string) {
+				b.addLog("info", "route", line)
+			}); err != nil {
+				b.mu.Lock()
+				b.state.NeedsAdmin = isLikelyPermissionError(err)
+				b.state.RouteSetupError = err.Error()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				b.opMu.Unlock()
+				return err
+			}
+			if err := b.stopTunLocked(6 * time.Second); err != nil && b.tunRunningLocked() {
+				b.mu.Lock()
+				b.state.LastError = err.Error()
+				b.emitStateLocked()
+				b.mu.Unlock()
+				b.opMu.Unlock()
+				return err
+			}
+
+			b.mu.Lock()
+			b.routeState = nil
+			b.runningTunInterface = ""
+			b.tunRecovering = false
+			b.state.TunRunning = false
+			b.state.NeedsAdmin = false
+			b.state.RouteSetupError = ""
+			b.emitStateLocked()
+			b.mu.Unlock()
+		}
+	}
+	if runtime.GOOS == "linux" {
+		// Best-effort cleanup of stale policy routes and/or a detached root HEV process
+		// after crash/force-quit, to avoid offline states and "hev already running".
+		detectedRoutes := false
+		if tunCfg.RouteTable > 0 {
+			if out, err := exec.Command("ip", "rule", "show").CombinedOutput(); err == nil {
+				needle := fmt.Sprintf("lookup %d", tunCfg.RouteTable)
+				for _, line := range strings.Split(string(out), "\n") {
+					line = strings.TrimSpace(line)
+					if !strings.HasPrefix(line, "20:") {
+						continue
+					}
+					if strings.Contains(line, needle) {
+						detectedRoutes = true
+						break
+					}
+				}
+			}
+		}
+		if detectedRoutes && strings.TrimSpace(tunCfg.InterfaceName) != "" {
+			if out, err := exec.Command("ip", "route", "show", "table", fmt.Sprintf("%d", tunCfg.RouteTable)).CombinedOutput(); err == nil {
+				routeOut := string(out)
+				if !strings.Contains(routeOut, "default") || !strings.Contains(routeOut, "dev "+strings.TrimSpace(tunCfg.InterfaceName)) {
+					detectedRoutes = false
+				}
+			}
+		}
+		if prevRouteState != nil || prevTunRunning || detectedRoutes {
+			ctx := prevRouteState
+			if ctx == nil {
+				emerg := &routeContext{
+					ServerIP:              resolveServerIPFromAddress(nodeCopy.ServerAddress),
+					LinuxResolvConfBackup: fmt.Sprintf("/tmp/sudoku4x4-resolv.conf.%d.bak", os.Getuid()),
+				}
+				if srcIP, err := linuxDefaultOutboundIPv4(); err == nil && strings.TrimSpace(srcIP) != "" {
+					emerg.LinuxOutboundSrcIP = strings.TrimSpace(srcIP)
+				}
+				if localDNSProxyListenPort() != 53 {
+					emerg.LinuxDNSRedirectPort = localDNSProxyListenPort()
+				}
+				// Legacy CN-bypass cleanup (best-effort).
+				bm := tunCfg.SocksMark + 1
+				if bm <= 0 {
+					bm = 439
+				}
+				emerg.LinuxBypassMark = bm
+				emerg.LinuxBypassSet4 = fmt.Sprintf("sudoku4x4_cn4_%d", os.Getuid())
+				emerg.LinuxBypassSet6 = fmt.Sprintf("sudoku4x4_cn6_%d", os.Getuid())
+				ctx = emerg
+			}
+
+			b.addLog("warn", "tun", "linux: detected stale TUN state; tearing down before start")
 			if err := teardownRoutes(ctx, tunCfg, func(line string) {
 				b.addLog("info", "route", line)
 			}); err != nil {
@@ -695,13 +779,16 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			enableCIDRBypass := false
 			switch runtime.GOOS {
 			case "linux":
-				enableCIDRBypass = true
+				enableCIDRBypass = strings.TrimSpace(os.Getenv("SUDOKU_LINUX_ENABLE_CIDR_BYPASS")) == "1"
 			case "darwin":
 				enableCIDRBypass = strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ENABLE_CIDR_BYPASS")) == "1"
 			case "windows":
 				enableCIDRBypass = strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_ENABLE_CIDR_BYPASS")) == "1"
 			default:
 				enableCIDRBypass = true
+			}
+			if runtime.GOOS == "linux" && !enableCIDRBypass {
+				b.addLog("info", "route", "linux: CIDR bypass pre-split disabled by default (core-based routing only); set SUDOKU_LINUX_ENABLE_CIDR_BYPASS=1 to enable legacy behavior")
 			}
 			if runtime.GOOS == "darwin" && !enableCIDRBypass {
 				b.addLog("info", "route", "darwin: CIDR bypass pre-split disabled (core-based routing only); set SUDOKU_DARWIN_ENABLE_CIDR_BYPASS=1 to enable legacy behavior")
@@ -756,12 +843,16 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			switch runtime.GOOS {
 			case "darwin":
 				preferIPv4DNS = strings.TrimSpace(os.Getenv("SUDOKU_DARWIN_ALLOW_IPV6_DNS")) != "1"
+			case "linux":
+				preferIPv4DNS = strings.TrimSpace(os.Getenv("SUDOKU_LINUX_ALLOW_IPV6_DNS")) != "1"
 			case "windows":
 				preferIPv4DNS = strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_ALLOW_IPV6_DNS")) != "1"
 			}
 		}
 		if preferIPv4DNS && runtime.GOOS == "windows" {
 			b.addLog("warn", "dns", "windows stability mode: prefer IPv4 DNS in TUN (set SUDOKU_WINDOWS_ALLOW_IPV6_DNS=1 to allow AAAA)")
+		} else if preferIPv4DNS && runtime.GOOS == "linux" {
+			b.addLog("info", "dns", "linux stability mode: prefer IPv4 DNS in TUN (set SUDOKU_LINUX_ALLOW_IPV6_DNS=1 to allow AAAA)")
 		}
 
 		dnsProxy := newDNSProxyServer(dnsProxyConfig{
@@ -828,7 +919,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			hevWorkDir = filepath.Dir(hevBin)
 		}
 
-		if runtime.GOOS == "darwin" && os.Geteuid() != 0 && b.tunAdmin != nil {
+		if (runtime.GOOS == "darwin" || runtime.GOOS == "linux") && os.Geteuid() != 0 && b.tunAdmin != nil {
 			pidFile := filepath.Join(b.store.RuntimeDir(), "hev.pid")
 			logFile := filepath.Join(b.store.LogDir(), "hev.log")
 			hevLogFile = logFile
@@ -848,12 +939,6 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			}
 			b.addLog("info", "tun", fmt.Sprintf("hev started as admin (pid=%d, log=%s)", pid, logFile))
 		} else {
-			if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-				if _, err := exec.LookPath("pkexec"); err == nil {
-					hevCmd = "pkexec"
-					hevArgs = []string{hevBin, hevCfgPath}
-				}
-			}
 			if err := b.tunProc.Start(hevCmd, hevArgs, nil, hevWorkDir, b.onTunLog); err != nil {
 				_ = b.coreProc.Stop(3 * time.Second)
 				b.mu.Lock()
@@ -892,7 +977,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				b.addLog("info", "tun", fmt.Sprintf("detected tunnel interface: %s", actual))
 			}
 		}
-		if runtime.GOOS == "darwin" {
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
 			if !b.tunRunningLocked() {
 				tail := ""
 				if hevLogFile != "" {
@@ -1258,8 +1343,8 @@ func (b *Backend) StopProxy() error {
 	}
 
 	tunStopTimeout := 2 * time.Second
-	if runtime.GOOS == "darwin" && os.Geteuid() != 0 && b.tunAdmin != nil && b.tunAdmin.PID() > 0 {
-		// Detached root process teardown can take longer on macOS.
+	if (runtime.GOOS == "darwin" || runtime.GOOS == "linux") && os.Geteuid() != 0 && b.tunAdmin != nil && b.tunAdmin.PID() > 0 {
+		// Detached root process teardown can take longer.
 		tunStopTimeout = 6 * time.Second
 	}
 	if err := b.stopTunLocked(tunStopTimeout); err != nil {

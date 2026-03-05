@@ -308,7 +308,7 @@ func (a *App) OpenConfigPath() string {
 }
 
 // TunHasPrivileges reports whether the app can perform privileged TUN operations
-// silently on the current platform (macOS uses in-app sudo password caching).
+// silently on the current platform (supported on macOS/Linux via in-app sudo caching).
 func (a *App) TunHasPrivileges() bool {
 	if a.backend == nil {
 		return false
@@ -316,7 +316,7 @@ func (a *App) TunHasPrivileges() bool {
 	return a.backend.TunHasPrivileges()
 }
 
-// TunAcquirePrivileges validates and caches the macOS login password for TUN
+// TunAcquirePrivileges validates and caches the system password for sudo-backed TUN
 // operations. The password is stored in-memory only and never written to disk.
 func (a *App) TunAcquirePrivileges(password string) error {
 	if a.backend == nil {

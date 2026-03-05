@@ -11,33 +11,46 @@ func (b *Backend) TunHasPrivileges() bool {
 	if b == nil {
 		return false
 	}
-	if runtime.GOOS != "darwin" {
-		// Other platforms use different escalation mechanisms.
+	switch runtime.GOOS {
+	case "darwin":
+		return darwinAdminHasPassword()
+	case "linux":
+		return linuxAdminHasPassword()
+	default:
 		return true
 	}
-	return darwinAdminHasPassword()
 }
 
-// TunAcquirePrivileges validates the provided macOS login password for sudo and
-// caches it in-memory for subsequent TUN route/DNS/PF operations.
+// TunAcquirePrivileges validates the provided system password for sudo and caches
+// it in-memory for subsequent privileged TUN route/DNS operations.
 //
 // The password is never written to disk.
 func (b *Backend) TunAcquirePrivileges(password string) error {
 	if b == nil {
 		return nil
 	}
-	if runtime.GOOS != "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
+		if err := darwinAdminAcquire(password); err != nil {
+			return err
+		}
+	case "linux":
+		if err := linuxAdminAcquire(password); err != nil {
+			return err
+		}
+	default:
 		return nil
-	}
-	if err := darwinAdminAcquire(password); err != nil {
-		return err
 	}
 	b.mu.Lock()
 	// Clear the "needs admin" indicator if it was set by a previous failed operation.
 	b.state.NeedsAdmin = false
 	b.emitStateLocked()
 	b.mu.Unlock()
-	b.addLog("info", "tun", "administrator privileges acquired for TUN operations (macOS)")
+	if runtime.GOOS == "linux" {
+		b.addLog("info", "tun", "administrator privileges acquired for TUN operations (linux)")
+	} else if runtime.GOOS == "darwin" {
+		b.addLog("info", "tun", "administrator privileges acquired for TUN operations (macOS)")
+	}
 	return nil
 }
 
@@ -46,12 +59,19 @@ func (b *Backend) TunDropPrivileges() error {
 	if b == nil {
 		return nil
 	}
-	if runtime.GOOS != "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
+		if err := darwinAdminForget(); err != nil {
+			return fmt.Errorf("drop privileges: %w", err)
+		}
+		b.addLog("info", "tun", "administrator privileges cleared for TUN operations (macOS)")
+	case "linux":
+		if err := linuxAdminForget(); err != nil {
+			return fmt.Errorf("drop privileges: %w", err)
+		}
+		b.addLog("info", "tun", "administrator privileges cleared for TUN operations (linux)")
+	default:
 		return nil
 	}
-	if err := darwinAdminForget(); err != nil {
-		return fmt.Errorf("drop privileges: %w", err)
-	}
-	b.addLog("info", "tun", "administrator privileges cleared for TUN operations (macOS)")
 	return nil
 }

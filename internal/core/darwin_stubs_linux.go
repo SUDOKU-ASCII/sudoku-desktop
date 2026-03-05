@@ -1,4 +1,4 @@
-//go:build !darwin && !linux
+//go:build linux
 
 package core
 
@@ -8,12 +8,6 @@ import (
 	"fmt"
 	"time"
 )
-
-func configureAdminDetachedProcess(_ adminDetachedProcess, _ *Store, _ *AppConfig) {}
-
-func newAdminDetachedProcess() adminDetachedProcess {
-	return nil
-}
 
 func darwinNetworkServiceForDevice(_ string) (string, error) { return "", nil }
 

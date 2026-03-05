@@ -63,6 +63,13 @@ func windowsTunIPv6Enabled() bool {
 	return strings.TrimSpace(os.Getenv("SUDOKU_WINDOWS_TUN_IPV6")) == "1"
 }
 
+func linuxTunIPv6Enabled() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("SUDOKU_LINUX_TUN_IPV6")) == "1"
+}
+
 func setupRoutes(activeNode NodeConfig, tun TunSettings, routing RoutingSettings, bypass tunBypass, logf func(string)) (*routeContext, error) {
 	ctx := &routeContext{}
 	ctx.ServerIP = resolveServerIPFromAddress(activeNode.ServerAddress)
@@ -131,6 +138,7 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 	hasIPSet := linuxHasCommand("ipset")
 	hasIPTables := linuxHasCommand("iptables")
 	hasIP6Tables := linuxHasCommand("ip6tables")
+	enableTunIPv6 := linuxTunIPv6Enabled()
 
 	cmdlines := make([]string, 0, 32)
 	if ctx.ServerIP != "" {
@@ -150,12 +158,16 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 	// PAC-mode loop avoidance: bypass CN CIDRs to the main routing table.
 	if strings.TrimSpace(ctx.BypassV4Path) != "" || strings.TrimSpace(ctx.BypassV6Path) != "" {
 		enableBypass4 := strings.TrimSpace(ctx.BypassV4Path) != "" && hasIPSet && hasIPTables
-		enableBypass6 := strings.TrimSpace(ctx.BypassV6Path) != "" && hasIPSet && hasIP6Tables
+		enableBypass6 := enableTunIPv6 && strings.TrimSpace(ctx.BypassV6Path) != "" && hasIPSet && hasIP6Tables
 		if strings.TrimSpace(ctx.BypassV4Path) != "" && !enableBypass4 && logf != nil {
 			logf("[route] linux: skip ipv4 CN-bypass rules (missing ipset/iptables)")
 		}
 		if strings.TrimSpace(ctx.BypassV6Path) != "" && !enableBypass6 && logf != nil {
-			logf("[route] linux: skip ipv6 CN-bypass rules (missing ipset/ip6tables)")
+			if !enableTunIPv6 {
+				logf("[route] linux: skip ipv6 CN-bypass rules (IPv6 TUN disabled; set SUDOKU_LINUX_TUN_IPV6=1 to enable)")
+			} else {
+				logf("[route] linux: skip ipv6 CN-bypass rules (missing ipset/ip6tables)")
+			}
 		}
 		if enableBypass4 || enableBypass6 {
 			ctx.LinuxBypassMark = bypassMark
@@ -183,8 +195,12 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 		if enableBypass4 || enableBypass6 {
 			cmdlines = append(cmdlines,
 				shellJoin("ip", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
-				shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
 			)
+			if enableTunIPv6 {
+				cmdlines = append(cmdlines,
+					shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(bypassMark), "lookup", "main", "pref", "15")+" || true",
+				)
+			}
 		}
 	}
 
@@ -195,9 +211,9 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 		} else if logf != nil {
 			logf("[route] linux: skip IPv4 QUIC block (iptables not found)")
 		}
-		if hasIP6Tables {
+		if enableTunIPv6 && hasIP6Tables {
 			cmdlines = append(cmdlines, "ip6tables -C OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || ip6tables -I OUTPUT 1 -p udp --dport 443 -j DROP")
-		} else if logf != nil {
+		} else if enableTunIPv6 && logf != nil {
 			logf("[route] linux: skip IPv6 QUIC block (ip6tables not found)")
 		}
 	}
@@ -246,18 +262,70 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 		shellJoin("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")+" || true",
 		shellJoin("sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.rp_filter=0", tun.InterfaceName))+" || true",
 		shellJoin("ip", "rule", "add", "fwmark", strconv.Itoa(tun.SocksMark), "lookup", "main", "pref", "10")+" || true",
-		shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(tun.SocksMark), "lookup", "main", "pref", "10")+" || true",
 		shellJoin("ip", "route", "add", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
 		shellJoin("ip", "rule", "add", "lookup", strconv.Itoa(tun.RouteTable), "pref", "20")+" || true",
-		shellJoin("ip", "-6", "route", "add", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
-		shellJoin("ip", "-6", "rule", "add", "lookup", strconv.Itoa(tun.RouteTable), "pref", "20")+" || true",
 	)
+	if enableTunIPv6 {
+		cmdlines = append(cmdlines,
+			shellJoin("ip", "-6", "rule", "add", "fwmark", strconv.Itoa(tun.SocksMark), "lookup", "main", "pref", "10")+" || true",
+			shellJoin("ip", "-6", "route", "add", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
+			shellJoin("ip", "-6", "rule", "add", "lookup", strconv.Itoa(tun.RouteTable), "pref", "20")+" || true",
+		)
+	}
 
 	if err := runCmdsLinuxAdmin(logf, cmdlines...); err != nil {
 		// Best-effort cleanup to avoid leaving the system half-configured.
 		_ = teardownRoutesLinux(ctx, tun, logf)
 		return nil, err
 	}
+
+	// Verification (production safety): ensure the policy route and default route in the TUN
+	// table are actually present. Many linux commands above are idempotent ("|| true") and
+	// can otherwise mask a broken TUN dataplane.
+	verify := func() error {
+		// 1) ip rule (pref 20 lookup <table>).
+		out, err := exec.Command("ip", "rule", "show").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("ip rule show: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		needle := fmt.Sprintf("lookup %d", tun.RouteTable)
+		okRule := false
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "20:") && strings.Contains(line, needle) {
+				okRule = true
+				break
+			}
+		}
+		if !okRule {
+			return fmt.Errorf("missing ip rule: pref 20 %s", needle)
+		}
+
+		// 2) table default route (default dev <tun>).
+		out2, err2 := exec.Command("ip", "route", "show", "table", fmt.Sprintf("%d", tun.RouteTable)).CombinedOutput()
+		if err2 != nil {
+			return fmt.Errorf("ip route show table %d: %w: %s", tun.RouteTable, err2, strings.TrimSpace(string(out2)))
+		}
+		routeOut := string(out2)
+		if !strings.Contains(routeOut, "default") || !strings.Contains(routeOut, "dev "+strings.TrimSpace(tun.InterfaceName)) {
+			return fmt.Errorf("missing default route in table %d via %s", tun.RouteTable, strings.TrimSpace(tun.InterfaceName))
+		}
+		return nil
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var verifyErr error
+	for {
+		verifyErr = verify()
+		if verifyErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = teardownRoutesLinux(ctx, tun, logf)
+			return nil, verifyErr
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+
 	return ctx, nil
 }
 
@@ -309,6 +377,18 @@ func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) 
 			"if [ -f "+shellQuote(ctx.LinuxResolvConfBackup)+" ]; then cp -f "+shellQuote(ctx.LinuxResolvConfBackup)+" /etc/resolv.conf >/dev/null 2>&1 || true; rm -f "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true; fi",
 			"resolvectl flush-caches >/dev/null 2>&1 || systemd-resolve --flush-caches >/dev/null 2>&1 || true",
 		)
+	} else if ctx != nil && strings.TrimSpace(ctx.LinuxDNSMode) == "" {
+		// Emergency/unknown mode (e.g. crash/force-quit): attempt both resolvectl revert
+		// and /etc/resolv.conf restoration from the known backup path (if present).
+		cmdlines = append(cmdlines,
+			shellJoin("resolvectl", "revert", tun.InterfaceName)+" || true",
+			"resolvectl flush-caches >/dev/null 2>&1 || systemd-resolve --flush-caches >/dev/null 2>&1 || true",
+		)
+		if strings.TrimSpace(ctx.LinuxResolvConfBackup) != "" {
+			cmdlines = append(cmdlines,
+				"if [ -f "+shellQuote(ctx.LinuxResolvConfBackup)+" ]; then cp -f "+shellQuote(ctx.LinuxResolvConfBackup)+" /etc/resolv.conf >/dev/null 2>&1 || true; rm -f "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true; fi",
+			)
+		}
 	}
 	if ctx != nil && ctx.LinuxDNSRedirectPort > 0 {
 		cmdlines = append(cmdlines,
@@ -905,11 +985,27 @@ func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
 	if os.Geteuid() == 0 {
 		return runCmdExec(logf, "sh", "-lc", shell)
 	}
-	if _, err := exec.LookPath("pkexec"); err == nil {
-		return runCmdExec(logf, "pkexec", "sh", "-lc", shell)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	output, err := linuxAdminRunShLC(ctx, shell)
+	if ctx.Err() == context.DeadlineExceeded {
+		return errors.New("linux admin batch: timeout")
 	}
-	// No elevation helper available; run directly (will likely fail).
-	return runCmdExec(logf, "sh", "-lc", shell)
+	clean := strings.TrimSpace(output)
+	if logf != nil {
+		if clean != "" {
+			logf(fmt.Sprintf("[route] sudo (batch) => %s", clean))
+		} else {
+			logf("[route] sudo (batch)")
+		}
+	}
+	if err != nil {
+		if clean != "" {
+			return fmt.Errorf("linux admin batch: %w: %s", err, clean)
+		}
+		return fmt.Errorf("linux admin batch: %w", err)
+	}
+	return nil
 }
 
 func runCmdsWindowsAdmin(logf func(string), scriptBody string, timeout time.Duration) error {
@@ -1204,9 +1300,28 @@ func buildWindowsRouteScript(
 
 func runCmd(logf func(string), name string, args ...string) error {
 	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		if _, err := exec.LookPath("pkexec"); err == nil {
-			return runCmdExec(logf, "pkexec", append([]string{name}, args...)...)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cmdline := shellJoin(append([]string{name}, args...)...)
+		output, err := linuxAdminRunShLC(ctx, cmdline)
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("run %s %s (admin): timeout", name, strings.Join(args, " "))
 		}
+		clean := strings.TrimSpace(output)
+		if logf != nil {
+			if clean != "" {
+				logf(fmt.Sprintf("[route] sudo %s %s => %s", name, strings.Join(args, " "), clean))
+			} else {
+				logf(fmt.Sprintf("[route] sudo %s %s", name, strings.Join(args, " ")))
+			}
+		}
+		if err != nil {
+			if clean != "" {
+				return fmt.Errorf("run %s %s (admin): %w: %s", name, strings.Join(args, " "), err, clean)
+			}
+			return fmt.Errorf("run %s %s (admin): %w", name, strings.Join(args, " "), err)
+		}
+		return nil
 	}
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
 		return runCmdDarwinAdmin(logf, name, args...)
