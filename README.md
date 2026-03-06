@@ -30,7 +30,9 @@ xattr -cr "/Applications/sudoku4x4.app"
 If your app is not in `/Applications`, replace the path with the actual `.app` path.
 Tip: Type `xattr -cr ` first, then drag the `.app` file into Terminal to auto-fill the path.
 
-When enabling `TUN` on macOS, the app asks for your macOS login password **inside the app** (once per app session) to grant admin privileges needed for route/DNS updates. After that, TUN start/stop is silent (no extra system password dialog). The password stays in memory only and is never written to disk.
+## TUN
+
+When enabling `TUN` on macOS / Linux, the app asks for your macOS / Linux login password **inside the app** (once per app session) to grant admin privileges needed for route/DNS updates. After that, TUN start/stop is silent (no extra system password dialog). The password stays in memory only and is never written to disk.
 
 ## License
 
