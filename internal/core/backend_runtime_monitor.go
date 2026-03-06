@@ -455,7 +455,7 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 			shellJoin("route", "-n", "change", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1) || true",
 	)
 	if pfAnchor != "" {
-		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), tunCfg.BlockQUIC, darwinDNSProxyPFPort(tunCfg))); pfCmd != "" {
+		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), tunCfg.BlockQUIC, routeCtx.DNSProxyRedirectPort)); pfCmd != "" {
 			cmds = append(cmds, pfCmd+" || true")
 		}
 	}

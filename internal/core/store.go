@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const configVersion = 4
+const configVersion = 5
 
 type Store struct {
 	rootDir    string
@@ -110,11 +110,6 @@ func (s *Store) Save(cfg *AppConfig) error {
 }
 
 func DefaultConfig(runtimeDir string) *AppConfig {
-	defaultTunName := "sudoku0"
-	if runtime.GOOS == "darwin" {
-		// HEV's docs use "tun0" on macOS/FreeBSD; using a Linux-ish name breaks route setup.
-		defaultTunName = "tun0"
-	}
 	cfg := &AppConfig{
 		Version:      configVersion,
 		ActiveNodeID: "",
@@ -125,27 +120,7 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 			CustomRulesEnabled: false,
 			CustomRules:        "",
 		},
-		Tun: TunSettings{
-			Enabled:        false,
-			InterfaceName:  defaultTunName,
-			MTU:            8500,
-			IPv4:           "198.18.0.1",
-			IPv6:           "fc00::1",
-			BlockQUIC:      false,
-			SocksUDP:       "udp",
-			SocksMark:      438,
-			RouteTable:     20,
-			LogLevel:       "warn",
-			MapDNSEnabled:  true,
-			MapDNSAddress:  "198.18.0.2",
-			MapDNSPort:     53,
-			MapDNSNetwork:  "100.64.0.0",
-			MapDNSNetmask:  "255.192.0.0",
-			TaskStackSize:  86016,
-			TCPBufferSize:  65536,
-			MaxSession:     0,
-			ConnectTimeout: 10000,
-		},
+		Tun: defaultTunSettings(runtime.GOOS),
 		Core: CoreSettings{
 			SudokuBinary: defaultBinaryPath(runtimeDir, "sudoku"),
 			HevBinary:    defaultBinaryPath(runtimeDir, "hev-socks5-tunnel"),
@@ -177,7 +152,12 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 }
 
 func normalizeConfig(cfg *AppConfig, runtimeDir string) {
+	normalizeConfigForOS(cfg, runtimeDir, runtime.GOOS)
+}
+
+func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	prevVersion := cfg.Version
+	defaultTun := defaultTunSettings(goos)
 	if cfg.Version < configVersion {
 		cfg.Version = configVersion
 	}
@@ -207,23 +187,19 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 		}
 	}
 	if cfg.Tun.InterfaceName == "" {
-		if runtime.GOOS == "darwin" {
-			cfg.Tun.InterfaceName = "tun0"
-		} else {
-			cfg.Tun.InterfaceName = "sudoku0"
-		}
-	} else if runtime.GOOS == "darwin" && cfg.Tun.InterfaceName == "sudoku0" {
+		cfg.Tun.InterfaceName = defaultTun.InterfaceName
+	} else if goos == "darwin" && cfg.Tun.InterfaceName == "sudoku0" {
 		// Migrate old default to macOS-friendly default.
-		cfg.Tun.InterfaceName = "tun0"
+		cfg.Tun.InterfaceName = defaultTun.InterfaceName
 	}
 	if cfg.Tun.MTU <= 0 {
-		cfg.Tun.MTU = 8500
+		cfg.Tun.MTU = defaultTun.MTU
 	}
 	if cfg.Tun.IPv4 == "" {
-		cfg.Tun.IPv4 = "198.18.0.1"
+		cfg.Tun.IPv4 = defaultTun.IPv4
 	}
 	if cfg.Tun.IPv6 == "" {
-		cfg.Tun.IPv6 = "fc00::1"
+		cfg.Tun.IPv6 = defaultTun.IPv6
 	}
 	// v4 changes the default TUN posture to:
 	// - TUN disabled
@@ -234,38 +210,46 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 		cfg.Tun.BlockQUIC = false
 		cfg.Tun.MapDNSEnabled = true
 	}
+	if prevVersion < 5 && cfg.Tun.MapDNSAddress == "198.18.0.2" &&
+		cfg.Tun.MapDNSNetwork == "100.64.0.0" && cfg.Tun.MapDNSNetmask == "255.192.0.0" {
+		cfg.Tun.MapDNSNetwork = defaultTun.MapDNSNetwork
+		cfg.Tun.MapDNSNetmask = defaultTun.MapDNSNetmask
+	}
+	if prevVersion < 5 && goos == "windows" && !cfg.Tun.Enabled && !cfg.Tun.BlockQUIC && cfg.Tun.MapDNSEnabled {
+		cfg.Tun.BlockQUIC = true
+	}
 	if cfg.Tun.SocksUDP == "" {
-		cfg.Tun.SocksUDP = "udp"
+		cfg.Tun.SocksUDP = defaultTun.SocksUDP
 	}
 	if cfg.Tun.SocksMark <= 0 {
-		cfg.Tun.SocksMark = 438
+		cfg.Tun.SocksMark = defaultTun.SocksMark
 	}
 	if cfg.Tun.RouteTable <= 0 {
-		cfg.Tun.RouteTable = 20
+		cfg.Tun.RouteTable = defaultTun.RouteTable
 	}
 	if cfg.Tun.LogLevel == "" {
-		cfg.Tun.LogLevel = "warn"
+		cfg.Tun.LogLevel = defaultTun.LogLevel
 	}
 	if cfg.Tun.MapDNSAddress == "" {
-		cfg.Tun.MapDNSAddress = "198.18.0.2"
+		cfg.Tun.MapDNSAddress = defaultTun.MapDNSAddress
 	}
 	if cfg.Tun.MapDNSPort <= 0 {
-		cfg.Tun.MapDNSPort = 53
+		cfg.Tun.MapDNSPort = defaultTun.MapDNSPort
 	}
 	if cfg.Tun.MapDNSNetwork == "" {
-		cfg.Tun.MapDNSNetwork = "100.64.0.0"
+		cfg.Tun.MapDNSNetwork = defaultTun.MapDNSNetwork
 	}
 	if cfg.Tun.MapDNSNetmask == "" {
-		cfg.Tun.MapDNSNetmask = "255.192.0.0"
+		cfg.Tun.MapDNSNetmask = defaultTun.MapDNSNetmask
 	}
 	if cfg.Tun.TaskStackSize <= 0 {
-		cfg.Tun.TaskStackSize = 86016
+		cfg.Tun.TaskStackSize = defaultTun.TaskStackSize
 	}
 	if cfg.Tun.TCPBufferSize <= 0 {
-		cfg.Tun.TCPBufferSize = 65536
+		cfg.Tun.TCPBufferSize = defaultTun.TCPBufferSize
 	}
 	if cfg.Tun.ConnectTimeout <= 0 {
-		cfg.Tun.ConnectTimeout = 10000
+		cfg.Tun.ConnectTimeout = defaultTun.ConnectTimeout
 	}
 	if cfg.Core.LocalPort <= 0 {
 		cfg.Core.LocalPort = 1080
@@ -301,6 +285,35 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 	}
 	if cfg.ActiveNodeID == "" && len(cfg.Nodes) > 0 {
 		cfg.ActiveNodeID = cfg.Nodes[0].ID
+	}
+}
+
+func defaultTunSettings(goos string) TunSettings {
+	interfaceName := "sudoku0"
+	if goos == "darwin" {
+		// HEV's docs use "tun0" on macOS/FreeBSD; using a Linux-ish name breaks route setup.
+		interfaceName = "tun0"
+	}
+	return TunSettings{
+		Enabled:        false,
+		InterfaceName:  interfaceName,
+		MTU:            8500,
+		IPv4:           "198.18.0.1",
+		IPv6:           "fc00::1",
+		BlockQUIC:      goos == "windows",
+		SocksUDP:       "udp",
+		SocksMark:      438,
+		RouteTable:     20,
+		LogLevel:       "warn",
+		MapDNSEnabled:  true,
+		MapDNSAddress:  "198.18.0.2",
+		MapDNSPort:     53,
+		MapDNSNetwork:  "198.18.0.0",
+		MapDNSNetmask:  "255.254.0.0",
+		TaskStackSize:  86016,
+		TCPBufferSize:  65536,
+		MaxSession:     0,
+		ConnectTimeout: 10000,
 	}
 }
 

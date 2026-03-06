@@ -53,25 +53,26 @@ type RoutingSettings struct {
 }
 
 type TunSettings struct {
-	Enabled        bool   `json:"enabled"`
-	InterfaceName  string `json:"interfaceName"`
-	MTU            int    `json:"mtu"`
-	IPv4           string `json:"ipv4"`
-	IPv6           string `json:"ipv6"`
-	BlockQUIC      bool   `json:"blockQuic"`
-	SocksUDP       string `json:"socksUdp"`
-	SocksMark      int    `json:"socksMark"`
-	RouteTable     int    `json:"routeTable"`
-	LogLevel       string `json:"logLevel"`
-	MapDNSEnabled  bool   `json:"mapDnsEnabled"`
-	MapDNSAddress  string `json:"mapDnsAddress"`
-	MapDNSPort     int    `json:"mapDnsPort"`
-	MapDNSNetwork  string `json:"mapDnsNetwork"`
-	MapDNSNetmask  string `json:"mapDnsNetmask"`
-	TaskStackSize  int    `json:"taskStackSize"`
-	TCPBufferSize  int    `json:"tcpBufferSize"`
-	MaxSession     int    `json:"maxSession"`
-	ConnectTimeout int    `json:"connectTimeout"`
+	Enabled          bool   `json:"enabled"`
+	InterfaceName    string `json:"interfaceName"`
+	MTU              int    `json:"mtu"`
+	IPv4             string `json:"ipv4"`
+	IPv6             string `json:"ipv6"`
+	BlockQUIC        bool   `json:"blockQuic"`
+	SocksUDP         string `json:"socksUdp"`
+	SocksMark        int    `json:"socksMark"`
+	RouteTable       int    `json:"routeTable"`
+	LogLevel         string `json:"logLevel"`
+	MapDNSEnabled    bool   `json:"mapDnsEnabled"`
+	MapDNSAddress    string `json:"mapDnsAddress"`
+	MapDNSPort       int    `json:"mapDnsPort"`
+	MapDNSNetwork    string `json:"mapDnsNetwork"`
+	MapDNSNetmask    string `json:"mapDnsNetmask"`
+	TaskStackSize    int    `json:"taskStackSize"`
+	TCPBufferSize    int    `json:"tcpBufferSize"`
+	MaxSession       int    `json:"maxSession"`
+	ConnectTimeout   int    `json:"connectTimeout"`
+	MapDNSLocalProxy bool   `json:"-"`
 }
 
 type CoreSettings struct {

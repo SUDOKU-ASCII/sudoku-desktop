@@ -100,6 +100,7 @@ const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
 const loadReady = ref(false)
 const isMacLike = /Mac|Darwin/i.test(navigator.userAgent)
+const isWindowsLike = /Windows/i.test(navigator.userAgent)
 
 const tunAdminModalOpen = ref(false)
 const tunAdminPassword = ref('')
@@ -132,32 +133,34 @@ const emptyNode = (): NodeConfig => ({
   enabled: true,
 })
 
+const defaultTunConfig = (macLike: boolean, windowsLike: boolean) => ({
+  enabled: false,
+  interfaceName: macLike ? 'tun0' : 'sudoku0',
+  mtu: 8500,
+  ipv4: '198.18.0.1',
+  ipv6: 'fc00::1',
+  blockQuic: windowsLike,
+  socksUdp: 'udp',
+  socksMark: 438,
+  routeTable: 20,
+  logLevel: 'warn',
+  mapDnsEnabled: true,
+  mapDnsAddress: '198.18.0.2',
+  mapDnsPort: 53,
+  mapDnsNetwork: '198.18.0.0',
+  mapDnsNetmask: '255.254.0.0',
+  taskStackSize: 86016,
+  tcpBufferSize: 65536,
+  maxSession: 0,
+  connectTimeout: 10000,
+})
+
 const config = reactive<AppConfig>({
-  version: 4,
+  version: 5,
   activeNodeId: '',
   nodes: [],
   routing: { proxyMode: 'pac', ruleUrls: [], customRulesEnabled: false, customRules: '' },
-  tun: {
-    enabled: false,
-    interfaceName: 'sudoku0',
-    mtu: 8500,
-    ipv4: '198.18.0.1',
-    ipv6: 'fc00::1',
-    blockQuic: false,
-    socksUdp: 'udp',
-    socksMark: 438,
-    routeTable: 20,
-    logLevel: 'warn',
-    mapDnsEnabled: true,
-    mapDnsAddress: '198.18.0.2',
-    mapDnsPort: 53,
-    mapDnsNetwork: '100.64.0.0',
-    mapDnsNetmask: '255.192.0.0',
-    taskStackSize: 86016,
-    tcpBufferSize: 65536,
-    maxSession: 0,
-    connectTimeout: 10000,
-  },
+  tun: defaultTunConfig(isMacLike, isWindowsLike),
   core: {
     sudokuBinary: '',
     hevBinary: '',
@@ -991,27 +994,8 @@ const validateCustomRules = async () => {
 
 const resetTunFactory = () => {
   const macLike = /Mac|Darwin/i.test(navigator.userAgent)
-  Object.assign(config.tun, {
-    enabled: false,
-    interfaceName: macLike ? 'tun0' : 'sudoku0',
-    mtu: 8500,
-    ipv4: '198.18.0.1',
-    ipv6: 'fc00::1',
-    blockQuic: false,
-    socksUdp: 'udp',
-    socksMark: 438,
-    routeTable: 20,
-    logLevel: 'warn',
-    mapDnsEnabled: true,
-    mapDnsAddress: '198.18.0.2',
-    mapDnsPort: 53,
-    mapDnsNetwork: '100.64.0.0',
-    mapDnsNetmask: '255.192.0.0',
-    taskStackSize: 86016,
-    tcpBufferSize: 65536,
-    maxSession: 0,
-    connectTimeout: 10000,
-  })
+  const windowsLike = /Windows/i.test(navigator.userAgent)
+  Object.assign(config.tun, defaultTunConfig(macLike, windowsLike))
   flash(t('tunRestoredDefaults'))
 }
 

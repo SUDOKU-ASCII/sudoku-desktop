@@ -25,6 +25,7 @@ type routeContext struct {
 	DNSServers            []string
 	DNSWasAutomatic       bool
 	DNSOverrideAddress    string
+	DNSProxyRedirectPort  int
 	DarwinDNSSnapshots    []darwinDNSSnapshot
 	PFAnchor              string
 	LinuxOutboundSrcIP    string
@@ -122,6 +123,20 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 	// Optional: switch system DNS to HEV MapDNS while TUN is active (FakeIP mode).
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
 		dnsAddr := strings.TrimSpace(tun.MapDNSAddress)
+		ctx.DNSOverrideAddress = dnsAddr
+		if tun.MapDNSLocalProxy {
+			ctx.DNSProxyRedirectPort = localDNSProxyRedirectPort(dnsAddr)
+			if ctx.DNSProxyRedirectPort > 0 {
+				if !hasIPTables {
+					return nil, errors.New("iptables required for linux local dns proxy redirect")
+				}
+				redirectPort := strconv.Itoa(ctx.DNSProxyRedirectPort)
+				cmdlines = append(cmdlines,
+					"iptables -t nat -C OUTPUT -d 127.0.0.1/32 -p udp --dport 53 -j REDIRECT --to-ports "+redirectPort+" >/dev/null 2>&1 || iptables -t nat -I OUTPUT 1 -d 127.0.0.1/32 -p udp --dport 53 -j REDIRECT --to-ports "+redirectPort,
+					"iptables -t nat -C OUTPUT -d 127.0.0.1/32 -p tcp --dport 53 -j REDIRECT --to-ports "+redirectPort+" >/dev/null 2>&1 || iptables -t nat -I OUTPUT 1 -d 127.0.0.1/32 -p tcp --dport 53 -j REDIRECT --to-ports "+redirectPort,
+				)
+			}
+		}
 		if _, err := exec.LookPath("resolvectl"); err == nil {
 			ctx.LinuxDNSMode = "resolvectl"
 			cmdlines = append(cmdlines,
@@ -218,7 +233,6 @@ func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) 
 			"ip6tables -D OUTPUT -p udp --dport 443 -j DROP >/dev/null 2>&1 || true",
 		)
 	}
-
 	// Restore DNS (FakeIP mode).
 	if ctx != nil && ctx.LinuxDNSMode == "resolvectl" {
 		cmdlines = append(cmdlines,
@@ -242,6 +256,13 @@ func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) 
 				"if [ -f "+shellQuote(ctx.LinuxResolvConfBackup)+" ]; then cp -f "+shellQuote(ctx.LinuxResolvConfBackup)+" /etc/resolv.conf >/dev/null 2>&1 || true; rm -f "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true; fi",
 			)
 		}
+	}
+	if ctx != nil && ctx.DNSProxyRedirectPort > 0 {
+		redirectPort := strconv.Itoa(ctx.DNSProxyRedirectPort)
+		cmdlines = append(cmdlines,
+			"iptables -t nat -D OUTPUT -d 127.0.0.1/32 -p udp --dport 53 -j REDIRECT --to-ports "+redirectPort+" >/dev/null 2>&1 || true",
+			"iptables -t nat -D OUTPUT -d 127.0.0.1/32 -p tcp --dport 53 -j REDIRECT --to-ports "+redirectPort+" >/dev/null 2>&1 || true",
+		)
 	}
 	cmdlines = append(cmdlines,
 		shellJoin("ip", "rule", "del", "fwmark", strconv.Itoa(tun.SocksMark), "lookup", "main", "pref", "10")+" || true",
@@ -320,6 +341,9 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		if svc, derr := darwinNetworkServiceForDevice(ctx.DefaultInterface); derr == nil && strings.TrimSpace(svc) != "" {
 			ctx.DNSService = svc
 			ctx.DNSOverrideAddress = strings.TrimSpace(tun.MapDNSAddress)
+			if tun.MapDNSLocalProxy {
+				ctx.DNSProxyRedirectPort = localDNSProxyRedirectPort(ctx.DNSOverrideAddress)
+			}
 			prev, wasAuto, gerr := darwinGetDNSServers(svc)
 			if gerr == nil {
 				ctx.DNSServers = prev
@@ -335,9 +359,9 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 
 	pfSetCmd := ""
-	if runtime.GOOS == "darwin" && (tun.BlockQUIC || darwinDNSProxyPFPort(tun) > 0) {
+	if runtime.GOOS == "darwin" && (tun.BlockQUIC || ctx.DNSProxyRedirectPort > 0) {
 		ctx.PFAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
-		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, tun.BlockQUIC, darwinDNSProxyPFPort(tun))
+		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, tun.BlockQUIC, ctx.DNSProxyRedirectPort)
 	}
 	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
 		cmds := make([]string, 0, 9)
@@ -681,17 +705,6 @@ func teardownRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string))
 	return nil
 }
 
-func darwinDNSProxyPFPort(tun TunSettings) int {
-	if strings.TrimSpace(tun.MapDNSAddress) != localLoopbackIPv4 {
-		return 0
-	}
-	port := localDNSProxyListenPort()
-	if port == 53 {
-		return 0
-	}
-	return port
-}
-
 func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
 	idx, alias, err := windowsResolveTunInterfaceIndex(tun, 10*time.Second)
 	if err != nil {
@@ -719,6 +732,7 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 
 	dnsBackupName := ""
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
+		ctx.DNSOverrideAddress = strings.TrimSpace(tun.MapDNSAddress)
 		// Use PID to avoid collisions (os.Getuid is not meaningful on Windows).
 		dnsBackupName = fmt.Sprintf("sudoku4x4-dns-%d.json", os.Getpid())
 		ctx.WindowsDNSBackup = dnsBackupName

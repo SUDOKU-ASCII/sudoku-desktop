@@ -34,19 +34,29 @@ func (b *Backend) prepareTunDNSRuntime(ctx context.Context, cfg *AppConfig, loca
 		upstreamAddr:     upstreamAddr,
 	}
 
-	if runtime.GOOS != "darwin" || strings.ToLower(strings.TrimSpace(cfg.Routing.ProxyMode)) != "pac" {
+	if strings.ToLower(strings.TrimSpace(cfg.Routing.ProxyMode)) != "pac" {
+		return out, nil
+	}
+	switch runtime.GOOS {
+	case "darwin", "windows":
+	case "linux":
+		if localDNSProxyRedirectPort(localLoopbackIPv4) > 0 && !linuxHasCommand("iptables") {
+			b.addLog("warn", "dns", "split DNS skipped: linux iptables not found for localhost:53 redirect")
+			return out, nil
+		}
+	default:
 		return out, nil
 	}
 
 	directDialer, err := b.newTunDNSDirectDialer()
 	if err != nil {
-		b.addLog("warn", "dns", fmt.Sprintf("split DNS skipped: outbound bypass unavailable: %v", err))
+		b.addLog("warn", "dns", fmt.Sprintf("%s split DNS skipped: outbound bypass unavailable: %v", runtime.GOOS, err))
 		return out, nil
 	}
 
 	cnRules := b.loadTunCNRules(ctx, cfg, localPort, directDialer)
 	if cnRules == nil {
-		b.addLog("warn", "dns", "split DNS skipped: PAC direct domain rules unavailable")
+		b.addLog("warn", "dns", fmt.Sprintf("%s split DNS skipped: PAC direct domain rules unavailable", runtime.GOOS))
 		return out, nil
 	}
 
@@ -60,13 +70,14 @@ func (b *Backend) prepareTunDNSRuntime(ctx context.Context, cfg *AppConfig, loca
 		},
 	})
 	if err := proxy.Start(); err != nil {
-		return nil, err
+		b.addLog("warn", "dns", fmt.Sprintf("%s split DNS skipped: local dns proxy unavailable: %v", runtime.GOOS, err))
+		return out, nil
 	}
 
 	out.proxy = proxy
 	out.systemDNSAddress = localLoopbackIPv4
 	out.healthAddr = net.JoinHostPort(localLoopbackIPv4, "53")
-	b.addLog("info", "dns", fmt.Sprintf("darwin split DNS enabled: CN domains direct, others via HEV MapDNS %s", upstreamAddr))
+	b.addLog("info", "dns", fmt.Sprintf("%s split DNS enabled: CN domains direct, others via HEV MapDNS %s", runtime.GOOS, upstreamAddr))
 	return out, nil
 }
 

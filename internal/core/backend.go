@@ -697,6 +697,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			if strings.TrimSpace(dnsRuntime.systemDNSAddress) != "" {
 				tunCfg.MapDNSAddress = dnsRuntime.systemDNSAddress
 			}
+			tunCfg.MapDNSLocalProxy = true
 		}
 
 		mapDNSAddr := ""
