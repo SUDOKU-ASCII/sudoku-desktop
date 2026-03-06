@@ -11,26 +11,45 @@ permissions:
   id-token: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      is_rc: ${{ steps.matrix.outputs.is_rc }}
+    steps:
+      - name: Prepare matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          targets = [
+              {"runner": "macos-latest", "platform": "darwin/amd64", "artifact": "darwin-amd64"},
+              {"runner": "macos-latest", "platform": "darwin/arm64", "artifact": "darwin-arm64"},
+              {"runner": "windows-latest", "platform": "windows/amd64", "artifact": "windows-amd64"},
+              {"runner": "ubuntu-24.04", "platform": "linux/amd64", "artifact": "linux-amd64"},
+              {"runner": "ubuntu-24.04", "platform": "linux/arm64", "artifact": "linux-arm64"},
+          ]
+
+          ref_name = os.environ["GITHUB_REF_NAME"]
+          is_rc = "rc" in ref_name
+          if is_rc:
+              skipped = {"darwin/amd64", "linux/arm64"}
+              targets = [target for target in targets if target["platform"] not in skipped]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"is_rc={'true' if is_rc else 'false'}\n")
+              fh.write("matrix=" + json.dumps({"include": targets}, separators=(",", ":")) + "\n")
+          PY
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-latest
-            platform: darwin/amd64
-            artifact: darwin-amd64
-          - runner: macos-latest
-            platform: darwin/arm64
-            artifact: darwin-arm64
-          - runner: windows-latest
-            platform: windows/amd64
-            artifact: windows-amd64
-          - runner: ubuntu-24.04
-            platform: linux/amd64
-            artifact: linux-amd64
-          - runner: ubuntu-24.04
-            platform: linux/arm64
-            artifact: linux-arm64
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     runs-on: ${{ matrix.runner }}
 
@@ -247,7 +266,9 @@ jobs:
           path: dist/*
 
   release:
-    needs: build
+    needs:
+      - prepare
+      - build
     runs-on: ubuntu-latest
     env:
       KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -330,4 +351,4 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: false
-          prerelease: ${{ contains(github.ref_name, 'rc') }}
+          prerelease: ${{ needs.prepare.outputs.is_rc == 'true' }}

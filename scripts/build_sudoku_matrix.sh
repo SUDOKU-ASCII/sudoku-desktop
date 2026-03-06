@@ -14,6 +14,20 @@ TARGETS=(
   "windows/amd64"
 )
 
+if [[ "${RELEASE_TAG:-}" == *rc* ]]; then
+  filtered=()
+  for target in "${TARGETS[@]}"; do
+    case "$target" in
+      darwin/amd64|linux/arm64)
+        ;;
+      *)
+        filtered+=("$target")
+        ;;
+    esac
+  done
+  TARGETS=("${filtered[@]}")
+fi
+
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
