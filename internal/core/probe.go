@@ -20,6 +20,7 @@ import (
 )
 
 func buildProtocolConfig(node NodeConfig, target string) (*sudokuapis.ProtocolConfig, error) {
+	seedKey := tableSeedKey(node.Key)
 	cfg := sudokuapis.DefaultConfig()
 	cfg.ServerAddress = strings.TrimSpace(node.ServerAddress)
 	cfg.TargetAddress = strings.TrimSpace(target)
@@ -56,7 +57,7 @@ func buildProtocolConfig(node NodeConfig, target string) (*sudokuapis.ProtocolCo
 	if len(node.CustomTables) > 0 {
 		tables := make([]*sudokutable.Table, 0, len(node.CustomTables))
 		for _, layout := range node.CustomTables {
-			table, err := sudokutable.NewTableWithCustom(node.Key, ascii, layout)
+			table, err := sudokutable.NewTableWithCustom(seedKey, ascii, layout)
 			if err != nil {
 				return nil, err
 			}
@@ -64,13 +65,13 @@ func buildProtocolConfig(node NodeConfig, target string) (*sudokuapis.ProtocolCo
 		}
 		cfg.Tables = tables
 	} else if strings.TrimSpace(node.CustomTable) != "" {
-		table, err := sudokutable.NewTableWithCustom(node.Key, ascii, strings.TrimSpace(node.CustomTable))
+		table, err := sudokutable.NewTableWithCustom(seedKey, ascii, strings.TrimSpace(node.CustomTable))
 		if err != nil {
 			return nil, err
 		}
 		cfg.Table = table
 	} else {
-		table := sudokutable.NewTable(node.Key, ascii)
+		table := sudokutable.NewTable(seedKey, ascii)
 		if table == nil {
 			return nil, fmt.Errorf("build table failed")
 		}
