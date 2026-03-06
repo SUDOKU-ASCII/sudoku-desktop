@@ -3,9 +3,9 @@ module github.com/SUDOKU-ASCII/sudoku-desktop
 go 1.26.0
 
 require (
-	github.com/saba-futai/sudoku v0.3.0
+	github.com/saba-futai/sudoku v0.3.2
 	github.com/shirou/gopsutil/v4 v4.26.2
-	golang.org/x/net v0.49.0
+	golang.org/x/net v0.51.0
 	golang.org/x/sys v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 )

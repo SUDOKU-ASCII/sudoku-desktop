@@ -38,16 +38,13 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 		var inner error
 		if err := c.Control(func(fd uintptr) {
 			fdInt := int(fd)
-			// Bind source IP best-effort (no privileges required) to escape TUN policy routing.
 			if src4 != nil && !strings.HasSuffix(network, "6") {
-				sa := &unix.SockaddrInet4{Addr: *src4}
-				if berr := unix.Bind(fdInt, sa); berr != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4}); berr != nil {
 					inner = berr
 					return
 				}
 			} else if src6 != nil {
-				sa := &unix.SockaddrInet6{Addr: *src6}
-				if berr := unix.Bind(fdInt, sa); berr != nil {
+				if berr := unix.Bind(fdInt, &unix.SockaddrInet6{Addr: *src6}); berr != nil {
 					inner = berr
 					return
 				}
@@ -55,7 +52,6 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 
 			if mark > 0 {
 				merr := unix.SetsockoptInt(fdInt, unix.SOL_SOCKET, unix.SO_MARK, mark)
-				// SO_MARK requires CAP_NET_ADMIN. Ignore EPERM/EACCES when unprivileged.
 				if merr == unix.EPERM || merr == unix.EACCES {
 					merr = nil
 				}

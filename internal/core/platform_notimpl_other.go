@@ -5,7 +5,6 @@ package core
 import (
 	"fmt"
 	"runtime"
-	"syscall"
 )
 
 func setLaunchAtLogin(enabled bool) error {
@@ -15,8 +14,4 @@ func setLaunchAtLogin(enabled bool) error {
 
 func platformApplySystemProxy(_ systemProxyConfig) (func() error, error) {
 	return nil, nil
-}
-
-func platformOutboundBypassControl(_ outboundBypassConfig) func(network, address string, c syscall.RawConn) error {
-	return nil
 }

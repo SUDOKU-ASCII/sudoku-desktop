@@ -10,8 +10,6 @@ import (
 )
 
 const (
-	// https://learn.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
-	// https://learn.microsoft.com/en-us/windows/win32/winsock/ipproto-ipv6-socket-options
 	winIPUnicastIf   = 31
 	winIPV6UnicastIf = 31
 )
@@ -45,7 +43,6 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 }
 
 func winBind4(handle syscall.Handle, ifaceIdx int) error {
-	// IP_UNICAST_IF expects the interface index in network byte order (big-endian).
 	var bytes [4]byte
 	binary.BigEndian.PutUint32(bytes[:], uint32(ifaceIdx))
 	idx := *(*uint32)(unsafe.Pointer(&bytes[0]))
@@ -53,6 +50,5 @@ func winBind4(handle syscall.Handle, ifaceIdx int) error {
 }
 
 func winBind6(handle syscall.Handle, ifaceIdx int) error {
-	// IPV6_UNICAST_IF expects host byte order.
 	return syscall.SetsockoptInt(handle, syscall.IPPROTO_IPV6, winIPV6UnicastIf, ifaceIdx)
 }

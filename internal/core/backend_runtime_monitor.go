@@ -314,7 +314,6 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 	}
 	prevIf := strings.TrimSpace(routeCtx.DefaultInterface)
 	prevGW := strings.TrimSpace(routeCtx.DefaultGateway)
-	prevGW6 := strings.TrimSpace(routeCtx.DefaultGatewayV6)
 	tunCfg := b.cfg.Tun
 	if strings.TrimSpace(b.runningTunInterface) != "" {
 		tunCfg.InterfaceName = strings.TrimSpace(b.runningTunInterface)
@@ -331,10 +330,6 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 
 	newIf := strings.TrimSpace(info.Interface4)
 	newGW := strings.TrimSpace(info.Router4)
-	newGW6 := ""
-	if darwinTunIPv6Enabled() {
-		newGW6 = strings.TrimSpace(info.Router6)
-	}
 
 	// scutil can report utun as the "primary" interface while TUN is active.
 	// Always prefer a physical interface for repair actions.
@@ -361,14 +356,11 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 	}
 
 	changed := prevIf != newIf || prevGW != newGW
-	if !changed && darwinTunIPv6Enabled() && prevGW6 != "" && newGW6 != "" && prevGW6 != newGW6 {
-		changed = true
-	}
 	if !changed {
 		return
 	}
 
-	sig := strings.Join([]string{newIf, newGW, newGW6}, "|")
+	sig := strings.Join([]string{newIf, newGW}, "|")
 	b.mu.Lock()
 	lastSig := b.darwinNetLastSig
 	lastErr := b.darwinNetLastErr
@@ -381,10 +373,10 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 	b.darwinNetRepairing = true
 	b.mu.Unlock()
 
-	go b.repairDarwinTunNetwork(routeCtx, tunCfg, prevIf, prevGW, prevGW6, newIf, newGW, newGW6, sig)
+	go b.repairDarwinTunNetwork(routeCtx, tunCfg, prevIf, prevGW, newIf, newGW, sig)
 }
 
-func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSettings, prevIf string, prevGW string, prevGW6 string, newIf string, newGW string, newGW6 string, sig string) {
+func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSettings, prevIf string, prevGW string, newIf string, newGW string, sig string) {
 	defer func() {
 		b.mu.Lock()
 		b.darwinNetRepairing = false
@@ -393,7 +385,6 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 
 	newIf = strings.TrimSpace(newIf)
 	newGW = strings.TrimSpace(newGW)
-	newGW6 = strings.TrimSpace(newGW6)
 	if newIf == "" || darwinIsTunLikeInterface(newIf) || newGW == "" {
 		return
 	}
@@ -415,8 +406,6 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 	dnsAddr := strings.TrimSpace(routeCtx.DNSOverrideAddress)
 	dnsServiceCurrent := strings.TrimSpace(routeCtx.DNSService)
 	pfAnchor := strings.TrimSpace(routeCtx.PFAnchor)
-	bypassV4 := strings.TrimSpace(routeCtx.BypassV4Path)
-	bypassV6 := strings.TrimSpace(routeCtx.BypassV6Path)
 	b.mu.Unlock()
 
 	b.addLog("warn", "tun", fmt.Sprintf("darwin network changed: %s/%s -> %s/%s; repairing TUN routes", prevIf, prevGW, newIf, newGW))
@@ -460,26 +449,13 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
 				shellJoin("route", "-n", "add", "default", "-interface", tunIf)+") || true",
 		)
-		if darwinTunIPv6Enabled() {
-			cmds = append(cmds, shellJoin("route", "-n", "change", "-inet6", "default", "-interface", tunIf)+" || true")
-		}
 	}
 	cmds = append(cmds,
 		"("+shellJoin("route", "-n", "add", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1 || "+
 			shellJoin("route", "-n", "change", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1) || true",
 	)
-	if darwinTunIPv6Enabled() && newGW6 != "" {
-		cmds = append(cmds,
-			"("+shellJoin("route", "-n", "add", "-inet6", "-ifscope", newIf, "default", newGW6)+" >/dev/null 2>&1 || "+
-				shellJoin("route", "-n", "change", "-inet6", "-ifscope", newIf, "default", newGW6)+" >/dev/null 2>&1) || true",
-		)
-	}
 	if pfAnchor != "" {
-		dnsProxyPort := 0
-		if dnsAddr == localDNSServerIPv4 {
-			dnsProxyPort = localDNSProxyListenPort()
-		}
-		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), newIf, newGW, newGW6, tunCfg.IPv4, bypassV4, bypassV6, tunCfg.BlockQUIC, dnsProxyPort)); pfCmd != "" {
+		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), tunCfg.BlockQUIC, darwinDNSProxyPFPort(tunCfg))); pfCmd != "" {
 			cmds = append(cmds, pfCmd+" || true")
 		}
 	}
@@ -519,9 +495,6 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 	// Update the in-memory route context so future stop/repair uses the new physical gateway/interface.
 	routeCtx.DefaultInterface = newIf
 	routeCtx.DefaultGateway = newGW
-	if darwinTunIPv6Enabled() && newGW6 != "" {
-		routeCtx.DefaultGatewayV6 = newGW6
-	}
 
 	if newDNSService != "" && dnsAddr != "" {
 		routeCtx.DNSOverrideAddress = dnsAddr

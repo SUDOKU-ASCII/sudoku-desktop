@@ -29,11 +29,10 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 		}
 	}
 
-	if name == "" {
-		if src4 == nil && src6 == nil {
-			return nil
-		}
+	if name == "" && src4 == nil && src6 == nil {
+		return nil
 	}
+
 	ifIndex := 0
 	if name != "" {
 		ifi, err := net.InterfaceByName(name)
@@ -61,8 +60,6 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 				}
 			}
 
-			// Prefer binding to the physical interface when available. This avoids "can't assign requested address"
-			// issues that can happen when binding a specific source IP on some macOS networks.
 			if ifIndex > 0 {
 				var errBound error
 				if isV6 {
@@ -76,7 +73,6 @@ func platformOutboundBypassControl(cfg outboundBypassConfig) func(network, addre
 				}
 			}
 
-			// Fallback: bind to the physical source IP when provided.
 			if !isV6 && src4 != nil {
 				if berr := unix.Bind(fdInt, &unix.SockaddrInet4{Addr: *src4}); berr != nil {
 					inner = berr

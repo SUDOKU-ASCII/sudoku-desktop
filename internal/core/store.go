@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const configVersion = 3
+const configVersion = 4
 
 type Store struct {
 	rootDir    string
@@ -131,12 +131,12 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 			MTU:            8500,
 			IPv4:           "198.18.0.1",
 			IPv6:           "fc00::1",
-			BlockQUIC:      true,
+			BlockQUIC:      false,
 			SocksUDP:       "udp",
 			SocksMark:      438,
 			RouteTable:     20,
 			LogLevel:       "warn",
-			MapDNSEnabled:  false,
+			MapDNSEnabled:  true,
 			MapDNSAddress:  "198.18.0.2",
 			MapDNSPort:     53,
 			MapDNSNetwork:  "100.64.0.0",
@@ -225,9 +225,14 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 	if cfg.Tun.IPv6 == "" {
 		cfg.Tun.IPv6 = "fc00::1"
 	}
-	// v3 introduced QUIC blocking; on macOS it's often necessary for stability, so default to enabled.
-	if runtime.GOOS == "darwin" && prevVersion < 3 && !cfg.Tun.BlockQUIC {
-		cfg.Tun.BlockQUIC = true
+	// v4 changes the default TUN posture to:
+	// - TUN disabled
+	// - QUIC blocking disabled
+	// - MapDNS enabled
+	// Only migrate when the old default tuple is still intact, so explicit user choices survive.
+	if prevVersion < 4 && !cfg.Tun.Enabled && cfg.Tun.BlockQUIC && !cfg.Tun.MapDNSEnabled {
+		cfg.Tun.BlockQUIC = false
+		cfg.Tun.MapDNSEnabled = true
 	}
 	if cfg.Tun.SocksUDP == "" {
 		cfg.Tun.SocksUDP = "udp"

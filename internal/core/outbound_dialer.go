@@ -29,8 +29,6 @@ func outboundBypassControl(cfg outboundBypassConfig) func(network, address strin
 		return nil
 	}
 	return func(network, address string, c syscall.RawConn) error {
-		// Never bind/mark loopback/localhost. The app uses internal loopback URLs and
-		// the DNS proxy should always remain reachable.
 		if strings.HasPrefix(network, "unix") {
 			return nil
 		}

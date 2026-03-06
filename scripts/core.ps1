@@ -77,19 +77,6 @@ function Patch-ReplaceFirstN([string]$Path, [string]$Needle, [string]$Replacemen
   Write-Text $Path $new
 }
 
-function Patch-InsertImport([string]$Path, [string]$ImportPath) {
-  $data = Read-Text $Path
-  if ($data.Contains($ImportPath)) { return }
-  $nl = Get-NewLine $data
-  $idx = $data.IndexOf("import (")
-  if ($idx -lt 0) { throw "patch failed: import block not found in $Path" }
-  $lineEnd = $data.IndexOf($nl, $idx)
-  if ($lineEnd -lt 0) { throw "patch failed: import line end not found in $Path" }
-  $insertPos = $lineEnd + $nl.Length
-  $ins = "`t`"$ImportPath`"$nl"
-  Write-Text $Path ($data.Insert($insertPos, $ins))
-}
-
 function Patch-GoDialTarget([string]$Path) {
   $data = Read-Text $Path
   $needle = "func dialTarget("
@@ -193,7 +180,7 @@ if ($What -eq "all" -or $What -eq "sudoku") {
   $sudokuRepo = $env:SUDOKU_REPO
   if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
   $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "main" }
+  if (-not $sudokuRef) { $sudokuRef = "v0.3.2" }
 
   $tmp = New-TempDir "sudoku-build-"
   $sudokuDir = Join-Path $tmp "sudoku"
@@ -233,16 +220,6 @@ if ($What -eq "all" -or $What -eq "sudoku") {
     $patchDir = Join-Path $root "scripts/sudoku_patches"
     if (Test-Path -LiteralPath $patchDir) {
       Copy-Item -Recurse -Force -Path (Join-Path $patchDir "*") -Destination $sudokuDir
-    }
-
-    # Patch core outbound dialing to bypass TUN self-loop.
-    Patch-ReplaceFirst (Join-Path $sudokuDir "internal/tunnel/dialer.go") 'rawRemote, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)' 'rawRemote, err := dnsutil.OutboundDialer(5*time.Second).Dial("tcp", serverAddr)'
-
-    # Patch HTTP mask dials to bypass TUN self-loop.
-    foreach ($rel in @("pkg/obfs/httpmask/tunnel_dial.go", "pkg/obfs/httpmask/tunnel_ws.go")) {
-      $p = Join-Path $sudokuDir $rel
-      Patch-ReplaceFirst $p "var d net.Dialer" "d := dnsutil.OutboundDialer(0)"
-      Patch-InsertImport $p "github.com/saba-futai/sudoku/pkg/dnsutil"
     }
 
     # Patch dialTarget() to wrap conns for traffic stats (direct/proxy).
