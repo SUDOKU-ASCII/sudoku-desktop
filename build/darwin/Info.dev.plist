@@ -13,9 +13,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.sudokuascii.sudoku4x4.dev</string>
     <key>CFBundleVersion</key>
-    <string>0.0.7-rc03-dev</string>
+    <string>0.0.7-dev</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.0.7-rc03-dev</string>
+    <string>0.0.7-dev</string>
     <key>CFBundleIconFile</key>
     <string>iconfile.icns</string>
     <key>LSMinimumSystemVersion</key>
