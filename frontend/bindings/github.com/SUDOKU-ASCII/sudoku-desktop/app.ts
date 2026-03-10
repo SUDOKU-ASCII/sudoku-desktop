@@ -132,6 +132,10 @@ export function SetActiveNode(nodeID: string): $CancellablePromise<void> {
     return $Call.ByID(1112636605, nodeID);
 }
 
+export function ShutdownNow(): $CancellablePromise<void> {
+    return $Call.ByID(1694833773);
+}
+
 export function SortNodesByLatency(): $CancellablePromise<void> {
     return $Call.ByID(1730788671);
 }

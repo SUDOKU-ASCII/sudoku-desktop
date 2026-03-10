@@ -26,6 +26,10 @@ const props = defineProps<{
             <option value="auto">{{ props.t('auto') }}</option>
             <option value="light">{{ props.t('light') }}</option>
             <option value="dark">{{ props.t('dark') }}</option>
+            <option value="qingshanlan">{{ props.t('themeQingshanlan') }}</option>
+            <option value="langhualv">{{ props.t('themeLanghualv') }}</option>
+            <option value="fengxinzi">{{ props.t('themeFengxinzi') }}</option>
+            <option value="manjianghong">{{ props.t('themeManjianghong') }}</option>
           </select>
         </label>
       </div>

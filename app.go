@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"strings"
+	"sync"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -11,7 +12,8 @@ import (
 
 // App struct
 type App struct {
-	backend *core.Backend
+	backend      *core.Backend
+	shutdownOnce sync.Once
 
 	runtimeFS   fs.FS
 	runtimeRoot string
@@ -48,10 +50,20 @@ func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) 
 }
 
 func (a *App) ServiceShutdown() error {
-	if a.backend != nil {
-		a.backend.Shutdown()
-	}
+	a.shutdownBackend()
 	return nil
+}
+
+func (a *App) shutdownBackend() {
+	a.shutdownOnce.Do(func() {
+		if a.backend != nil {
+			a.backend.Shutdown()
+		}
+	})
+}
+
+func (a *App) ShutdownNow() {
+	a.shutdownBackend()
 }
 
 func (a *App) trayIsRunning() bool {

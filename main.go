@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
@@ -41,7 +42,7 @@ func main() {
 	}
 
 	appService := NewApp(bundledRuntime, "runtime/bin")
-	quitting := false
+	var quitting atomic.Bool
 
 	app := application.New(application.Options{
 		Name:        "sudoku4x4",
@@ -63,7 +64,20 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
+		ShouldQuit: func() bool {
+			quitting.Store(true)
+			appService.ShutdownNow()
+			return true
+		},
 	})
+
+	requestQuit := func() {
+		if !quitting.CompareAndSwap(false, true) {
+			return
+		}
+		appService.ShutdownNow()
+		app.Quit()
+	}
 
 	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:                   "main",
@@ -80,6 +94,12 @@ func main() {
 			Icon: trayIcon,
 		},
 		KeyBindings: map[string]func(window application.Window){
+			"cmd+q": func(window application.Window) {
+				requestQuit()
+			},
+			"ctrl+q": func(window application.Window) {
+				requestQuit()
+			},
 			"cmd+w": func(window application.Window) {
 				if runtime.GOOS == "darwin" {
 					window.Hide()
@@ -95,7 +115,7 @@ func main() {
 
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			if quitting {
+			if quitting.Load() {
 				return
 			}
 			event.Cancel()
@@ -174,8 +194,7 @@ func main() {
 		refreshTrayMenu()
 	})
 	quitItem.OnClick(func(_ *application.Context) {
-		quitting = true
-		app.Quit()
+		requestQuit()
 	})
 
 	tray.SetMenu(trayMenu)

@@ -95,6 +95,7 @@ const toggleSidebar = () => {
 const busy = ref(false)
 const proxyOpBusy = ref(false)
 type ProxyOpState = 'idle' | 'starting' | 'stopping' | 'restarting'
+type ResolvedThemeName = 'light' | 'dark' | 'qingshanlan' | 'langhualv' | 'fengxinzi' | 'manjianghong'
 const proxyOpState = ref<ProxyOpState>('idle')
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
@@ -247,16 +248,24 @@ const applyLocaleFromConfig = () => {
   else locale.value = 'en'
 }
 
-const resolveThemeMode = (): 'light' | 'dark' => {
-  if (config.ui.theme === 'dark') return 'dark'
-  if (config.ui.theme === 'light') return 'light'
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+const resolveThemeName = (): ResolvedThemeName => {
+  switch (config.ui.theme) {
+    case 'light':
+    case 'dark':
+    case 'qingshanlan':
+    case 'langhualv':
+    case 'fengxinzi':
+    case 'manjianghong':
+      return config.ui.theme
+    default:
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
 }
 
 const applyDocumentTheme = () => {
-  const mode = resolveThemeMode()
-  document.documentElement.setAttribute('data-app-theme', mode)
-  document.body?.setAttribute('data-app-theme', mode)
+  const theme = resolveThemeName()
+  document.documentElement.setAttribute('data-app-theme', theme)
+  document.body?.setAttribute('data-app-theme', theme)
 }
 
 const flash = (message: string, type: 'ok' | 'error' = 'ok') => {

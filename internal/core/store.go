@@ -269,7 +269,7 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	if cfg.UI.Language == "" {
 		cfg.UI.Language = "auto"
 	}
-	if cfg.UI.Theme == "" {
+	if cfg.UI.Theme == "" || !isValidUITheme(cfg.UI.Theme) {
 		cfg.UI.Theme = "auto"
 	}
 	for i := range cfg.PortForwards {
@@ -285,6 +285,15 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	}
 	if cfg.ActiveNodeID == "" && len(cfg.Nodes) > 0 {
 		cfg.ActiveNodeID = cfg.Nodes[0].ID
+	}
+}
+
+func isValidUITheme(theme string) bool {
+	switch strings.ToLower(strings.TrimSpace(theme)) {
+	case "auto", "light", "dark", "qingshanlan", "langhualv", "fengxinzi", "manjianghong":
+		return true
+	default:
+		return false
 	}
 }
 

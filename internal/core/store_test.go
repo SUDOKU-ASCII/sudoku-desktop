@@ -106,3 +106,24 @@ func TestNormalizeConfigKeepsExplicitTunFlagsAndCustomFakeIPRange(t *testing.T) 
 		t.Fatalf("expected custom FakeIP range to be preserved, got %s/%s", cfg.Tun.MapDNSNetwork, cfg.Tun.MapDNSNetmask)
 	}
 }
+
+func TestNormalizeConfigKeepsKnownThemeAndResetsUnknownTheme(t *testing.T) {
+	cfg := &AppConfig{
+		UI: UISettings{
+			Theme: "qingshanlan",
+		},
+	}
+
+	normalizeConfigForOS(cfg, t.TempDir(), "darwin")
+
+	if cfg.UI.Theme != "qingshanlan" {
+		t.Fatalf("expected known theme to be preserved, got %q", cfg.UI.Theme)
+	}
+
+	cfg.UI.Theme = "unexpected-theme"
+	normalizeConfigForOS(cfg, t.TempDir(), "darwin")
+
+	if cfg.UI.Theme != "auto" {
+		t.Fatalf("expected unknown theme to reset to auto, got %q", cfg.UI.Theme)
+	}
+}
