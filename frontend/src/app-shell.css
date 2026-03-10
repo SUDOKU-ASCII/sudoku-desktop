@@ -1094,6 +1094,9 @@ textarea {
 
 .switch-control {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 24px;
   flex: 0 0 auto;
@@ -1111,6 +1114,8 @@ textarea {
 .switch-ui {
   position: absolute;
   inset: 0;
+  display: block;
+  box-sizing: border-box;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 84%, var(--line) 16%);
@@ -1121,13 +1126,15 @@ textarea {
 .switch-ui::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
+  top: 50%;
+  left: 1px;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
   border-radius: 50%;
   background: var(--surface);
   border: 1px solid var(--line);
+  transform: translateY(-50%);
   transition: transform 0.18s ease;
 }
 
@@ -1137,7 +1144,7 @@ textarea {
 }
 
 .switch-control input:checked + .switch-ui::after {
-  transform: translateX(16px);
+  transform: translate(18px, -50%);
 }
 
 .btn {
