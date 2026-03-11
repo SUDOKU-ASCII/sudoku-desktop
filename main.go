@@ -43,8 +43,34 @@ func main() {
 
 	appService := NewApp(bundledRuntime, "runtime/bin")
 	var quitting atomic.Bool
+	var app *application.App
+	var mainWindow application.Window
 
-	app := application.New(application.Options{
+	showExistingInstance := func() {
+		application.InvokeAsync(func() {
+			if app != nil {
+				app.Show()
+			}
+			if mainWindow != nil {
+				if mainWindow.IsMinimised() {
+					mainWindow.UnMinimise()
+				}
+				mainWindow.Restore()
+				mainWindow.Show().Focus()
+			}
+			if app != nil {
+				dialog := app.Dialog.Info().
+					SetTitle("Already Running").
+					SetMessage("4x4 sudoku is already running. Switched to the existing window.")
+				if mainWindow != nil {
+					dialog.AttachToWindow(mainWindow)
+				}
+				dialog.Show()
+			}
+		})
+	}
+
+	app = application.New(application.Options{
 		Name:        "sudoku4x4",
 		Description: "4x4 sudoku desktop client",
 		Icon:        trayIcon,
@@ -53,6 +79,13 @@ func main() {
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
+		},
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "com.sudokuascii.sudoku4x4",
+			ExitCode: 0,
+			OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
+				showExistingInstance()
+			},
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
@@ -79,7 +112,7 @@ func main() {
 		app.Quit()
 	}
 
-	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
+	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:                   "main",
 		Title:                  "4x4 sudoku",
 		Width:                  1160,

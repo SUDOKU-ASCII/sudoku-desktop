@@ -15,6 +15,8 @@ const svgRef = ref<SVGSVGElement | null>(null)
 const hoverIndex = ref<number | null>(null)
 
 const rawTotalSeries = computed(() => props.samples.map((s) => (s.txBps || 0) + (s.rxBps || 0)))
+const rawTxSeries = computed(() => props.samples.map((s) => s.txBps || 0))
+const rawRxSeries = computed(() => props.samples.map((s) => s.rxBps || 0))
 const rawDirectSeries = computed(() => props.samples.map((s) => s.directBps || 0))
 const rawProxySeries = computed(() => props.samples.map((s) => s.proxyBps || 0))
 
@@ -40,6 +42,8 @@ const proxySeries = computed(() => movingAverage(rawProxySeries.value, 3))
 
 const maxValue = computed(() => Math.max(...totalSeries.value, ...directSeries.value, ...proxySeries.value, 1))
 const peakRaw = computed(() => Math.max(...rawTotalSeries.value, ...rawDirectSeries.value, ...rawProxySeries.value, 1))
+const peakTxRaw = computed(() => Math.max(...rawTxSeries.value, 0))
+const peakRxRaw = computed(() => Math.max(...rawRxSeries.value, 0))
 
 const toPoints = (arr: number[], max: number): Array<{ x: number; y: number }> => {
   if (arr.length === 0) return []
@@ -142,7 +146,7 @@ const hoverProxyPoint = computed(() => {
 
 const formatRate = (value: number): string => {
   if (!value) return '0 B/s'
-  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
   let v = value
   let idx = 0
   while (v >= 1024 && idx < units.length - 1) {
@@ -162,6 +166,18 @@ const hoverTotalRate = computed(() => {
   const item = hoverSample.value
   if (!item) return '0 B/s'
   return formatRate((item.txBps || 0) + (item.rxBps || 0))
+})
+
+const hoverTxRate = computed(() => {
+  const item = hoverSample.value
+  if (!item) return '0 B/s'
+  return formatRate(item.txBps || 0)
+})
+
+const hoverRxRate = computed(() => {
+  const item = hoverSample.value
+  if (!item) return '0 B/s'
+  return formatRate(item.rxBps || 0)
 })
 
 const hoverDirectRate = computed(() => {
@@ -220,14 +236,18 @@ const hoverProxyRate = computed(() => {
     </svg>
 
     <div class="chart-meta">
-      <span>Peak: {{ formatRate(peakRaw) }}</span>
+      <span>Peak down: {{ formatRate(peakRxRaw) }}</span>
+      <span>Peak up: {{ formatRate(peakTxRaw) }}</span>
+      <span>Peak total: {{ formatRate(peakRaw) }}</span>
       <span>{{ samples.length }} samples</span>
     </div>
 
     <div class="chart-hover">
       <template v-if="hoverSample">
         <span>{{ formatTime(hoverSample.at) }}</span>
-        <span>Total {{ hoverTotalRate }}</span>
+        <span>Download {{ hoverRxRate }}</span>
+        <span>Upload {{ hoverTxRate }}</span>
+        <span>Aggregate {{ hoverTotalRate }}</span>
         <span>Direct {{ hoverDirectRate }}</span>
         <span>Proxy {{ hoverProxyRate }}</span>
       </template>

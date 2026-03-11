@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -43,8 +44,14 @@ func terminateActiveConnection(network, source, destination string) error {
 
 	switch runtime.GOOS {
 	case "darwin":
-		// Kill PF state by source+destination host pair.
-		return runCmdWithTimeout(4*time.Second, "pfctl", "-k", src.Host, "-k", dst.Host)
+		// PF state termination requires root on macOS.
+		if os.Geteuid() == 0 {
+			return runCmdWithTimeout(4*time.Second, "pfctl", "-k", src.Host, "-k", dst.Host)
+		}
+		if darwinAdminHasPassword() {
+			return runCmdDarwinAdmin(nil, "pfctl", "-k", src.Host, "-k", dst.Host)
+		}
+		return ErrAdminRequired
 	case "linux":
 		if strings.TrimSpace(dst.Port) == "" {
 			return fmt.Errorf("destination port is required on linux: %s", destination)

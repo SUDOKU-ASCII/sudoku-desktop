@@ -118,6 +118,12 @@ func (b *Backend) parseRouteLineLocked(line string) {
 }
 
 func (b *Backend) parseCoreTrafficLineLocked(line string) {
+	if strings.TrimSpace(b.trafficCache.coreTrafficFile) != "" {
+		// When the sidecar stats file is available, prefer it as the single
+		// source of truth. Parsing the same cumulative counters from logs as
+		// well can create back-to-back samples with tiny dt and inflated B/s.
+		return
+	}
 	m := coreTrafficLineRegex.FindStringSubmatch(stripANSI(line))
 	if len(m) != 5 {
 		return

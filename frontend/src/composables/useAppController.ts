@@ -777,6 +777,20 @@ const closeConnection = async (id: string) => {
     state.connections = state.connections.filter((x) => x.id !== id)
     flash(t('connectionClosed'))
   } catch (e: any) {
+    if (isAdminRequiredError(e)) {
+      const ok = await ensureTunAdmin()
+      if (ok) {
+        try {
+          await backendApi.closeConnection(id)
+          state.connections = state.connections.filter((x) => x.id !== id)
+          flash(t('connectionClosed'))
+          return
+        } catch (retryErr: any) {
+          flash(retryErr?.message || t('closeConnectionFailed'), 'error')
+          return
+        }
+      }
+    }
     flash(e?.message || t('closeConnectionFailed'), 'error')
   } finally {
     connectionOpBusy.value = false
