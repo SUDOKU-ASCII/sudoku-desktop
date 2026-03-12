@@ -39,7 +39,6 @@ tasks:
         if [ -f build/appicon.png ]; then
           cp build/appicon.png "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/appicon.png"
         fi
-      - ./scripts/sign_macos_app.sh "{{.BIN_DIR}}/{{.APP_NAME}}.app"
       - rm -f "{{.OUTPUT | default (printf "%s/%s" .BIN_DIR .APP_NAME)}}"
 
   run:
