@@ -11,6 +11,7 @@ cd "$ROOT_DIR"
 
 APP_PATH="${1:-${APP_PATH:-build/bin/sudoku4x4.app}}"
 IDENTITY="${MACOS_SIGN_IDENTITY:-saba-futai}"
+SIGN_REQUIRED="${MACOS_SIGN_REQUIRED:-0}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "App bundle not found: $APP_PATH" >&2
@@ -23,9 +24,13 @@ if ! command -v codesign >/dev/null 2>&1; then
 fi
 
 if ! security find-identity -v -p codesigning 2>/dev/null | grep -Fq "$IDENTITY"; then
-  echo "Signing identity not found in keychain: $IDENTITY" >&2
-  echo "Install/import the certificate first, or override MACOS_SIGN_IDENTITY." >&2
-  exit 4
+  if [[ "$SIGN_REQUIRED" == "1" ]]; then
+    echo "Signing identity not found in keychain: $IDENTITY" >&2
+    echo "Install/import the certificate first, or override MACOS_SIGN_IDENTITY." >&2
+    exit 4
+  fi
+  echo "[warn] Signing identity not found in keychain: $IDENTITY; skipping macOS codesign." >&2
+  exit 0
 fi
 
 sign_target() {
