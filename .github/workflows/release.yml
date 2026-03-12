@@ -210,6 +210,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           APP_SRC_DIR="build/bin"
+          ./scripts/sign_macos_app.sh "${APP_SRC_DIR}/sudoku4x4.app"
           DMG_PATH="dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.dmg"
           create-dmg \
             --volname "sudoku4x4 ${{ github.ref_name }}" \

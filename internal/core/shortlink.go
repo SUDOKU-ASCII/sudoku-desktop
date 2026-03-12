@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	sudokukey "github.com/saba-futai/sudoku/pkg/crypto"
+	sudokukey "github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
 )
 
 type shortLinkPayload struct {

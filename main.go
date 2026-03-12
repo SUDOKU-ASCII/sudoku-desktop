@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
-	"github.com/saba-futai/sudoku/pkg/logx"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )

@@ -57,6 +57,9 @@ if [[ "$GOOS" == "darwin" ]]; then
   DEST_DIR="${APP_PATH}/Contents/Resources/runtime/bin/${PLATFORM_DIR}"
   mkdir -p "$DEST_DIR"
   cp -f "${SRC_DIR}/"* "$DEST_DIR/"
+  if [[ -x "${ROOT_DIR}/scripts/sign_macos_app.sh" ]]; then
+    "${ROOT_DIR}/scripts/sign_macos_app.sh" "$APP_PATH"
+  fi
   echo "[ok] Bundled runtime binaries -> ${DEST_DIR}"
   exit 0
 fi

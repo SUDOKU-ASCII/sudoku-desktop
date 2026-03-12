@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/saba-futai/sudoku/pkg/logx"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 )
 
 // This file is injected into the upstream sudoku core at build time.

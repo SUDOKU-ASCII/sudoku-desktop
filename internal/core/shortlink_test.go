@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	sudokuapis "github.com/saba-futai/sudoku/apis"
-	sudokukey "github.com/saba-futai/sudoku/pkg/crypto"
-	sudokutable "github.com/saba-futai/sudoku/pkg/obfs/sudoku"
+	sudokuapis "github.com/SUDOKU-ASCII/sudoku/apis"
+	sudokukey "github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
+	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
 func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {

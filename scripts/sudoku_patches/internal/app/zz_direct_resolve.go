@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saba-futai/sudoku/pkg/dnsutil"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
 var (

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	sudokuapis "github.com/saba-futai/sudoku/apis"
-	sudokutable "github.com/saba-futai/sudoku/pkg/obfs/sudoku"
+	sudokuapis "github.com/SUDOKU-ASCII/sudoku/apis"
+	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 	"golang.org/x/net/proxy"
 )
 
