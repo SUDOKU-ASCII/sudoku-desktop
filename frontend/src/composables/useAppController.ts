@@ -201,6 +201,14 @@ const state = reactive<RuntimeState>({
     interfaceFound: false,
     lastSampleUnixMillis: 0,
   },
+  kernel: {
+    version: '',
+    memoryBytes: 0,
+    latencyMs: -1,
+    latencyStatusCode: 0,
+    latencyCheckedAt: 0,
+    latencyError: '',
+  },
   latencies: [],
   connections: [],
   recentLogs: [],
@@ -340,6 +348,16 @@ const assignState = (next: RuntimeState) => {
   if (!Array.isArray(state.latencies)) state.latencies = []
   if (!Array.isArray(state.recentLogs)) state.recentLogs = []
   if (!Array.isArray(state.traffic?.recentBandwidth)) state.traffic.recentBandwidth = []
+  if (!state.kernel || typeof state.kernel !== 'object') {
+    state.kernel = {
+      version: '',
+      memoryBytes: 0,
+      latencyMs: -1,
+      latencyStatusCode: 0,
+      latencyCheckedAt: 0,
+      latencyError: '',
+    }
+  }
 }
 
 const sortedNodes = computed(() => {

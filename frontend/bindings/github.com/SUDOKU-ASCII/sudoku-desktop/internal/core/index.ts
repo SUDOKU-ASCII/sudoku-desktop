@@ -8,6 +8,7 @@ export {
     CoreSettings,
     HTTPMaskSettings,
     IPDetectResult,
+    KernelState,
     LANProxyInfo,
     LatencyResult,
     LogEntry,

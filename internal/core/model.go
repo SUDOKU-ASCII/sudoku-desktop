@@ -163,6 +163,15 @@ type TrafficState struct {
 	LastSampleUnixMillis int64             `json:"lastSampleUnixMillis"`
 }
 
+type KernelState struct {
+	Version           string `json:"version"`
+	MemoryBytes       uint64 `json:"memoryBytes"`
+	LatencyMs         int64  `json:"latencyMs"`
+	LatencyStatusCode int    `json:"latencyStatusCode"`
+	LatencyCheckedAt  int64  `json:"latencyCheckedAt"`
+	LatencyError      string `json:"latencyError"`
+}
+
 type LatencyResult struct {
 	NodeID        string `json:"nodeId"`
 	NodeName      string `json:"nodeName"`
@@ -200,6 +209,7 @@ type RuntimeState struct {
 	ActiveNodeName  string             `json:"activeNodeName"`
 	LastError       string             `json:"lastError"`
 	Traffic         TrafficState       `json:"traffic"`
+	Kernel          KernelState        `json:"kernel"`
 	Latencies       []LatencyResult    `json:"latencies"`
 	Connections     []ActiveConnection `json:"connections"`
 	RecentLogs      []LogEntry         `json:"recentLogs"`

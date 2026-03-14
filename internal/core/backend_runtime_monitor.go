@@ -538,6 +538,7 @@ func (b *Backend) tick() {
 	b.state.Traffic.InterfaceFound = ok
 	now := time.Now()
 	b.refreshCoreTrafficFromFileLocked(now)
+	b.refreshKernelStateLocked(now)
 	if ok && !b.trafficCache.coreTrafficActive {
 		b.state.Traffic.TotalTx = tx
 		b.state.Traffic.TotalRx = rx

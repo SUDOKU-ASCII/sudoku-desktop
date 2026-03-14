@@ -733,6 +733,7 @@ const noteColumns = computed(() => boxSize.value)
 .grid {
   display: grid;
   grid-template-columns: repeat(var(--n), 1fr);
+  grid-template-rows: repeat(var(--n), minmax(0, 1fr));
   width: min(560px, 100%);
   aspect-ratio: 1;
   margin: 0 auto;
@@ -743,6 +744,11 @@ const noteColumns = computed(() => boxSize.value)
 
 .cell {
   appearance: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 1;
   border-style: solid;
   border-color: var(--ink);
   background: transparent;
@@ -751,6 +757,7 @@ const noteColumns = computed(() => boxSize.value)
   padding: 0;
   display: grid;
   place-items: center;
+  overflow: hidden;
   transition:
     transform 0.12s ease,
     background-color 0.12s ease,

@@ -228,22 +228,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          python - <<'PY'
-          import os
-          import zipfile
-          from pathlib import Path
-
-          version = os.environ["GITHUB_REF_NAME"]
-          artifact = os.environ["ARTIFACT"]
-          root = Path("build/bin")
-          out = Path("dist") / f"sudoku4x4_{version}_{artifact}.zip"
-
-          with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            z.write(root / "sudoku4x4.exe", arcname="sudoku4x4.exe")
-          print(out)
-          PY
-        env:
-          ARTIFACT: ${{ matrix.artifact }}
+          cp -f "build/bin/sudoku4x4.exe" "dist/sudoku4x4_${{ github.ref_name }}_${{ matrix.artifact }}.exe"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

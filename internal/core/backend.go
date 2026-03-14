@@ -52,6 +52,9 @@ type Backend struct {
 	latencyByID      map[string]LatencyResult
 	trafficCache     trafficSampleState
 	runningLocalPort int
+	kernelVersionBin string
+	kernelProbeID    uint64
+	kernelProbing    bool
 
 	pacURL      string
 	pacServer   *http.Server
@@ -120,6 +123,10 @@ func newBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, err
 	b.state.ActiveNodeID = cfg.ActiveNodeID
 	if node := b.findNode(cfg.ActiveNodeID); node != nil {
 		b.state.ActiveNodeName = node.Name
+	}
+	b.state.Kernel = KernelState{
+		Version:   resolveSudokuBinaryVersion(cfg.Core.SudokuBinary, store),
+		LatencyMs: -1,
 	}
 	return b, nil
 }
@@ -633,6 +640,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	b.trafficCache.coreTrafficFile = trafficStatsFile
 	b.connections = map[string]*ActiveConnection{}
 	b.state.Traffic = TrafficState{RecentBandwidth: []BandwidthSample{}}
+	b.resetKernelLatencyLocked()
 	b.state.CoreRunning = true
 	b.runningLocalPort = localPort
 	b.state.ActiveNodeID = nodeCopy.ID
@@ -1160,6 +1168,7 @@ func (b *Backend) StopProxy() error {
 	b.tunRecovering = false
 	b.trafficCache = trafficSampleState{}
 	b.state.Traffic = TrafficState{RecentBandwidth: []BandwidthSample{}}
+	b.resetKernelLatencyLocked()
 	b.runningLocalPort = 0
 	b.runningTunInterface = ""
 	b.state.NeedsAdmin = false

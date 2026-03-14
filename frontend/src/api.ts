@@ -15,7 +15,7 @@ import type {
 export const backendApi = {
   getConfig: () => App.GetConfig() as Promise<AppConfig>,
   saveConfig: (cfg: AppConfig) => App.SaveConfig(cfg) as Promise<void>,
-  getState: () => App.GetState() as Promise<RuntimeState>,
+  getState: () => App.GetState() as unknown as Promise<RuntimeState>,
   startProxy: (req: StartRequest) => App.StartProxy(req) as Promise<void>,
   stopProxy: () => App.StopProxy() as Promise<void>,
   restartProxy: (req: StartRequest) => App.RestartProxy(req) as Promise<void>,

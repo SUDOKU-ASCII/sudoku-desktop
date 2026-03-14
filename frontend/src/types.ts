@@ -155,6 +155,15 @@ export interface TrafficState {
   lastSampleUnixMillis: number
 }
 
+export interface KernelState {
+  version: string
+  memoryBytes: number
+  latencyMs: number
+  latencyStatusCode: number
+  latencyCheckedAt: number
+  latencyError: string
+}
+
 export interface LatencyResult {
   nodeId: string
   nodeName: string
@@ -192,6 +201,7 @@ export interface RuntimeState {
   activeNodeName: string
   lastError: string
   traffic: TrafficState
+  kernel: KernelState
   latencies: LatencyResult[]
   connections: ActiveConnection[]
   recentLogs: LogEntry[]

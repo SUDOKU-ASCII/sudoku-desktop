@@ -327,6 +327,47 @@ export class IPDetectResult {
     }
 }
 
+export class KernelState {
+    "version": string;
+    "memoryBytes": number;
+    "latencyMs": number;
+    "latencyStatusCode": number;
+    "latencyCheckedAt": number;
+    "latencyError": string;
+
+    /** Creates a new KernelState instance. */
+    constructor($$source: Partial<KernelState> = {}) {
+        if (!("version" in $$source)) {
+            this["version"] = "";
+        }
+        if (!("memoryBytes" in $$source)) {
+            this["memoryBytes"] = 0;
+        }
+        if (!("latencyMs" in $$source)) {
+            this["latencyMs"] = 0;
+        }
+        if (!("latencyStatusCode" in $$source)) {
+            this["latencyStatusCode"] = 0;
+        }
+        if (!("latencyCheckedAt" in $$source)) {
+            this["latencyCheckedAt"] = 0;
+        }
+        if (!("latencyError" in $$source)) {
+            this["latencyError"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new KernelState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): KernelState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new KernelState($$parsedSource as Partial<KernelState>);
+    }
+}
+
 export class LANProxyInfo {
     "port": number;
     "ips": string[];
@@ -699,6 +740,7 @@ export class RuntimeState {
     "activeNodeName": string;
     "lastError": string;
     "traffic": TrafficState;
+    "kernel": KernelState;
     "latencies": LatencyResult[];
     "connections": ActiveConnection[];
     "recentLogs": LogEntry[];
@@ -734,6 +776,9 @@ export class RuntimeState {
         if (!("traffic" in $$source)) {
             this["traffic"] = (new TrafficState());
         }
+        if (!("kernel" in $$source)) {
+            this["kernel"] = (new KernelState());
+        }
         if (!("latencies" in $$source)) {
             this["latencies"] = [];
         }
@@ -758,21 +803,25 @@ export class RuntimeState {
      */
     static createFrom($$source: any = {}): RuntimeState {
         const $$createField8_0 = $$createType14;
-        const $$createField9_0 = $$createType16;
-        const $$createField10_0 = $$createType18;
-        const $$createField11_0 = $$createType20;
+        const $$createField9_0 = $$createType15;
+        const $$createField10_0 = $$createType17;
+        const $$createField11_0 = $$createType19;
+        const $$createField12_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("traffic" in $$parsedSource) {
             $$parsedSource["traffic"] = $$createField8_0($$parsedSource["traffic"]);
         }
+        if ("kernel" in $$parsedSource) {
+            $$parsedSource["kernel"] = $$createField9_0($$parsedSource["kernel"]);
+        }
         if ("latencies" in $$parsedSource) {
-            $$parsedSource["latencies"] = $$createField9_0($$parsedSource["latencies"]);
+            $$parsedSource["latencies"] = $$createField10_0($$parsedSource["latencies"]);
         }
         if ("connections" in $$parsedSource) {
-            $$parsedSource["connections"] = $$createField10_0($$parsedSource["connections"]);
+            $$parsedSource["connections"] = $$createField11_0($$parsedSource["connections"]);
         }
         if ("recentLogs" in $$parsedSource) {
-            $$parsedSource["recentLogs"] = $$createField11_0($$parsedSource["recentLogs"]);
+            $$parsedSource["recentLogs"] = $$createField12_0($$parsedSource["recentLogs"]);
         }
         return new RuntimeState($$parsedSource as Partial<RuntimeState>);
     }
@@ -859,7 +908,7 @@ export class TrafficState {
      * Creates a new TrafficState instance from a string or object.
      */
     static createFrom($$source: any = {}): TrafficState {
-        const $$createField8_0 = $$createType22;
+        const $$createField8_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentBandwidth" in $$parsedSource) {
             $$parsedSource["recentBandwidth"] = $$createField8_0($$parsedSource["recentBandwidth"]);
@@ -1051,11 +1100,12 @@ const $$createType11 = HTTPMaskSettings.createFrom;
 const $$createType12 = ReverseRoute.createFrom;
 const $$createType13 = $Create.Array($$createType12);
 const $$createType14 = TrafficState.createFrom;
-const $$createType15 = LatencyResult.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = ActiveConnection.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = LogEntry.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = BandwidthSample.createFrom;
-const $$createType22 = $Create.Array($$createType21);
+const $$createType15 = KernelState.createFrom;
+const $$createType16 = LatencyResult.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = ActiveConnection.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = LogEntry.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = BandwidthSample.createFrom;
+const $$createType23 = $Create.Array($$createType22);
