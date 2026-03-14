@@ -43,7 +43,7 @@ const lanEndpointsText = computed(() => {
 const kernelLatencyText = computed(() => {
   const latency = props.state.kernel?.latencyMs ?? -1
   if (latency >= 0) return `${latency} ms`
-  return props.state.coreRunning ? props.t('notMeasured') : props.t('statusStopped')
+  return '-'
 })
 
 const kernelVersionText = computed(() => props.state.kernel?.version?.trim() || 'unknown')
@@ -51,10 +51,11 @@ const kernelVersionText = computed(() => props.state.kernel?.version?.trim() || 
 const kernelMemoryText = computed(() => {
   const bytes = props.state.kernel?.memoryBytes ?? 0
   if (bytes > 0) return props.humanBytes(bytes)
-  return props.state.coreRunning ? '0 B' : props.t('statusStopped')
+  return props.state.coreRunning ? '0 B' : '-'
 })
 
 const kernelCheckedText = computed(() => props.humanTime(props.state.kernel?.latencyCheckedAt ?? 0))
+const kernelStatusText = computed(() => (props.state.coreRunning ? props.t('statusRunning') : props.t('statusStopped')))
 </script>
 
 <template>
@@ -129,10 +130,10 @@ const kernelCheckedText = computed(() => props.humanTime(props.state.kernel?.lat
         <strong>{{ lanEndpointsText }}</strong>
         <small>SOCKS5 · {{ props.lanProxyInfo.ready ? props.t('statusRunning') : props.t('statusStopped') }}</small>
       </article>
-      <article class="metric metric-kernel">
+      <article class="metric">
         <h3>{{ props.t('kernelStatus') }}</h3>
-        <strong class="metric-emphasis">{{ kernelLatencyText }}</strong>
-        <small>{{ props.t('realLatency') }} · {{ kernelCheckedText }}</small>
+        <strong>{{ kernelLatencyText }}</strong>
+        <small>{{ props.t('realLatency') }} · {{ kernelCheckedText !== '-' ? kernelCheckedText : kernelStatusText }}</small>
         <small>{{ props.t('kernelVersion') }} {{ kernelVersionText }} · {{ props.t('kernelMemory') }} {{ kernelMemoryText }}</small>
         <small v-if="props.state.kernel?.latencyError" class="error-text">{{ props.state.kernel.latencyError }}</small>
       </article>

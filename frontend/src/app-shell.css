@@ -685,15 +685,6 @@ html[data-app-theme='manjianghong'] #app {
   font-size: 18px;
 }
 
-.metric.metric-kernel {
-  background: color-mix(in srgb, var(--surface) 90%, var(--accent) 10%);
-}
-
-.metric .metric-emphasis {
-  font-size: 28px;
-  line-height: 1.1;
-}
-
 .metric small {
   display: block;
   margin-top: 5px;

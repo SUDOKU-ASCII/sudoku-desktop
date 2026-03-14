@@ -105,15 +105,18 @@ func (b *Backend) runKernelLatencyProbe(probeID uint64, localPort int) {
 }
 
 func resolveSudokuBinaryVersion(path string, store *Store) string {
-	if version, ok := readGoBinaryVersion(path); ok {
-		return version
-	}
 	runtimeDir := ""
 	if store != nil {
 		runtimeDir = store.RuntimeDir()
 	}
-	if strings.TrimSpace(path) == "" || runtimeDir == "" || isWithinDir(path, runtimeDir) {
+	if strings.TrimSpace(path) == "" {
 		return bundledSudokuVersion
+	}
+	if runtimeDir != "" && isWithinDir(path, runtimeDir) {
+		return bundledSudokuVersion
+	}
+	if version, ok := readGoBinaryVersion(path); ok {
+		return version
 	}
 	return "unknown"
 }
