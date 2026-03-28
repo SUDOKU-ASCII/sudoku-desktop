@@ -282,10 +282,10 @@ const {
         :remove-reverse-route="removeReverseRoute"
         :start-reverse="startReverse"
         :stop-reverse="stopReverse"
-        :save-config="() => saveConfig()"
+        :save-config="saveConfig"
       />
 
-      <MiscPanel v-if="currentTab === 'misc'" :t="t" :config="config" :save-config="() => saveConfig()" />
+      <MiscPanel v-if="currentTab === 'misc'" :t="t" :config="config" :save-config="saveConfig" />
 
       <LogsPanel
         v-if="currentTab === 'logs'"

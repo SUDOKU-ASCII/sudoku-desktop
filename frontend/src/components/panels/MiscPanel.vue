@@ -1,11 +1,33 @@
 <script setup lang="ts">
+import { onBeforeUnmount, watch } from 'vue'
 import type { AppConfig } from '../../types'
 
 const props = defineProps<{
   t: (key: any) => string
   config: AppConfig
-  saveConfig: () => void
+  saveConfig: (silent?: boolean) => void
 }>()
+
+let autoSaveTimer: number | null = null
+
+const queueAutoSave = () => {
+  if (autoSaveTimer) window.clearTimeout(autoSaveTimer)
+  autoSaveTimer = window.setTimeout(() => {
+    autoSaveTimer = null
+    void props.saveConfig(true)
+  }, 260)
+}
+
+watch(
+  () => [props.config.ui.language, props.config.ui.theme, props.config.ui.launchAtLogin],
+  () => {
+    queueAutoSave()
+  }
+)
+
+onBeforeUnmount(() => {
+  if (autoSaveTimer) window.clearTimeout(autoSaveTimer)
+})
 </script>
 
 <template>
@@ -35,9 +57,6 @@ const props = defineProps<{
       </div>
       <div class="switch-stack">
         <label class="switch-row"><span>{{ props.t('launchAtLogin') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.ui.launchAtLogin" /><span class="switch-ui" /></span></label>
-      </div>
-      <div class="row row-spaced">
-        <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
       </div>
     </section>
   </main>

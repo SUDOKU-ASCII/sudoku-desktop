@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount, watch } from 'vue'
 import type { AppConfig, RuntimeState } from '../../types'
 
 const props = defineProps<{
@@ -11,8 +12,34 @@ const props = defineProps<{
   removeReverseRoute: (idx: number) => void
   startReverse: () => void
   stopReverse: () => void
-  saveConfig: () => void
+  saveConfig: (silent?: boolean) => void
 }>()
+
+let autoSaveTimer: number | null = null
+
+const queueAutoSave = () => {
+  if (autoSaveTimer) window.clearTimeout(autoSaveTimer)
+  autoSaveTimer = window.setTimeout(() => {
+    autoSaveTimer = null
+    void props.saveConfig(true)
+  }, 280)
+}
+
+watch(
+  () => ({
+    portForwards: props.config.portForwards,
+    reverseClient: props.config.reverseClient,
+    reverseForward: props.config.reverseForward,
+  }),
+  () => {
+    queueAutoSave()
+  },
+  { deep: true }
+)
+
+onBeforeUnmount(() => {
+  if (autoSaveTimer) window.clearTimeout(autoSaveTimer)
+})
 </script>
 
 <template>
@@ -79,7 +106,6 @@ const props = defineProps<{
       <div class="row row-spaced">
         <button class="btn" :disabled="props.state.reverseRunning" @click="props.startReverse">{{ props.t('reverseStart') }}</button>
         <button class="btn ghost" :disabled="!props.state.reverseRunning" @click="props.stopReverse">{{ props.t('reverseStop') }}</button>
-        <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
       </div>
     </section>
   </main>
