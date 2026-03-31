@@ -127,3 +127,15 @@ func TestNormalizeConfigKeepsKnownThemeAndResetsUnknownTheme(t *testing.T) {
 		t.Fatalf("expected unknown theme to reset to auto, got %q", cfg.UI.Theme)
 	}
 }
+
+func TestNormalizeNodeCanonicalizesDirectionalASCIIMode(t *testing.T) {
+	node := &NodeConfig{
+		ASCII: "up_ascii_down_ascii",
+	}
+
+	normalizeNode(node, 1080)
+
+	if node.ASCII != "prefer_ascii" {
+		t.Fatalf("expected ascii mode to canonicalize to prefer_ascii, got %q", node.ASCII)
+	}
+}

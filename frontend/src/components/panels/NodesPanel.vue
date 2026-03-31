@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { LatencyResult, NodeConfig } from '../../types'
+import { formatAsciiMode } from '../../sudoku/asciiMode'
 
 type NodeView = {
   node: NodeConfig
@@ -23,6 +24,14 @@ const props = defineProps<{
   removeNode: (id: string) => void
   switchNode: (id: string) => void
 }>()
+
+const asciiModeText = (value: string) =>
+  formatAsciiMode(value, {
+    uplink: props.t('uplinkShort'),
+    downlink: props.t('downlinkShort'),
+    ascii: props.t('styleAscii'),
+    entropy: props.t('styleEntropy'),
+  })
 </script>
 
 <template>
@@ -52,7 +61,7 @@ const props = defineProps<{
         </div>
         <div class="node-meta">
           <small>AEAD: {{ item.node.aead }}</small>
-          <small>ASCII: {{ item.node.ascii }}</small>
+          <small>{{ props.t('byteStyle') }}: {{ asciiModeText(item.node.ascii) }}</small>
           <small v-if="item.latency">{{ item.latency.connectOk ? `${item.latency.latencyMs} ms` : item.latency.error || props.t('failed') }}</small>
           <small v-else>{{ props.t('latency') }}: -</small>
         </div>

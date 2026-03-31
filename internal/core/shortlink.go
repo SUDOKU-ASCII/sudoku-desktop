@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	sudokukey "github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
+	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
 type shortLinkPayload struct {
@@ -134,21 +135,22 @@ func BuildShortLink(node NodeConfig) (string, error) {
 }
 
 func encodeASCII(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "ascii", "prefer_ascii":
+	switch normalizeASCII(v) {
+	case "prefer_ascii":
 		return "ascii"
-	default:
+	case "prefer_entropy":
 		return "entropy"
+	default:
+		return normalizeASCII(v)
 	}
 }
 
 func decodeASCII(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "ascii", "prefer_ascii":
-		return "prefer_ascii"
-	default:
-		return "prefer_entropy"
+	normalized, err := sudokutable.NormalizeASCIIMode(v)
+	if err == nil {
+		return normalized
 	}
+	return "prefer_entropy"
 }
 
 func tableSeedKey(key string) string {

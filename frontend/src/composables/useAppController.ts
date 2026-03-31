@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Clipboard, Dialogs, Events } from '@wailsio/runtime'
 import { backendApi } from '../api'
 import { useI18n } from '../i18n'
+import { canonicalizeAsciiMode } from '../sudoku/asciiMode'
 import type {
   AppConfig,
   LANProxyInfo,
@@ -917,7 +918,7 @@ const applyShortlinkToEditable = (link: string, nameOverride = '', preferHostAsN
   editableNode.serverAddress = `${payload.h}:${payload.p}`
   editableNode.key = payload.k
   editableNode.aead = payload.e || 'chacha20-poly1305'
-  editableNode.ascii = payload.a === 'ascii' ? 'prefer_ascii' : 'prefer_entropy'
+  editableNode.ascii = canonicalizeAsciiMode(payload.a || '')
   editableNode.localPort = payload.m && payload.m > 0 ? payload.m : config.core.localPort
   editableNode.enablePureDownlink = !payload.x
   editableNode.customTable = ''

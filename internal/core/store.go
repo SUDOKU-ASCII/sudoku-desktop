@@ -336,9 +336,7 @@ func normalizeNode(node *NodeConfig, fallbackPort int) {
 	if node.AEAD == "" {
 		node.AEAD = "chacha20-poly1305"
 	}
-	if node.ASCII == "" {
-		node.ASCII = "prefer_entropy"
-	}
+	node.ASCII = normalizeASCII(node.ASCII)
 	if node.PaddingMin < 0 {
 		node.PaddingMin = 0
 	}

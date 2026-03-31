@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 	"gopkg.in/yaml.v3"
 )
 
@@ -134,12 +135,9 @@ func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL strin
 }
 
 func normalizeASCII(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "ascii" {
-		return "prefer_ascii"
-	}
-	if s == "prefer_ascii" {
-		return s
+	normalized, err := sudokutable.NormalizeASCIIMode(s)
+	if err == nil {
+		return normalized
 	}
 	return "prefer_entropy"
 }

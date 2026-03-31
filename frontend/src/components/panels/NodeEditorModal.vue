@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { NodeConfig } from '../../types'
+import { buildAsciiMode, parseAsciiMode, type ASCIIStyleToken } from '../../sudoku/asciiMode'
 
 const props = defineProps<{
   open: boolean
@@ -18,6 +20,22 @@ const emit = defineEmits<{
   (e: 'update:shortlinkInput', value: string): void
   (e: 'update:shortlinkName', value: string): void
 }>()
+
+const uplinkStyle = computed<ASCIIStyleToken>({
+  get: () => parseAsciiMode(props.editableNode.ascii).uplink,
+  set: (value) => {
+    const current = parseAsciiMode(props.editableNode.ascii)
+    props.editableNode.ascii = buildAsciiMode({ uplink: value, downlink: current.downlink })
+  },
+})
+
+const downlinkStyle = computed<ASCIIStyleToken>({
+  get: () => parseAsciiMode(props.editableNode.ascii).downlink,
+  set: (value) => {
+    const current = parseAsciiMode(props.editableNode.ascii)
+    props.editableNode.ascii = buildAsciiMode({ uplink: current.uplink, downlink: value })
+  },
+})
 </script>
 
 <template>
@@ -50,13 +68,15 @@ const emit = defineEmits<{
             <label class="field"><span>{{ props.t('server') }}</span><input v-model="props.editableNode.serverAddress" placeholder="host:port" /></label>
             <label class="field"><span>{{ props.t('key') }}</span><input v-model="props.editableNode.key" /></label>
             <label class="field"><span>AEAD</span><select v-model="props.editableNode.aead"><option>chacha20-poly1305</option><option>aes-128-gcm</option><option>none</option></select></label>
-            <label class="field"><span>ASCII</span><select v-model="props.editableNode.ascii"><option>prefer_entropy</option><option>prefer_ascii</option></select></label>
+            <label class="field"><span>{{ props.t('uplinkStyle') }}</span><select v-model="uplinkStyle"><option value="entropy">{{ props.t('styleEntropy') }}</option><option value="ascii">{{ props.t('styleAscii') }}</option></select></label>
+            <label class="field"><span>{{ props.t('downlinkStyle') }}</span><select v-model="downlinkStyle"><option value="entropy">{{ props.t('styleEntropy') }}</option><option value="ascii">{{ props.t('styleAscii') }}</option></select></label>
             <label class="field"><span>{{ props.t('localPort') }}</span><input v-model.number="props.editableNode.localPort" type="number" /></label>
             <label class="field"><span>{{ props.t('paddingMin') }}</span><input v-model.number="props.editableNode.paddingMin" type="number" /></label>
             <label class="field"><span>{{ props.t('paddingMax') }}</span><input v-model.number="props.editableNode.paddingMax" type="number" /></label>
             <label class="switch-row compact"><span>{{ props.t('enableNode') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enabled" /><span class="switch-ui" /></span></label>
             <label class="switch-row compact"><span>{{ props.t('pureDownlink') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enablePureDownlink" /><span class="switch-ui" /></span></label>
           </div>
+          <p class="hint">{{ props.t('pureDownlinkHint') }}</p>
         </section>
 
         <section class="group-card">
