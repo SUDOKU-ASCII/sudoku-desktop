@@ -103,6 +103,12 @@ const noticeType = ref<'ok' | 'error'>('ok')
 const loadReady = ref(false)
 const isMacLike = /Mac|Darwin/i.test(navigator.userAgent)
 const isWindowsLike = /Windows/i.test(navigator.userAgent)
+const defaultPacRuleUrls = [
+  'https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMaxNoIP/ChinaMaxNoIP.list',
+  'https://fastly.jsdelivr.net/gh/fernvenue/chn-cidr-list@master/ipv4.yaml',
+  'https://fastly.jsdelivr.net/gh/fernvenue/chn-cidr-list@master/ipv6.yaml',
+  '!https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml',
+]
 
 const tunAdminModalOpen = ref(false)
 const tunAdminPassword = ref('')
@@ -158,10 +164,10 @@ const defaultTunConfig = (macLike: boolean, windowsLike: boolean) => ({
 })
 
 const config = reactive<AppConfig>({
-  version: 5,
+  version: 6,
   activeNodeId: '',
   nodes: [],
-  routing: { proxyMode: 'pac', ruleUrls: [], customRulesEnabled: false, customRules: '' },
+  routing: { proxyMode: 'pac', ruleUrls: [...defaultPacRuleUrls], customRulesEnabled: false, customRules: '' },
   tun: defaultTunConfig(isMacLike, isWindowsLike),
   core: {
     sudokuBinary: '',

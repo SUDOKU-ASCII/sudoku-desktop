@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_ROOT="${ROOT_DIR}/runtime/bin"
 SUDOKU_REPO="${SUDOKU_REPO:-https://github.com/SUDOKU-ASCII/sudoku.git}"
-SUDOKU_REF="${SUDOKU_REF:-v0.4.0}"
+SUDOKU_REF="${SUDOKU_REF:-v0.4.1}"
 PATCH_DIR="${PATCH_DIR:-${ROOT_DIR}/scripts/sudoku_patches}"
 TARGETS=(
   "darwin/amd64"
@@ -121,10 +121,21 @@ func_text = data[start:end]
 if "wrapConnForTrafficStats" in func_text:
     raise SystemExit(0)
 
-func_text = func_text.replace("return conn, true", "return wrapConnForTrafficStats(conn, true), true", 1)
-func_text = func_text.replace("return dConn, true", "return wrapConnForTrafficStats(dConn, false), true", 1)
+replacements = (
+    ("return conn, decision, true", "return wrapConnForTrafficStats(conn, true), decision, true"),
+    ("return dConn, decision, true", "return wrapConnForTrafficStats(dConn, false), decision, true"),
+    ("return conn, true", "return wrapConnForTrafficStats(conn, true), true"),
+    ("return dConn, true", "return wrapConnForTrafficStats(dConn, false), true"),
+)
 
-path.write_text(data[:start] + func_text + data[end:], encoding="utf-8")
+patched = func_text
+for needle, replacement in replacements:
+    patched = patched.replace(needle, replacement, 1)
+
+if patched == func_text:
+    raise SystemExit("failed to patch dialTarget returns (upstream changed?)")
+
+path.write_text(data[:start] + patched + data[end:], encoding="utf-8")
 print("[patch] updated", path)
 PY
 

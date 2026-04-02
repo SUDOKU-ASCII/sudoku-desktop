@@ -101,10 +101,20 @@ function Patch-GoDialTarget([string]$Path) {
   if ($end -lt 0) { throw "dialTarget end not found in $Path" }
   $funcText = $data.Substring($start, $end - $start)
   if ($funcText.Contains("wrapConnForTrafficStats")) { return }
-  $patched = Replace-First $funcText "return conn, true" "return wrapConnForTrafficStats(conn, true), true"
-  if ($null -eq $patched) { throw "patch failed: return conn, true not found in $Path" }
-  $patched = Replace-First $patched "return dConn, true" "return wrapConnForTrafficStats(dConn, false), true"
-  if ($null -eq $patched) { throw "patch failed: return dConn, true not found in $Path" }
+  $patched = $funcText
+  $replacements = @(
+    @{ Needle = "return conn, decision, true"; Replacement = "return wrapConnForTrafficStats(conn, true), decision, true" },
+    @{ Needle = "return dConn, decision, true"; Replacement = "return wrapConnForTrafficStats(dConn, false), decision, true" },
+    @{ Needle = "return conn, true"; Replacement = "return wrapConnForTrafficStats(conn, true), true" },
+    @{ Needle = "return dConn, true"; Replacement = "return wrapConnForTrafficStats(dConn, false), true" }
+  )
+  foreach ($entry in $replacements) {
+    $next = Replace-First $patched $entry.Needle $entry.Replacement
+    if ($null -ne $next) {
+      $patched = $next
+    }
+  }
+  if ($patched -eq $funcText) { throw "patch failed: dialTarget return pattern not found in $Path" }
   $out = $data.Substring(0, $start) + $patched + $data.Substring($end)
   Write-Text $Path $out
 }
@@ -180,7 +190,7 @@ if ($What -eq "all" -or $What -eq "sudoku") {
   $sudokuRepo = $env:SUDOKU_REPO
   if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
   $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "v0.4.0" }
+  if (-not $sudokuRef) { $sudokuRef = "v0.4.1" }
 
   $tmp = New-TempDir "sudoku-build-"
   $sudokuDir = Join-Path $tmp "sudoku"

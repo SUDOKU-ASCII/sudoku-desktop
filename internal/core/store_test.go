@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestDefaultPACRuleURLsIncludeRejectRule(t *testing.T) {
+	urls := defaultPACRuleURLs()
+	if len(urls) != 4 {
+		t.Fatalf("expected 4 default PAC rule URLs, got %d: %v", len(urls), urls)
+	}
+	last := urls[len(urls)-1]
+	if last != "!"+defaultPACRejectRuleURL {
+		t.Fatalf("expected default PAC reject rule %q, got %q", "!"+defaultPACRejectRuleURL, last)
+	}
+}
+
 func TestDefaultTunSettingsUsePlatformSpecificBlockQUIC(t *testing.T) {
 	if !defaultTunSettings("windows").BlockQUIC {
 		t.Fatalf("expected BlockQUIC default to be enabled on windows")
@@ -55,6 +66,49 @@ func TestNormalizeConfigMigratesLegacyV3TunDefaults(t *testing.T) {
 	}
 	if !cfg.Tun.MapDNSEnabled {
 		t.Fatalf("expected legacy v3 MapDNS default to migrate to true")
+	}
+}
+
+func TestNormalizeConfigMigratesLegacyPACRulesToIncludeRejectRule(t *testing.T) {
+	cfg := &AppConfig{
+		Version: 5,
+		Routing: RoutingSettings{
+			ProxyMode: "pac",
+			RuleURLs: []string{
+				"https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBili/BiliBili.list",
+				"https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/WeChat/WeChat.list",
+				"https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMaxNoIP/ChinaMaxNoIP.list",
+			},
+		},
+	}
+
+	normalizeConfigForOS(cfg, t.TempDir(), "darwin")
+
+	if cfg.Version != configVersion {
+		t.Fatalf("expected version %d, got %d", configVersion, cfg.Version)
+	}
+	got := cfg.Routing.RuleURLs[len(cfg.Routing.RuleURLs)-1]
+	if got != "!"+defaultPACRejectRuleURL {
+		t.Fatalf("expected migrated PAC reject rule %q, got %q", "!"+defaultPACRejectRuleURL, got)
+	}
+}
+
+func TestNormalizeConfigDoesNotDuplicateExistingRejectRule(t *testing.T) {
+	cfg := &AppConfig{
+		Version: 5,
+		Routing: RoutingSettings{
+			ProxyMode: "pac",
+			RuleURLs: []string{
+				"https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMaxNoIP/ChinaMaxNoIP.list",
+				"!https://example.com/reject.yaml",
+			},
+		},
+	}
+
+	normalizeConfigForOS(cfg, t.TempDir(), "linux")
+
+	if len(cfg.Routing.RuleURLs) != 2 {
+		t.Fatalf("expected existing reject rule to be preserved without duplication, got %v", cfg.Routing.RuleURLs)
 	}
 }
 

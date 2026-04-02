@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const configVersion = 5
+const configVersion = 6
 
 type Store struct {
 	rootDir    string
@@ -184,6 +184,18 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	if cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) == 0 {
 		if !cfg.Routing.CustomRulesEnabled || strings.TrimSpace(cfg.Routing.CustomRules) == "" {
 			cfg.Routing.RuleURLs = defaultPACRuleURLs()
+		}
+	}
+	if prevVersion < 6 && cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) > 0 {
+		hasRejectRule := false
+		for _, raw := range cfg.Routing.RuleURLs {
+			if hasRejectRulePrefix(raw) {
+				hasRejectRule = true
+				break
+			}
+		}
+		if !hasRejectRule {
+			cfg.Routing.RuleURLs = append(cfg.Routing.RuleURLs, "!"+defaultPACRejectRuleURL)
 		}
 	}
 	if cfg.Tun.InterfaceName == "" {

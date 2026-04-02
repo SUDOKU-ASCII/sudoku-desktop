@@ -17,6 +17,10 @@ tasks:
       GOOS: darwin
       GOARCH: '{{.ARCH | default ARCH}}'
       CGO_ENABLED: 1
+      MACOSX_DEPLOYMENT_TARGET: '{{.MACOSX_DEPLOYMENT_TARGET | default "11.0"}}'
+      CGO_CFLAGS: '-O2 -g -mmacosx-version-min={{.MACOSX_DEPLOYMENT_TARGET | default "11.0"}}'
+      CGO_CXXFLAGS: '-O2 -g -mmacosx-version-min={{.MACOSX_DEPLOYMENT_TARGET | default "11.0"}}'
+      CGO_LDFLAGS: '-O2 -g -mmacosx-version-min={{.MACOSX_DEPLOYMENT_TARGET | default "11.0"}}'
 
   package:
     summary: Package macOS .app bundle
