@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_ROOT="${ROOT_DIR}/runtime/bin"
 SUDOKU_REPO="${SUDOKU_REPO:-https://github.com/SUDOKU-ASCII/sudoku.git}"
-SUDOKU_REF="${SUDOKU_REF:-v0.4.1}"
+SUDOKU_REF="${SUDOKU_REF:-3768ed2d839a8aec2b6ac3b5dfa9165177b66eec}"
 PATCH_DIR="${PATCH_DIR:-${ROOT_DIR}/scripts/sudoku_patches}"
 TARGETS=(
   "darwin/amd64"
@@ -34,13 +34,43 @@ trap cleanup EXIT
 
 SUDOKU_DIR="${tmpdir}/sudoku"
 
+is_commit_ref() {
+  [[ "$1" =~ ^[0-9a-fA-F]{7,40}$ ]]
+}
+
 echo "[fetch] sudoku ${SUDOKU_REF} (${SUDOKU_REPO})"
 if command -v git >/dev/null 2>&1; then
-  if ! git clone --depth 1 --branch "${SUDOKU_REF}" "${SUDOKU_REPO}" "${SUDOKU_DIR}"; then
-    echo "[warn] git clone failed; falling back to tarball download"
-    mkdir -p "${SUDOKU_DIR}"
-    curl -fsSL "https://codeload.github.com/SUDOKU-ASCII/sudoku/tar.gz/${SUDOKU_REF}" \
-      | tar -xz -C "${SUDOKU_DIR}" --strip-components=1
+  cloned=0
+  if is_commit_ref "${SUDOKU_REF}"; then
+    if git clone --depth 1 "${SUDOKU_REPO}" "${SUDOKU_DIR}" && (
+      cd "${SUDOKU_DIR}"
+      git checkout --detach "${SUDOKU_REF}" >/dev/null 2>&1 || {
+        git fetch --depth 1 origin "${SUDOKU_REF}" >/dev/null 2>&1 &&
+        git checkout --detach FETCH_HEAD >/dev/null 2>&1
+      }
+    ); then
+      cloned=1
+    fi
+  elif git clone --depth 1 --branch "${SUDOKU_REF}" "${SUDOKU_REPO}" "${SUDOKU_DIR}"; then
+    cloned=1
+  fi
+
+  if [[ "${cloned}" -ne 1 ]]; then
+    echo "[warn] git fetch failed; falling back to tarball download"
+    if git clone --depth 1 "${SUDOKU_REPO}" "${SUDOKU_DIR}" && (
+      cd "${SUDOKU_DIR}"
+      git checkout --detach "${SUDOKU_REF}" >/dev/null 2>&1 || {
+        git fetch --depth 1 origin "${SUDOKU_REF}" >/dev/null 2>&1 &&
+        git checkout --detach FETCH_HEAD >/dev/null 2>&1
+      }
+    ); then
+      :
+    else
+      rm -rf "${SUDOKU_DIR}"
+      mkdir -p "${SUDOKU_DIR}"
+      curl -fsSL "https://codeload.github.com/SUDOKU-ASCII/sudoku/tar.gz/${SUDOKU_REF}" \
+        | tar -xz -C "${SUDOKU_DIR}" --strip-components=1
+    fi
   fi
 else
   echo "[warn] git not found; downloading tarball"

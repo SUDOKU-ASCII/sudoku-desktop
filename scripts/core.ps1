@@ -190,7 +190,7 @@ if ($What -eq "all" -or $What -eq "sudoku") {
   $sudokuRepo = $env:SUDOKU_REPO
   if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
   $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "v0.4.1" }
+  if (-not $sudokuRef) { $sudokuRef = "3768ed2d839a8aec2b6ac3b5dfa9165177b66eec" }
 
   $tmp = New-TempDir "sudoku-build-"
   $sudokuDir = Join-Path $tmp "sudoku"
@@ -198,11 +198,35 @@ if ($What -eq "all" -or $What -eq "sudoku") {
     $git = Get-Command git -ErrorAction SilentlyContinue
     $cloned = $false
     if ($git) {
+      $isCommitRef = $sudokuRef -match '^[0-9a-fA-F]{7,40}$'
       try {
+        if ($isCommitRef) {
+          throw "exact commit ref requires detached checkout"
+        }
         Invoke-Native $git.Source @("clone", "--depth", "1", "--branch", $sudokuRef, $sudokuRepo, $sudokuDir)
         $cloned = $true
       } catch {
         $cloned = $false
+        Remove-Item -Recurse -Force -LiteralPath $sudokuDir -ErrorAction SilentlyContinue
+        try {
+          Invoke-Native $git.Source @("clone", "--depth", "1", $sudokuRepo, $sudokuDir)
+          Push-Location $sudokuDir
+          try {
+            & $git.Source checkout --detach $sudokuRef *> $null
+            if ($LASTEXITCODE -ne 0) {
+              & $git.Source fetch --depth "1" origin $sudokuRef *> $null
+              if ($LASTEXITCODE -ne 0) { throw "fetch ref failed: $sudokuRef" }
+              & $git.Source checkout --detach FETCH_HEAD *> $null
+              if ($LASTEXITCODE -ne 0) { throw "checkout FETCH_HEAD failed for: $sudokuRef" }
+            }
+          } finally {
+            Pop-Location
+          }
+          $cloned = $true
+        } catch {
+          $cloned = $false
+          Remove-Item -Recurse -Force -LiteralPath $sudokuDir -ErrorAction SilentlyContinue
+        }
       }
     }
 
