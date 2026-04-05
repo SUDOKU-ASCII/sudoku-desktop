@@ -8,7 +8,7 @@ GOARCH="${GOARCH:-$(go env GOARCH)}"
 PLATFORM_DIR="${GOOS}-${GOARCH}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/runtime/bin/${PLATFORM_DIR}}"
 SUDOKU_REPO="${SUDOKU_REPO:-https://github.com/SUDOKU-ASCII/sudoku.git}"
-SUDOKU_REF="${SUDOKU_REF:-3768ed2d839a8aec2b6ac3b5dfa9165177b66eec}"
+SUDOKU_REF="${SUDOKU_REF:-v0.4.2}"
 PATCH_DIR="${PATCH_DIR:-${ROOT_DIR}/scripts/sudoku_patches}"
 
 mkdir -p "$OUT_DIR"

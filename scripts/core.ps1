@@ -190,7 +190,7 @@ if ($What -eq "all" -or $What -eq "sudoku") {
   $sudokuRepo = $env:SUDOKU_REPO
   if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
   $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "3768ed2d839a8aec2b6ac3b5dfa9165177b66eec" }
+  if (-not $sudokuRef) { $sudokuRef = "v0.4.2" }
 
   $tmp = New-TempDir "sudoku-build-"
   $sudokuDir = Join-Path $tmp "sudoku"
