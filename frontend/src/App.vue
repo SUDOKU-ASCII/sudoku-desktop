@@ -94,6 +94,7 @@ const {
   parseShortlinkFromClipboard,
   connectionOpBusy,
 } = useAppController()
+
 </script>
 
 <template>
@@ -193,11 +194,23 @@ const {
     </aside>
 
     <div class="content">
-      <header class="topbar">
+      <header class="topbar" :class="{ 'with-search': currentTab === 'logs' }">
         <div class="pagehead">
           <h2>{{ t(currentTab) }}</h2>
           <p>{{ state.activeNodeName || '-' }}</p>
         </div>
+        <label v-if="currentTab === 'logs'" class="command-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.8 18.2a7.4 7.4 0 1 1 0-14.8 7.4 7.4 0 0 1 0 14.8Z" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="m16.2 16.2 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+          <input
+            type="search"
+            v-model="logSearch"
+            :placeholder="t('logSearchPlaceholder')"
+          />
+          <kbd>⌘K</kbd>
+        </label>
         <div class="topbar-right">
           <span class="pill" :class="state.running ? 'ok' : 'off'">{{ runtimeStatusLabel }}</span>
           <span class="pill" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { LogEntry } from '../../types'
 
 const props = defineProps<{
@@ -23,13 +23,46 @@ const emit = defineEmits<{
 
 const logListRef = ref<HTMLElement | null>(null)
 const lastScrollHeight = ref(0)
+const hiddenIds = ref<Set<string>>(new Set())
+
+const visibleLogs = computed(() => props.filteredLogs.filter((item) => !hiddenIds.value.has(item.id)))
+
+const countByLevel = computed(() => {
+  const out = { debug: 0, info: 0, warn: 0, error: 0 }
+  for (const item of props.filteredLogs) {
+    const key = item.level === 'error' || item.level === 'warn' || item.level === 'debug' ? item.level : 'info'
+    out[key]++
+  }
+  return out
+})
+
+const recentEvents = computed(() => visibleLogs.value.slice(0, 5))
+
+const exportVisibleLogs = () => {
+  const rows = visibleLogs.value.map((item) =>
+    [item.timestamp, item.level, item.component, item.message || item.raw]
+      .map((value) => `"${String(value || '').replace(/"/g, '""')}"`)
+      .join(',')
+  )
+  const blob = new Blob([`timestamp,level,component,message\n${rows.join('\n')}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `sudoku-logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const clearVisibleLogs = () => {
+  hiddenIds.value = new Set([...hiddenIds.value, ...visibleLogs.value.map((item) => item.id)])
+}
 
 onMounted(() => {
   lastScrollHeight.value = logListRef.value?.scrollHeight || 0
 })
 
 watch(
-  () => [props.filteredLogs[0]?.id || '', props.filteredLogs.length],
+  () => [visibleLogs.value[0]?.id || '', visibleLogs.value.length],
   async () => {
     const el = logListRef.value
     if (!el) return
@@ -37,13 +70,10 @@ watch(
     const atTop = el.scrollTop <= 2
     await nextTick()
     const afterHeight = el.scrollHeight
-    if (atTop) {
-      el.scrollTop = 0
-    } else {
+    if (atTop) el.scrollTop = 0
+    else {
       const grow = afterHeight - beforeHeight
-      if (grow > 0) {
-        el.scrollTop += grow
-      }
+      if (grow > 0) el.scrollTop += grow
     }
     lastScrollHeight.value = afterHeight
   }
@@ -51,44 +81,90 @@ watch(
 </script>
 
 <template>
-  <main class="panel">
-    <div class="row">
-      <label class="field compact"><span>{{ props.t('level') }}</span>
-        <select :value="props.logLevelFilter" @change="emit('update:logLevelFilter', ($event.target as HTMLSelectElement).value)">
-          <option value="all">{{ props.t('all') }}</option>
-          <option value="debug">debug</option>
-          <option value="info">info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-        </select>
-      </label>
-      <label class="field compact" style="min-width: 240px"><span>{{ props.t('search') }}</span><input :value="props.logSearch" :placeholder="props.t('logSearchPlaceholder')" @input="emit('update:logSearch', ($event.target as HTMLInputElement).value.trim())" /></label>
-      <label class="field compact"><span>{{ props.t('renderCount') }}</span>
-        <select :value="props.logDisplayLimit" @change="emit('update:logDisplayLimit', Number(($event.target as HTMLSelectElement).value))">
-          <option :value="300">300</option>
-          <option :value="600">600</option>
-          <option :value="1000">1000</option>
-          <option :value="2000">2000</option>
-        </select>
-      </label>
-      <label class="field compact logs-traffic-field">
-        <span>{{ props.t('showTrafficLogs') }}</span>
-        <span class="logs-traffic-control">
-          <span class="switch-control">
-            <input type="checkbox" :checked="props.showTrafficLogs" @change="emit('update:showTrafficLogs', ($event.target as HTMLInputElement).checked)" />
-            <span class="switch-ui" />
-          </span>
-        </span>
-      </label>
-    </div>
-    <div ref="logListRef" class="log-list" role="log" aria-live="polite">
-      <article v-for="item in props.filteredLogs" :key="item.id" class="log-item" :class="item.level">
-        <time class="log-time">{{ props.formatLogTimestamp(item.timestamp) }}</time>
-        <span class="log-level-pill" :class="item.level">{{ props.logLevelText(item.level) }}</span>
-        <strong class="log-component">[{{ props.logComponentText(item.component) }}]</strong>
-        <span class="log-message">{{ item.message }}</span>
-      </article>
-      <p v-if="props.filteredLogs.length === 0">{{ props.t('none') }}</p>
-    </div>
+  <main class="panel logs-page">
+    <section class="logs-layout">
+      <section class="logs-main">
+        <div class="logs-toolbar">
+          <label class="field compact">
+            <span>{{ props.t('level') }}</span>
+            <select :value="props.logLevelFilter" @change="emit('update:logLevelFilter', ($event.target as HTMLSelectElement).value)">
+              <option value="all">{{ props.t('all') }}</option>
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </label>
+          <label class="field compact toolbar-wide">
+            <span>{{ props.t('search') }}</span>
+            <input :value="props.logSearch" :placeholder="props.t('logSearchPlaceholder')" @input="emit('update:logSearch', ($event.target as HTMLInputElement).value.trim())" />
+          </label>
+          <label class="field compact">
+            <span>{{ props.t('renderCount') }}</span>
+            <select :value="props.logDisplayLimit" @change="emit('update:logDisplayLimit', Number(($event.target as HTMLSelectElement).value))">
+              <option :value="300">300</option>
+              <option :value="600">600</option>
+              <option :value="1000">1000</option>
+              <option :value="2000">2000</option>
+            </select>
+          </label>
+          <label class="field compact logs-traffic-field">
+            <span>{{ props.t('showTrafficLogs') }}</span>
+            <span class="logs-traffic-control">
+              <span class="switch-control">
+                <input type="checkbox" :checked="props.showTrafficLogs" @change="emit('update:showTrafficLogs', ($event.target as HTMLInputElement).checked)" />
+                <span class="switch-ui" />
+              </span>
+            </span>
+          </label>
+          <button class="btn ghost toolbar-action" @click="exportVisibleLogs">{{ props.t('exportLogs') }}</button>
+          <button class="btn danger toolbar-action" @click="clearVisibleLogs">{{ props.t('clearLogs') }}</button>
+        </div>
+
+        <div ref="logListRef" class="log-table" role="log" aria-live="polite">
+          <div class="log-table-head">
+            <span>{{ props.t('time') }}</span>
+            <span>{{ props.t('level') }}</span>
+            <span>{{ props.t('module') }}</span>
+            <span>{{ props.t('content') }}</span>
+          </div>
+          <article v-for="item in visibleLogs" :key="item.id" class="log-item" :class="item.level">
+            <time class="log-time">{{ props.formatLogTimestamp(item.timestamp) }}</time>
+            <span class="log-level-pill" :class="item.level">{{ props.logLevelText(item.level) }}</span>
+            <strong class="log-component">{{ props.logComponentText(item.component) }}</strong>
+            <span class="log-message">{{ item.message }}</span>
+          </article>
+          <p v-if="visibleLogs.length === 0" class="empty-state">{{ props.t('none') }}</p>
+        </div>
+      </section>
+
+      <aside class="logs-aside">
+        <article class="deck-card">
+          <div class="card-head">
+            <h3>{{ props.t('runtimeSummary') }}</h3>
+          </div>
+          <div class="log-count-grid">
+            <div><span>{{ props.t('errorCount') }}</span><strong class="bad">{{ countByLevel.error }}</strong></div>
+            <div><span>{{ props.t('warnCount') }}</span><strong class="warn">{{ countByLevel.warn }}</strong></div>
+            <div><span>{{ props.t('infoCount') }}</span><strong class="info">{{ countByLevel.info }}</strong></div>
+            <div><span>{{ props.t('totalLogs') }}</span><strong>{{ props.filteredLogs.length }}</strong></div>
+          </div>
+        </article>
+
+        <article class="deck-card">
+          <div class="card-head">
+            <h3>{{ props.t('recentEvents') }}</h3>
+          </div>
+          <div class="event-list">
+            <div v-for="item in recentEvents" :key="item.id">
+              <strong :class="item.level">{{ props.logLevelText(item.level) }}</strong>
+              <span>{{ item.message }}</span>
+              <time>{{ props.formatLogTimestamp(item.timestamp) }}</time>
+            </div>
+            <p v-if="recentEvents.length === 0" class="empty-state">{{ props.t('none') }}</p>
+          </div>
+        </article>
+      </aside>
+    </section>
   </main>
 </template>
