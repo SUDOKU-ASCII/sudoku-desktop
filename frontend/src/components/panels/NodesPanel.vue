@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { LatencyResult, NodeConfig } from '../../types'
-import { formatAsciiMode } from '../../sudoku/asciiMode'
 
 type NodeView = {
   node: NodeConfig
@@ -28,18 +27,10 @@ const props = defineProps<{
 
 const query = ref('')
 
-const asciiModeText = (value: string) =>
-  formatAsciiMode(value, {
-    uplink: props.t('uplinkShort'),
-    downlink: props.t('downlinkShort'),
-    ascii: props.t('styleAscii'),
-    entropy: props.t('styleEntropy'),
-  })
-
 const filteredNodes = computed(() => {
   const kw = query.value.trim().toLowerCase()
   if (!kw) return props.sortedNodes
-  return props.sortedNodes.filter(({ node }) => `${node.name} ${node.serverAddress} ${node.aead}`.toLowerCase().includes(kw))
+  return props.sortedNodes.filter(({ node }) => `${node.name} ${node.serverAddress} ${node.httpMask?.mode || ''}`.toLowerCase().includes(kw))
 })
 
 const activeNode = computed(() => props.sortedNodes.find((item) => item.active))
@@ -56,6 +47,11 @@ const latencyTone = (item: NodeView) => {
   if (n <= 80) return 'ok'
   if (n <= 220) return 'warn'
   return 'bad'
+}
+
+const httpMaskText = (node: NodeConfig) => {
+  if (node.httpMask?.disable) return props.t('notEnabled')
+  return node.httpMask?.mode?.trim() || 'auto'
 }
 
 const selectNode = (item: NodeView) => {
@@ -76,8 +72,6 @@ const selectNode = (item: NodeView) => {
           <dl>
             <div><dt>{{ props.t('enabled') }}</dt><dd>{{ activeNode?.node.enabled ? props.t('enabled') : props.t('disabled') }}</dd></div>
             <div><dt>{{ props.t('latency') }}</dt><dd>{{ activeNode ? latencyText(activeNode) : '-' }}</dd></div>
-            <div><dt>AEAD</dt><dd>{{ activeNode?.node.aead || '-' }}</dd></div>
-            <div><dt>{{ props.t('byteStyle') }}</dt><dd>{{ activeNode ? asciiModeText(activeNode.node.ascii) : '-' }}</dd></div>
             <div><dt>{{ props.t('localPort') }}</dt><dd>{{ activeNode?.node.localPort || '-' }}</dd></div>
           </dl>
         </article>
@@ -117,18 +111,14 @@ const selectNode = (item: NodeView) => {
               </span>
             </div>
 
-            <div class="node-kpis">
+            <div class="node-kpis node-kpis-compact">
               <div>
                 <span>{{ props.t('latency') }}</span>
                 <strong :class="latencyTone(item)">{{ latencyText(item) }}</strong>
               </div>
               <div>
-                <span>AEAD</span>
-                <strong>{{ item.node.aead }}</strong>
-              </div>
-              <div>
-                <span>{{ props.t('byteStyle') }}</span>
-                <strong>{{ asciiModeText(item.node.ascii) }}</strong>
+                <span>HTTPMask</span>
+                <strong>{{ httpMaskText(item.node) }}</strong>
               </div>
             </div>
 

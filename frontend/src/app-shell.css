@@ -3049,6 +3049,10 @@ body,
   gap: 10px;
 }
 
+.node-kpis.node-kpis-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .node-kpis div {
   min-width: 0;
   border: 1px solid var(--client-border);

@@ -115,8 +115,8 @@ func main() {
 	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:                   "main",
 		Title:                  "4x4 sudoku",
-		Width:                  1120,
-		Height:                 720,
+		Width:                  523,
+		Height:                 652,
 		MinWidth:               390,
 		MinHeight:              560,
 		URL:                    "/",
