@@ -158,10 +158,11 @@ type hevTunnelSection struct {
 }
 
 type hevSocks5Section struct {
-	Port    int    `yaml:"port"`
-	Address string `yaml:"address"`
-	UDP     string `yaml:"udp"`
-	Mark    int    `yaml:"mark"`
+	Port        int    `yaml:"port"`
+	Address     string `yaml:"address"`
+	UDP         string `yaml:"udp"`
+	Mark        int    `yaml:"mark"`
+	TCPFastOpen bool   `yaml:"tcp-fastopen"`
 }
 
 type hevMapDNSSection struct {
@@ -191,10 +192,11 @@ func buildHevConfig(cfg *AppConfig, localPort int) *hevTunnelConfig {
 			IPv6:       cfg.Tun.IPv6,
 		},
 		Socks5: hevSocks5Section{
-			Port:    localPort,
-			Address: "127.0.0.1",
-			UDP:     strings.TrimSpace(cfg.Tun.SocksUDP),
-			Mark:    cfg.Tun.SocksMark,
+			Port:        localPort,
+			Address:     "127.0.0.1",
+			UDP:         strings.TrimSpace(cfg.Tun.SocksUDP),
+			Mark:        cfg.Tun.SocksMark,
+			TCPFastOpen: true,
 		},
 		Misc: &hevMiscSection{
 			TaskStackSize:   cfg.Tun.TaskStackSize,

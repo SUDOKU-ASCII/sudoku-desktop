@@ -2,6 +2,18 @@ package core
 
 import "testing"
 
+func TestBuildHevConfigEnablesTCPFastOpen(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+
+	hevCfg := buildHevConfig(cfg, 1080)
+	if hevCfg == nil {
+		t.Fatal("expected HEV config")
+	}
+	if !hevCfg.Socks5.TCPFastOpen {
+		t.Fatal("expected HEV socks5 tcp-fastopen to be enabled")
+	}
+}
+
 func TestEffectiveRuntimeConfigForcesMapDNSInTunPACMode(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Tun.Enabled = true

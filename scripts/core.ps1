@@ -152,7 +152,7 @@ Get-ChildItem -Path $runtimeBinRoot -Directory -ErrorAction SilentlyContinue |
 #
 if ($What -eq "all" -or $What -eq "hev") {
   $hevVersion = $env:HEV_VERSION
-  if (-not $hevVersion) { $hevVersion = "2.14.4" }
+  if (-not $hevVersion) { $hevVersion = "2.15.0" }
 
   if ($goos -eq "windows" -and $goarch -eq "amd64") {
     $asset = "hev-socks5-tunnel-win64.zip"
@@ -190,7 +190,7 @@ if ($What -eq "all" -or $What -eq "sudoku") {
   $sudokuRepo = $env:SUDOKU_REPO
   if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
   $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "v0.4.3" }
+  if (-not $sudokuRef) { $sudokuRef = "v0.4.4" }
 
   $tmp = New-TempDir "sudoku-build-"
   $sudokuDir = Join-Path $tmp "sudoku"
