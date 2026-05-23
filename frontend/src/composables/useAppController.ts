@@ -672,7 +672,7 @@ const removeNode = async (id: string) => {
         { Label: t('delete') },
       ],
     })
-    confirmed = action === t('delete')
+    confirmed = action === t('delete') || action === 'Yes'
   } catch {
     confirmed = window.confirm(t('confirmDeleteNode'))
   }
