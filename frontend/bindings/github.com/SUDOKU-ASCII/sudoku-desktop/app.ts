@@ -54,6 +54,10 @@ export function EnsureCoreBinaries(): $CancellablePromise<void> {
     return $Call.ByID(2644454621);
 }
 
+export function ExportLogs(entries: core$0.LogEntry[]): $CancellablePromise<string> {
+    return $Call.ByID(2380865800, entries);
+}
+
 export function ExportShortLink(nodeID: string): $CancellablePromise<string> {
     return $Call.ByID(2556485087, nodeID);
 }
@@ -130,6 +134,10 @@ export function SaveConfig(cfg: core$0.AppConfig): $CancellablePromise<void> {
 
 export function SetActiveNode(nodeID: string): $CancellablePromise<void> {
     return $Call.ByID(1112636605, nodeID);
+}
+
+export function SetRoutingMode(mode: string): $CancellablePromise<void> {
+    return $Call.ByID(1686574732, mode);
 }
 
 export function ShutdownNow(): $CancellablePromise<void> {

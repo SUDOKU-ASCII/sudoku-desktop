@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -67,10 +66,6 @@ type Backend struct {
 	tickerStop         chan struct{}
 	bundledRuntimeFS   fs.FS
 	bundledRuntimeRoot string
-}
-
-func NewBackend() (*Backend, error) {
-	return newBackendWithRuntimeFS(nil, "")
 }
 
 func NewBackendWithRuntimeFS(runtimeFS fs.FS, runtimeRoot string) (*Backend, error) {
@@ -302,9 +297,7 @@ func (b *Backend) Shutdown() {
 	b.mu.RUnlock()
 	shutdownTimeout := 4 * time.Second
 	if hasActiveRoutes {
-		// If TUN routes are active, prioritize restoring the user's network over fast quit.
-		// Route/DNS restore can take time on macOS during network transitions.
-		shutdownTimeout = 90 * time.Second
+		shutdownTimeout = 12 * time.Second
 	}
 
 	done := make(chan struct{})
@@ -363,211 +356,35 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		b.opMu.Unlock()
 		return nil
 	}
-	// If the app was force-quit previously, a detached TUN process and/or routes may still be active.
-	// Clean them up before starting a new session to avoid "process already running" and offline states.
-	prevRouteState := b.routeState
-	prevTunRunning := b.tunRunningLocked()
-	prevTunIf := strings.TrimSpace(b.runningTunInterface)
-	if err := b.ensureCoreBinariesLocked(); err != nil {
-		b.state.LastError = err.Error()
-		b.emitStateLocked()
-		b.mu.Unlock()
-		b.opMu.Unlock()
-		return err
-	}
-	node := b.findNode(b.cfg.ActiveNodeID)
-	if node == nil {
-		b.mu.Unlock()
-		b.opMu.Unlock()
-		return errors.New("no active node")
-	}
-	nodeCopy := *node
-	withTun := req.WithTun && b.cfg.Tun.Enabled
-	runtimeCfg, runtimeWarnings, err := effectiveRuntimeConfig(b.cfg, withTun)
-	if err != nil {
-		b.state.LastError = err.Error()
-		b.emitStateLocked()
-		b.mu.Unlock()
-		b.opMu.Unlock()
-		return err
-	}
-	sudokuCfgPath, hevCfgPath, localPort, err := writeRuntimeConfigs(b.store, runtimeCfg, nodeCopy, b.pacURL)
-	if err != nil {
-		b.state.LastError = err.Error()
-		b.emitStateLocked()
-		b.mu.Unlock()
-		b.opMu.Unlock()
-		return err
-	}
-	workDir := runtimeCfg.Core.WorkingDir
-	sudokuBin := runtimeCfg.Core.SudokuBinary
-	hevBin := runtimeCfg.Core.HevBinary
-	coreLogLevel := runtimeCfg.Core.LogLevel
-	trafficStatsFile := filepath.Join(b.store.RuntimeDir(), "traffic_stats.json")
-	routingCfg := runtimeCfg.Routing
-	tunCfg := runtimeCfg.Tun
-	portForwards := append([]PortForwardRule(nil), runtimeCfg.PortForwards...)
-
+	plan, err := b.prepareProxyStartLocked(req)
 	b.mu.Unlock()
+	if err != nil {
+		b.opMu.Unlock()
+		return err
+	}
 
-	for _, warning := range runtimeWarnings {
+	for _, warning := range plan.runtimeWarnings {
 		b.addLog("warn", "dns", warning)
 	}
-
-	if runtime.GOOS == "darwin" {
-		detectedTunIf := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tunCfg.IPv4))
-		if prevRouteState != nil || prevTunRunning || detectedTunIf != "" {
-			tunIf := strings.TrimSpace(prevTunIf)
-			if tunIf == "" {
-				tunIf = detectedTunIf
-			}
-			if tunIf == "" {
-				if routes, err := darwinNetstatRoutesIPv4(); err == nil {
-					for _, r := range routes {
-						if r.Destination != "default" {
-							continue
-						}
-						if !darwinIsTunLikeInterface(r.Netif) {
-							continue
-						}
-						if strings.TrimSpace(r.Netif) == "" {
-							continue
-						}
-						tunIf = strings.TrimSpace(r.Netif)
-						break
-					}
-				}
-			}
-			if tunIf != "" {
-				tunCfg.InterfaceName = tunIf
-			}
-
-			ctx := prevRouteState
-			if ctx == nil {
-				physIf, _ := darwinResolveOutboundBypassInterface(2 * time.Second)
-				physIf = strings.TrimSpace(physIf)
-				emerg := &routeContext{
-					DefaultInterface: physIf,
-					PFAnchor:         fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid()),
-				}
-				if physIf != "" {
-					if svc, err := darwinNetworkServiceForDevice(physIf); err == nil && strings.TrimSpace(svc) != "" {
-						emerg.DarwinDNSSnapshots = []darwinDNSSnapshot{{
-							Service:      strings.TrimSpace(svc),
-							Servers:      nil,
-							WasAutomatic: true,
-						}}
-					}
-				}
-				ctx = emerg
-			}
-
-			b.addLog("warn", "tun", "darwin: detected stale TUN state; tearing down before start")
-			if err := teardownRoutes(ctx, tunCfg, func(line string) {
-				b.addLog("info", "route", line)
-			}); err != nil {
-				b.mu.Lock()
-				b.state.NeedsAdmin = isLikelyPermissionError(err)
-				b.state.RouteSetupError = err.Error()
-				b.state.LastError = err.Error()
-				b.emitStateLocked()
-				b.mu.Unlock()
-				b.opMu.Unlock()
-				return err
-			}
-			if err := b.stopTunLocked(6 * time.Second); err != nil && b.tunRunningLocked() {
-				b.mu.Lock()
-				b.state.LastError = err.Error()
-				b.emitStateLocked()
-				b.mu.Unlock()
-				b.opMu.Unlock()
-				return err
-			}
-
-			b.mu.Lock()
-			b.routeState = nil
-			b.runningTunInterface = ""
-			b.tunRecovering = false
-			b.state.TunRunning = false
-			b.state.NeedsAdmin = false
-			b.state.RouteSetupError = ""
-			b.emitStateLocked()
-			b.mu.Unlock()
-		}
+	if err := b.cleanupStaleTunBeforeStart(&plan); err != nil {
+		b.opMu.Unlock()
+		return err
 	}
-	if runtime.GOOS == "linux" {
-		// Best-effort cleanup of stale policy routes and/or a detached root HEV process
-		// after crash/force-quit, to avoid offline states and "hev already running".
-		detectedRoutes := false
-		if tunCfg.RouteTable > 0 {
-			if out, err := exec.Command("ip", "rule", "show").CombinedOutput(); err == nil {
-				needle := fmt.Sprintf("lookup %d", tunCfg.RouteTable)
-				for _, line := range strings.Split(string(out), "\n") {
-					line = strings.TrimSpace(line)
-					if !strings.HasPrefix(line, "20:") {
-						continue
-					}
-					if strings.Contains(line, needle) {
-						detectedRoutes = true
-						break
-					}
-				}
-			}
-		}
-		if detectedRoutes && strings.TrimSpace(tunCfg.InterfaceName) != "" {
-			if out, err := exec.Command("ip", "route", "show", "table", fmt.Sprintf("%d", tunCfg.RouteTable)).CombinedOutput(); err == nil {
-				routeOut := string(out)
-				if !strings.Contains(routeOut, "default") || !strings.Contains(routeOut, "dev "+strings.TrimSpace(tunCfg.InterfaceName)) {
-					detectedRoutes = false
-				}
-			}
-		}
-		if prevRouteState != nil || prevTunRunning || detectedRoutes {
-			ctx := prevRouteState
-			if ctx == nil {
-				emerg := &routeContext{
-					ServerIP:              resolveServerIPFromAddress(nodeCopy.ServerAddress),
-					LinuxResolvConfBackup: fmt.Sprintf("/tmp/sudoku4x4-resolv.conf.%d.bak", os.Getuid()),
-				}
-				if srcIP, err := linuxDefaultOutboundIPv4(); err == nil && strings.TrimSpace(srcIP) != "" {
-					emerg.LinuxOutboundSrcIP = strings.TrimSpace(srcIP)
-				}
-				ctx = emerg
-			}
 
-			b.addLog("warn", "tun", "linux: detected stale TUN state; tearing down before start")
-			if err := teardownRoutes(ctx, tunCfg, func(line string) {
-				b.addLog("info", "route", line)
-			}); err != nil {
-				b.mu.Lock()
-				b.state.NeedsAdmin = isLikelyPermissionError(err)
-				b.state.RouteSetupError = err.Error()
-				b.state.LastError = err.Error()
-				b.emitStateLocked()
-				b.mu.Unlock()
-				b.opMu.Unlock()
-				return err
-			}
-			if err := b.stopTunLocked(6 * time.Second); err != nil && b.tunRunningLocked() {
-				b.mu.Lock()
-				b.state.LastError = err.Error()
-				b.emitStateLocked()
-				b.mu.Unlock()
-				b.opMu.Unlock()
-				return err
-			}
-
-			b.mu.Lock()
-			b.routeState = nil
-			b.runningTunInterface = ""
-			b.tunRecovering = false
-			b.state.TunRunning = false
-			b.state.NeedsAdmin = false
-			b.state.RouteSetupError = ""
-			b.emitStateLocked()
-			b.mu.Unlock()
-		}
-	}
+	nodeCopy := plan.node
+	withTun := plan.withTun
+	runtimeCfg := plan.runtimeConfig
+	sudokuCfgPath := plan.sudokuConfigPath
+	hevCfgPath := plan.hevConfigPath
+	localPort := plan.localPort
+	workDir := plan.workDir
+	sudokuBin := plan.sudokuBinary
+	hevBin := plan.hevBinary
+	coreLogLevel := plan.coreLogLevel
+	trafficStatsFile := plan.trafficStatsFile
+	routingCfg := plan.routing
+	tunCfg := plan.tun
+	portForwards := plan.portForwards
 
 	startCtx, startID := b.newStartContext()
 	defer b.clearStartIfMatch(startID)
@@ -581,11 +398,10 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		return err
 	}
 
-	coreEnv := []string{
-		"SUDOKU_LOG_LEVEL=" + coreLogLevel,
-		"SUDOKU_TRAFFIC_REPORT=1",
-		"SUDOKU_TRAFFIC_INTERVAL_MS=1000",
-		"SUDOKU_TRAFFIC_FILE=" + trafficStatsFile,
+	ruleCacheDir := filepath.Join(b.store.RuntimeDir(), "cache", "sudoku-rules")
+	coreEnv := baseCoreEnvironment(coreLogLevel, trafficStatsFile, ruleCacheDir)
+	if err := ensureDir(ruleCacheDir); err != nil {
+		b.addLog("warn", "rule", fmt.Sprintf("prepare sudoku rule cache directory failed: %v", err))
 	}
 	if err := writeCoreTrafficStatsFile(trafficStatsFile, coreTrafficFileSnapshot{}); err != nil {
 		b.addLog("warn", "traffic", fmt.Sprintf("prepare traffic stats file failed: %v", err))
@@ -602,7 +418,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		case "darwin":
 			// Best-effort: resolving the physical interface can transiently fail during Wi‑Fi transitions.
 			// Never abort start because of this; host routes + route repair keep the core reachable.
-			ifName, derr := darwinResolveOutboundBypassInterface(4 * time.Second)
+			ifName, sourceIP, derr := darwinResolveOutboundBypass(4 * time.Second)
 			if derr != nil {
 				b.addLog("warn", "route", fmt.Sprintf("darwin: resolve outbound bypass interface failed; continuing without interface-bind: %v", derr))
 			} else if strings.TrimSpace(ifName) == "" {
@@ -610,6 +426,9 @@ func (b *Backend) StartProxy(req StartRequest) error {
 			} else {
 				ifName = strings.TrimSpace(ifName)
 				coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_IFACE="+ifName)
+				if sourceIP = strings.TrimSpace(sourceIP); sourceIP != "" {
+					coreEnv = append(coreEnv, "SUDOKU_OUTBOUND_SRC_IP="+sourceIP)
+				}
 			}
 		case "windows":
 			if ifIndex, werr := windowsDefaultInterfaceIndex(); werr == nil && ifIndex > 0 {

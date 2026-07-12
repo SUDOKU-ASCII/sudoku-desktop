@@ -24,6 +24,7 @@ type darwinSudoCache struct {
 }
 
 var darwinSudo = &darwinSudoCache{}
+var darwinRunSudoCommand = darwinRunSudo
 
 func darwinAdminHasPassword() bool {
 	if os.Geteuid() == 0 {
@@ -46,7 +47,7 @@ func darwinAdminAcquire(password string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	out, err := darwinRunSudo(ctx, []byte(password+"\n"), "-S", "-k", "-p", "", "-v")
+	out, err := darwinRunSudoCommand(ctx, []byte(password+"\n"), "-S", "-k", "-p", "", "-v")
 	if err != nil {
 		msg := strings.TrimSpace(out)
 		if msg == "" {
@@ -92,25 +93,17 @@ func darwinAdminRunShLC(ctx context.Context, script string) (string, error) {
 	if !ok {
 		return "", ErrAdminRequired
 	}
+	defer zeroBytes(pw)
 
 	stdin := make([]byte, 0, len(pw)+1)
 	stdin = append(stdin, pw...)
 	stdin = append(stdin, '\n')
-	output, err := darwinRunSudo(ctx, nil, "-n", "--", darwinShPath, "-lc", script)
-	if err == nil {
-		return output, nil
-	}
+	defer zeroBytes(stdin)
 
-	// Always retry with the cached password. Relying on sudo's error message is brittle
-	// across locales and sudo configurations.
-	output2, err2 := darwinRunSudo(ctx, stdin, "-S", "-p", "", "--", darwinShPath, "-lc", script)
-	if err2 == nil {
-		return output2, nil
-	}
-	if strings.TrimSpace(output2) != "" {
-		return output2, err2
-	}
-	return output, err2
+	// Execute the privileged script exactly once. A failed `sudo -n` attempt cannot
+	// be distinguished safely from a script failure, and retrying may apply route or
+	// DNS mutations twice.
+	return darwinRunSudoCommand(ctx, stdin, "-S", "-p", "", "--", darwinShPath, "-lc", script)
 }
 
 func darwinAdminPasswordCopy() ([]byte, bool) {

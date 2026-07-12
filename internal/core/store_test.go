@@ -32,6 +32,9 @@ func TestDefaultConfigUsesCurrentPlatformTunDefaults(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	want := defaultTunSettings(runtime.GOOS)
 
+	if cfg.UI.Theme != "atelier" {
+		t.Fatalf("expected atelier to be the default theme, got %q", cfg.UI.Theme)
+	}
 	if cfg.Tun.Enabled {
 		t.Fatalf("expected TUN default to be disabled")
 	}
@@ -164,13 +167,13 @@ func TestNormalizeConfigKeepsExplicitTunFlagsAndCustomFakeIPRange(t *testing.T) 
 func TestNormalizeConfigKeepsKnownThemeAndResetsUnknownTheme(t *testing.T) {
 	cfg := &AppConfig{
 		UI: UISettings{
-			Theme: "qingshanlan",
+			Theme: "atelier",
 		},
 	}
 
 	normalizeConfigForOS(cfg, t.TempDir(), "darwin")
 
-	if cfg.UI.Theme != "qingshanlan" {
+	if cfg.UI.Theme != "atelier" {
 		t.Fatalf("expected known theme to be preserved, got %q", cfg.UI.Theme)
 	}
 

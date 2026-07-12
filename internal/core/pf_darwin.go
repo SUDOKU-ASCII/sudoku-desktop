@@ -40,11 +40,3 @@ func darwinBuildPFSetCmd(anchor string, tunIfExpr string, blockQUIC bool, dnsPro
 	}
 	return out
 }
-
-func darwinBuildPFRestoreCmd(anchor string) string {
-	anchor = strings.TrimSpace(anchor)
-	if anchor == "" {
-		return ""
-	}
-	return fmt.Sprintf("pfctl -a %s -F all", shellQuote(anchor))
-}

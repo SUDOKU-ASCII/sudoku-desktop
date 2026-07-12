@@ -1,19 +1,12 @@
 package core
 
 import (
-	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"net"
 	"strings"
 	"testing"
-	"time"
 
-	sudokuapis "github.com/SUDOKU-ASCII/sudoku/apis"
 	sudokukey "github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
-	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
 func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {
@@ -25,8 +18,6 @@ func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("split private key: %v", err)
 	}
-	publicKey := sudokukey.EncodePoint(pair.Public)
-
 	payload := shortLinkPayload{
 		Host:            "127.0.0.1",
 		Port:            443,
@@ -70,83 +61,12 @@ func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {
 		t.Fatalf("expected runtime config to keep split private key, got %q", runtimeCfg.Key)
 	}
 
-	if got := tableSeedKey(node.Key); got != publicKey {
-		t.Fatalf("expected probe table seed public key %q, got %q", publicKey, got)
-	}
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-
-	serverTable := sudokutable.NewTable(publicKey, normalizeASCII(node.ASCII))
-	if serverTable == nil {
-		t.Fatalf("build server table failed")
-	}
-	serverCfg := sudokuapis.DefaultConfig()
-	serverCfg.Key = publicKey
-	serverCfg.AEADMethod = node.AEAD
-	serverCfg.Table = serverTable
-	serverCfg.PaddingMin = node.PaddingMin
-	serverCfg.PaddingMax = node.PaddingMax
-	serverCfg.EnablePureDownlink = node.EnablePureDownlink
-	serverCfg.DisableHTTPMask = true
-	serverCfg.HandshakeTimeoutSeconds = 3
-
-	type handshakeResult struct {
-		target   string
-		userHash string
-		err      error
-	}
-	resultCh := make(chan handshakeResult, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			resultCh <- handshakeResult{err: err}
-			return
-		}
-		defer conn.Close()
-
-		tunnelConn, targetAddr, userHash, err := sudokuapis.ServerHandshakeWithUserHash(conn, serverCfg)
-		if tunnelConn != nil {
-			defer tunnelConn.Close()
-		}
-		resultCh <- handshakeResult{
-			target:   targetAddr,
-			userHash: userHash,
-			err:      err,
-		}
-	}()
-
-	node.ServerAddress = listener.Addr().String()
-	probeCfg, err := buildProtocolConfig(*node, "example.com:443")
+	probeCfg, err := buildSudokuClientConfig(appCfg, *node, "", true)
 	if err != nil {
 		t.Fatalf("build probe config: %v", err)
 	}
 	if probeCfg.Key != splitKey {
 		t.Fatalf("expected probe config to keep split private key, got %q", probeCfg.Key)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, err := sudokuapis.Dial(ctx, probeCfg)
-	if err != nil {
-		t.Fatalf("dial via probe config: %v", err)
-	}
-	_ = conn.Close()
-
-	result := <-resultCh
-	if result.err != nil {
-		t.Fatalf("server handshake failed: %v", result.err)
-	}
-	if result.target != "example.com:443" {
-		t.Fatalf("unexpected target address: %q", result.target)
-	}
-
-	wantUserHash := expectedSplitKeyUserHash(t, splitKey)
-	if result.userHash != wantUserHash {
-		t.Fatalf("unexpected user hash: got %q want %q", result.userHash, wantUserHash)
 	}
 }
 
@@ -223,14 +143,4 @@ func decodeShortLinkForTest(t *testing.T, link string) shortLinkPayload {
 		t.Fatalf("unmarshal short link payload: %v", err)
 	}
 	return payload
-}
-
-func expectedSplitKeyUserHash(t *testing.T, splitKey string) string {
-	t.Helper()
-	keyBytes, err := hex.DecodeString(splitKey)
-	if err != nil {
-		t.Fatalf("decode split key: %v", err)
-	}
-	sum := sha256.Sum256(keyBytes)
-	return hex.EncodeToString(sum[:8])
 }

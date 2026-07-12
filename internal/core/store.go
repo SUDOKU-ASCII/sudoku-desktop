@@ -142,7 +142,7 @@ func DefaultConfig(runtimeDir string) *AppConfig {
 		PortForwards: []PortForwardRule{},
 		UI: UISettings{
 			Language: "auto",
-			Theme:    "auto",
+			Theme:    "atelier",
 			// launchAtLogin defaults to false and is only used by the desktop host app.
 			LaunchAtLogin: false,
 		},
@@ -302,7 +302,7 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 
 func isValidUITheme(theme string) bool {
 	switch strings.ToLower(strings.TrimSpace(theme)) {
-	case "auto", "light", "dark", "qingshanlan", "langhualv", "fengxinzi", "manjianghong":
+	case "auto", "atelier", "light", "dark", "qingshanlan", "langhualv", "fengxinzi", "manjianghong":
 		return true
 	default:
 		return false

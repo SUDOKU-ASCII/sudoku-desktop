@@ -1,4 +1,18 @@
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { System, Window } from '@wailsio/runtime'
+import {
+  ArrowLeftRight,
+  Gauge,
+  Grid3X3,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Route,
+  ScrollText,
+  Server,
+  Settings2,
+} from 'lucide-vue-next'
 import SudokuGame from './components/SudokuGame.vue'
 import DashboardPanel from './components/panels/DashboardPanel.vue'
 import LogsPanel from './components/panels/LogsPanel.vue'
@@ -10,7 +24,18 @@ import RoutingPanel from './components/panels/RoutingPanel.vue'
 import TunPanel from './components/panels/TunPanel.vue'
 import TunAdminModal from './components/panels/TunAdminModal.vue'
 import { useAppController } from './composables/useAppController'
-import './app-shell.css'
+import './styles/index.css'
+
+const navIcons = {
+  dashboard: Gauge,
+  nodes: Server,
+  routing: Route,
+  tun: Network,
+  relay: ArrowLeftRight,
+  logs: ScrollText,
+  misc: Settings2,
+  game: Grid3X3,
+} as const
 
 const {
   t,
@@ -80,6 +105,7 @@ const {
   addPacRule,
   removePacRule,
   normalizePacRules,
+  openLogs,
   saveConfig,
   resetTunFactory,
   addPortForward,
@@ -95,10 +121,83 @@ const {
   connectionOpBusy,
 } = useAppController()
 
+const navRef = ref<HTMLElement | null>(null)
+const navScrollbarStyle = ref<Record<string, string>>({})
+let navResizeObserver: ResizeObserver | null = null
+
+const updateNavScrollbar = () => {
+  const nav = navRef.value
+  if (!nav) return
+
+  const trackWidth = nav.clientWidth
+  const overflow = Math.max(0, nav.scrollWidth - trackWidth)
+  const thumbWidth = overflow > 1 ? Math.max(36, trackWidth * (trackWidth / nav.scrollWidth)) : trackWidth
+  const thumbOffset = overflow > 1 ? (nav.scrollLeft / overflow) * Math.max(0, trackWidth - thumbWidth) : 0
+
+  navScrollbarStyle.value = {
+    '--nav-scroll-thumb-width': `${thumbWidth}px`,
+    '--nav-scroll-thumb-offset': `${thumbOffset}px`,
+    opacity: overflow > 1 ? '1' : '0',
+  }
+}
+
+const closeWindow = () => {
+  void Window.Hide()
+}
+
+const minimiseWindow = () => {
+  void Window.Minimise()
+}
+
+const toggleMaximiseWindow = () => {
+  void Window.ToggleMaximise()
+}
+
+const handleWindowShortcut = (event: KeyboardEvent) => {
+  if (!System.IsMac() || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w') {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  closeWindow()
+}
+
+watch(currentTab, async () => {
+  await nextTick()
+  if (!window.matchMedia('(max-aspect-ratio: 1/1)').matches) return
+  navRef.value
+    ?.querySelector<HTMLElement>(`.navbtn[data-nav-key="${currentTab.value}"]`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+  updateNavScrollbar()
+})
+
+onMounted(async () => {
+  await nextTick()
+  updateNavScrollbar()
+  navResizeObserver = new ResizeObserver(updateNavScrollbar)
+  if (navRef.value) navResizeObserver.observe(navRef.value)
+  window.addEventListener('resize', updateNavScrollbar)
+  window.addEventListener('keydown', handleWindowShortcut, true)
+})
+
+onBeforeUnmount(() => {
+  navResizeObserver?.disconnect()
+  window.removeEventListener('resize', updateNavScrollbar)
+  window.removeEventListener('keydown', handleWindowShortcut, true)
+})
+
 </script>
 
 <template>
   <div class="app-shell" :data-theme="config.ui.theme">
+    <header class="window-chrome" @dblclick="toggleMaximiseWindow">
+      <div class="window-controls" @dblclick.stop>
+        <button class="traffic-dot close-dot" type="button" aria-label="Close" title="Close" @click="closeWindow" />
+        <button class="traffic-dot minimize-dot" type="button" aria-label="Minimise" title="Minimise" @click="minimiseWindow" />
+        <button class="traffic-dot zoom-dot" type="button" aria-label="Maximise" title="Maximise" @click="toggleMaximiseWindow" />
+      </div>
+    </header>
+
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="brand">
         <img class="brand-logo" :src="logoUrl" alt="" />
@@ -107,51 +206,23 @@ const {
           <div class="brand-sub">{{ t('subtitle') }}</div>
         </div>
         <button class="iconbtn" type="button" @click="toggleSidebar" :title="sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              v-if="sidebarCollapsed"
-              d="M9 18l6-6-6-6"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <path
-              v-else
-              d="M15 18l-6-6 6-6"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <PanelLeftOpen v-if="sidebarCollapsed" :size="18" aria-hidden="true" />
+          <PanelLeftClose v-else :size="18" aria-hidden="true" />
         </button>
       </div>
 
-      <nav class="nav">
+      <nav ref="navRef" class="nav" @scroll.passive="updateNavScrollbar">
         <div class="nav-group">
           <button
             v-for="item in navMain"
             :key="item.key"
             class="navbtn"
             :class="{ active: currentTab === item.key }"
+            :data-nav-key="item.key"
             :title="sidebarCollapsed ? t(item.key) : undefined"
             @click="currentTab = item.key"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                v-for="(d, idx) in item.icon"
-                :key="idx"
-                :d="d"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <component :is="navIcons[item.key]" :size="18" aria-hidden="true" />
             <span v-if="!sidebarCollapsed">{{ t(item.key) }}</span>
           </button>
         </div>
@@ -164,25 +235,18 @@ const {
             :key="item.key"
             class="navbtn"
             :class="{ active: currentTab === item.key }"
+            :data-nav-key="item.key"
             :title="sidebarCollapsed ? t(item.key) : undefined"
             @click="currentTab = item.key"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                v-for="(d, idx) in item.icon"
-                :key="idx"
-                :d="d"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <component :is="navIcons[item.key]" :size="18" aria-hidden="true" />
             <span v-if="!sidebarCollapsed">{{ t(item.key) }}</span>
           </button>
         </div>
       </nav>
+      <div class="nav-scroll-track" :style="navScrollbarStyle" aria-hidden="true">
+        <span />
+      </div>
 
       <div class="sidebar-foot">
         <div class="statusbox" :class="state.running ? 'ok' : 'off'">
@@ -194,23 +258,11 @@ const {
     </aside>
 
     <div class="content">
-      <header class="topbar" :class="{ 'with-search': currentTab === 'logs' }">
+      <header class="topbar">
         <div class="pagehead">
           <h2>{{ t(currentTab) }}</h2>
           <p>{{ state.activeNodeName || '-' }}</p>
         </div>
-        <label v-if="currentTab === 'logs'" class="command-search">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M10.8 18.2a7.4 7.4 0 1 1 0-14.8 7.4 7.4 0 0 1 0 14.8Z" fill="none" stroke="currentColor" stroke-width="1.8" />
-            <path d="m16.2 16.2 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-          </svg>
-          <input
-            type="search"
-            v-model="logSearch"
-            :placeholder="t('logSearchPlaceholder')"
-          />
-          <kbd>⌘K</kbd>
-        </label>
         <div class="topbar-right">
           <span class="pill" :class="state.running ? 'ok' : 'off'">{{ runtimeStatusLabel }}</span>
           <span class="pill" :class="state.tunRunning ? 'ok' : 'off'">TUN</span>
@@ -245,6 +297,7 @@ const {
         :detect-proxy-ip="detectProxyIP"
         :close-connection="closeConnection"
         :close-all-connections="closeAllConnections"
+        :open-logs="openLogs"
       />
 
       <NodesPanel

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { Activity, Copy, Pencil, Search, Trash2 } from 'lucide-vue-next'
 import type { LatencyResult, NodeConfig } from '../../types'
 
 type NodeView = {
@@ -86,7 +87,7 @@ const selectNode = (item: NodeView) => {
       <section class="nodes-main">
         <div class="node-toolbar pro-toolbar">
           <label class="toolbar-search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.8 18.2a7.4 7.4 0 1 1 0-14.8 7.4 7.4 0 0 1 0 14.8Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16.2 16.2 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <Search :size="17" aria-hidden="true" />
             <input v-model="query" type="search" :placeholder="props.t('nodeSearchPlaceholder')" />
           </label>
           <button class="btn ghost" @click="props.sortByName">{{ props.t('sortByName') }}</button>
@@ -124,16 +125,16 @@ const selectNode = (item: NodeView) => {
 
             <div class="node-actions">
               <button class="icon-action" :title="props.t('probe')" @click.stop="props.probeNode(item.node.id)">
-                <svg viewBox="0 0 24 24"><path d="M4 12h6l2-5 3 10 2-5h3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <Activity :size="16" aria-hidden="true" />
               </button>
               <button class="icon-action" :title="props.t('copyLink')" @click.stop="props.exportShortlink(item.node.id)">
-                <svg viewBox="0 0 24 24"><path d="M9 8h10v12H9z" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M5 4h10v12" fill="none" stroke="currentColor" stroke-width="1.9"/></svg>
+                <Copy :size="16" aria-hidden="true" />
               </button>
               <button class="icon-action" :title="props.t('edit')" @click.stop="props.openEditNode(item.node)">
-                <svg viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 6l4 4" fill="none" stroke="currentColor" stroke-width="1.9"/></svg>
+                <Pencil :size="16" aria-hidden="true" />
               </button>
               <button class="icon-action danger" :title="props.t('delete')" @click.stop="props.removeNode(item.node.id)">
-                <svg viewBox="0 0 24 24"><path d="M5 7h14" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M9 7V5h6v2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M8 7l1 12h6l1-12" fill="none" stroke="currentColor" stroke-width="1.9"/></svg>
+                <Trash2 :size="16" aria-hidden="true" />
               </button>
             </div>
           </article>

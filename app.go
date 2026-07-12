@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
+	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -86,9 +91,7 @@ func (a *App) traySetProxyMode(mode string) error {
 	default:
 		return nil
 	}
-	cfg := a.GetConfig()
-	cfg.Routing.ProxyMode = mode
-	return a.SaveConfig(cfg)
+	return a.SetRoutingMode(mode)
 }
 
 func (a *App) trayCurrentProxyMode() string {
@@ -114,6 +117,13 @@ func (a *App) SaveConfig(cfg core.AppConfig) error {
 		return nil
 	}
 	return a.backend.SaveConfig(cfg)
+}
+
+func (a *App) SetRoutingMode(mode string) error {
+	if a.backend == nil {
+		return nil
+	}
+	return a.backend.SetRoutingMode(mode)
 }
 
 func (a *App) GetState() core.RuntimeState {
@@ -261,6 +271,62 @@ func (a *App) GetLogs(level string, limit int) []core.LogEntry {
 		return nil
 	}
 	return a.backend.GetLogs(level, limit)
+}
+
+func (a *App) ExportLogs(entries []core.LogEntry) (string, error) {
+	app := application.Get()
+	if app == nil {
+		return "", fmt.Errorf("application is not ready")
+	}
+	filename := "sudoku-logs-" + time.Now().Format("2006-01-02-15-04-05") + ".csv"
+	path, err := app.Dialog.SaveFile().
+		SetFilename(filename).
+		AddFilter("CSV Files", "*.csv").
+		PromptForSingleSelection()
+	if err != nil || strings.TrimSpace(path) == "" {
+		return "", err
+	}
+	if filepath.Ext(path) == "" {
+		path += ".csv"
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	writer := csv.NewWriter(file)
+	writeErr := writer.Write([]string{"timestamp", "level", "component", "message"})
+	for _, entry := range entries {
+		if writeErr != nil {
+			break
+		}
+		writeErr = writer.Write([]string{
+			entry.Timestamp.Format(time.RFC3339Nano),
+			entry.Level,
+			entry.Component,
+			firstNonEmpty(entry.Message, entry.Raw),
+		})
+	}
+	writer.Flush()
+	if writeErr == nil {
+		writeErr = writer.Error()
+	}
+	closeErr := file.Close()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return path, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (a *App) GetConnections() []core.ActiveConnection {

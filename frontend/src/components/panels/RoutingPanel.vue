@@ -14,13 +14,15 @@ const props = defineProps<{
 }>()
 
 const isRejectRule = (raw: string) => /^[!！]/.test(raw.trim())
+const isProxyRule = (raw: string) => /^[-_]/.test(raw.trim())
 
 const enabledRuleCount = computed(() => props.config.routing.ruleUrls.length)
 const rejectRuleCount = computed(() => props.config.routing.ruleUrls.filter((rule) => isRejectRule(rule)).length)
+const proxyRuleCount = computed(() => props.config.routing.ruleUrls.filter((rule) => isProxyRule(rule)).length)
 const customRuleCount = computed(() => props.config.routing.customRules.split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith('#')).length)
 
 const ruleName = (raw: string) => {
-  const text = raw.replace(/^[!！]/, '').trim()
+  const text = raw.replace(/^[!！\-_]/, '').trim()
   try {
     const url = new URL(text)
     const last = url.pathname.split('/').filter(Boolean).pop() || url.hostname
@@ -30,8 +32,8 @@ const ruleName = (raw: string) => {
   }
 }
 
-const ruleKindText = (raw: string) => isRejectRule(raw) ? props.t('rejectRule') : props.t('directRule')
-const ruleKindClass = (raw: string) => isRejectRule(raw) ? 'reject' : 'ok'
+const ruleKindText = (raw: string) => isRejectRule(raw) ? props.t('rejectRule') : isProxyRule(raw) ? props.t('proxyRule') : props.t('directRule')
+const ruleKindClass = (raw: string) => isRejectRule(raw) ? 'reject' : isProxyRule(raw) ? 'proxy' : 'ok'
 
 const moveRule = (idx: number, delta: -1 | 1) => {
   const next = idx + delta
@@ -70,14 +72,14 @@ const moveRule = (idx: number, delta: -1 | 1) => {
             <button class="btn mini" @click="props.addPacRule">{{ props.t('addRule') }}</button>
           </div>
           <div class="pac-pro-list">
-            <div v-for="(rule, idx) in props.config.routing.ruleUrls" :key="idx" class="pac-pro-row" :class="{ reject: isRejectRule(rule) }">
+            <div v-for="(rule, idx) in props.config.routing.ruleUrls" :key="idx" class="pac-pro-row" :class="{ reject: isRejectRule(rule), proxy: isProxyRule(rule) }">
               <button class="order-btn" type="button" :disabled="idx === 0" :title="props.t('moveUp')" @click="moveRule(idx, -1)">↑</button>
               <button class="order-btn" type="button" :disabled="idx === props.config.routing.ruleUrls.length - 1" :title="props.t('moveDown')" @click="moveRule(idx, 1)">↓</button>
               <div class="pac-rule-copy">
                 <strong>{{ ruleName(rule) }}</strong>
                 <input
                   v-model="props.config.routing.ruleUrls[idx]"
-                  placeholder="https://example.com/rules.txt 或 !https://example.com/reject.yaml"
+                  placeholder="https://... (直连), -https://... (代理), !https://... (拒绝)"
                 />
               </div>
               <span class="rule-state" :class="ruleKindClass(rule)">{{ ruleKindText(rule) }}</span>
@@ -126,6 +128,7 @@ const moveRule = (idx: number, delta: -1 | 1) => {
             <div><dt>{{ props.t('pacRuleCount') }}</dt><dd>{{ props.config.routing.ruleUrls.length }}</dd></div>
             <div><dt>{{ props.t('enabledRules') }}</dt><dd>{{ enabledRuleCount }}</dd></div>
             <div><dt>{{ props.t('rejectRules') }}</dt><dd>{{ rejectRuleCount }}</dd></div>
+            <div><dt>{{ props.t('proxyRules') }}</dt><dd>{{ proxyRuleCount }}</dd></div>
             <div><dt>{{ props.t('customRuleCount') }}</dt><dd>{{ customRuleCount }}</dd></div>
             <div><dt>{{ props.t('proxyMode') }}</dt><dd>{{ props.config.routing.proxyMode.toUpperCase() }}</dd></div>
           </dl>

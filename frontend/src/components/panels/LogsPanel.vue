@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { backendApi } from '../../api'
 import type { LogEntry } from '../../types'
 
 const props = defineProps<{
@@ -38,19 +39,8 @@ const countByLevel = computed(() => {
 
 const recentEvents = computed(() => visibleLogs.value.slice(0, 5))
 
-const exportVisibleLogs = () => {
-  const rows = visibleLogs.value.map((item) =>
-    [item.timestamp, item.level, item.component, item.message || item.raw]
-      .map((value) => `"${String(value || '').replace(/"/g, '""')}"`)
-      .join(',')
-  )
-  const blob = new Blob([`timestamp,level,component,message\n${rows.join('\n')}`], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `sudoku-logs-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+const exportVisibleLogs = async () => {
+  await backendApi.exportLogs(visibleLogs.value)
 }
 
 const clearVisibleLogs = () => {

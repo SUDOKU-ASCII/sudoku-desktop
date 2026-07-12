@@ -2,11 +2,9 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -79,11 +77,4 @@ func trimUsageDays(days []UsageDay, max int) []UsageDay {
 	}
 	sort.Slice(days, func(i, j int) bool { return days[i].Date < days[j].Date })
 	return append([]UsageDay(nil), days[len(days)-max:]...)
-}
-
-func validateUsageDay(day UsageDay) error {
-	if strings.TrimSpace(day.Date) == "" {
-		return fmt.Errorf("empty usage day date")
-	}
-	return nil
 }

@@ -56,23 +56,23 @@ func prepareCNRules(ctx context.Context, store *Store, cfg *AppConfig, client *h
 	}
 
 	for _, u := range urls {
-		u = strings.TrimSpace(u)
-		if u == "" {
+		action, sourceURL := parseRuleSource(u)
+		if action != ruleSourceDirect || sourceURL == "" {
 			continue
 		}
-		switch strings.ToLower(u) {
+		switch strings.ToLower(sourceURL) {
 		case "global", "direct":
 			continue
 		}
-		rawPath, err := fetchCachedWithClient(ctx, u, cacheDir, maxCacheAge, client)
+		rawPath, err := fetchCachedWithClient(ctx, sourceURL, cacheDir, maxCacheAge, client)
 		if err != nil {
 			if logf != nil {
-				logf(fmt.Sprintf("download rule list failed: %s: %v", u, err))
+				logf(fmt.Sprintf("download direct rule list failed: %s: %v", sourceURL, err))
 			}
 			continue
 		}
 		if err := parseCNRuleFile(rawPath, out); err != nil && logf != nil {
-			logf(fmt.Sprintf("parse rule list failed: %s: %v", u, err))
+			logf(fmt.Sprintf("parse direct rule list failed: %s: %v", sourceURL, err))
 		}
 	}
 	if custom != "" {

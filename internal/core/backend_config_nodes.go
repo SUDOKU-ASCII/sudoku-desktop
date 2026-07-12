@@ -75,7 +75,7 @@ func configChangeRequiresRestart(prev AppConfig, next AppConfig) bool {
 	if strings.TrimSpace(prev.ActiveNodeID) != strings.TrimSpace(next.ActiveNodeID) {
 		return true
 	}
-	if strings.ToLower(strings.TrimSpace(prev.Routing.ProxyMode)) != strings.ToLower(strings.TrimSpace(next.Routing.ProxyMode)) {
+	if !strings.EqualFold(strings.TrimSpace(prev.Routing.ProxyMode), strings.TrimSpace(next.Routing.ProxyMode)) {
 		return true
 	}
 	if prev.Routing.CustomRulesEnabled != next.Routing.CustomRulesEnabled ||

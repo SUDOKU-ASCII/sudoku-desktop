@@ -4,6 +4,15 @@ import "strings"
 
 const defaultPACRejectRuleURL = "https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml"
 
+type ruleSourceAction uint8
+
+const (
+	ruleSourceDirect ruleSourceAction = iota
+	ruleSourceProxy
+	ruleSourceReject
+	ruleSourceReserved
+)
+
 // defaultPACRuleURLs returns the recommended PAC rule sources.
 //
 // Keep this list CDN-friendly and aligned with upstream defaults so PAC mode works
@@ -20,4 +29,23 @@ func defaultPACRuleURLs() []string {
 func hasRejectRulePrefix(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	return strings.HasPrefix(raw, "!") || strings.HasPrefix(raw, "！")
+}
+
+func parseRuleSource(raw string) (ruleSourceAction, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ruleSourceReserved, ""
+	}
+	switch {
+	case strings.HasPrefix(raw, "!"):
+		return ruleSourceReject, strings.TrimSpace(strings.TrimPrefix(raw, "!"))
+	case strings.HasPrefix(raw, "！"):
+		return ruleSourceReject, strings.TrimSpace(strings.TrimPrefix(raw, "！"))
+	case strings.HasPrefix(raw, "-"), strings.HasPrefix(raw, "_"):
+		return ruleSourceProxy, strings.TrimSpace(raw[1:])
+	case strings.HasPrefix(raw, "?"):
+		return ruleSourceReserved, strings.TrimSpace(raw[1:])
+	default:
+		return ruleSourceDirect, raw
+	}
 }

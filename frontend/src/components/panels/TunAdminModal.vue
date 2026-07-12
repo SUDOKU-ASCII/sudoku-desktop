@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { X } from 'lucide-vue-next'
+
 const props = defineProps<{
   open: boolean
   password: string
@@ -25,9 +27,7 @@ const onSubmit = () => {
       <header class="modal-head">
         <h3>{{ props.t('tunAdminTitle') }}</h3>
         <button class="iconbtn" @click="emit('close')" :title="props.t('close')">
-          <svg viewBox="0 0 24 24">
-            <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-          </svg>
+          <X :size="18" aria-hidden="true" />
         </button>
       </header>
 
@@ -62,4 +62,3 @@ const onSubmit = () => {
     </section>
   </div>
 </template>
-

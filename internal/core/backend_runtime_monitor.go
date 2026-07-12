@@ -450,16 +450,10 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 		)
 	}
 	if tunIf := strings.TrimSpace(tunCfg.InterfaceName); tunIf != "" {
-		cmds = append(cmds,
-			shellJoin("route", "-n", "change", "default", "-interface", tunIf)+" || ("+
-				shellJoin("route", "-n", "delete", "default")+" >/dev/null 2>&1 || true; "+
-				shellJoin("route", "-n", "add", "default", "-interface", tunIf)+") || true",
-		)
+		cmds = append(cmds, darwinAddTunnelRouteCommands(tunIf)...)
 	}
-	cmds = append(cmds,
-		"("+shellJoin("route", "-n", "add", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1 || "+
-			shellJoin("route", "-n", "change", "-ifscope", newIf, "default", newGW)+" >/dev/null 2>&1) || true",
-	)
+	cmds = append(cmds, darwinDeletePhysicalBypassRouteCommands(prevIf, prevGW)...)
+	cmds = append(cmds, darwinAddPhysicalBypassRouteCommands(newIf, newGW)...)
 	if pfAnchor != "" {
 		if pfCmd := strings.TrimSpace(darwinBuildPFSetCmd(pfAnchor, strings.TrimSpace(tunCfg.InterfaceName), tunCfg.BlockQUIC, routeCtx.DNSProxyRedirectPort)); pfCmd != "" {
 			cmds = append(cmds, pfCmd+" || true")
@@ -486,12 +480,12 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 	}
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if runErr != nil {
 		b.darwinNetLastErr = runErr.Error()
 		b.darwinNetLastErrAt = time.Now()
 		b.state.LastError = runErr.Error()
 		b.emitStateLocked()
+		b.mu.Unlock()
 		return
 	}
 	b.darwinNetLastErr = ""
@@ -511,8 +505,9 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 			routeCtx.DarwinDNSSnapshots = append(routeCtx.DarwinDNSSnapshots, newDNSSnap)
 		}
 	}
-	b.addLog("info", "tun", "darwin network repair applied")
 	b.emitStateLocked()
+	b.mu.Unlock()
+	b.addLog("info", "tun", "darwin network repair applied")
 }
 
 func (b *Backend) tick() {

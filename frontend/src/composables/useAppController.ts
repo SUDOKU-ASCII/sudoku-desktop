@@ -22,46 +22,14 @@ const { locale, t } = useI18n()
 const logoUrl = new URL('../assets/images/logo-universal.png', import.meta.url).href
 
 const navItems = [
-  {
-    key: 'dashboard',
-    section: 'main',
-    icon: ['M4 13.5L12 6l8 7.5', 'M6 12.8V20h4.5v-4h3V20H18v-7.2'],
-  },
-  {
-    key: 'nodes',
-    section: 'main',
-    icon: ['M6 7h12v4H6z', 'M6 14h12v4H6z', 'M9 9h.01', 'M9 16h.01'],
-  },
-  {
-    key: 'routing',
-    section: 'main',
-    icon: ['M5 8h8', 'M5 16h8', 'M13 8l3-3 3 3', 'M13 16l3 3 3-3'],
-  },
-  {
-    key: 'tun',
-    section: 'main',
-    icon: ['M4 12h16', 'M7 8h10', 'M7 16h10', 'M12 4v16'],
-  },
-  {
-    key: 'relay',
-    section: 'main',
-    icon: ['M4 12h11', 'M10 7l5 5-5 5', 'M20 7v10'],
-  },
-  {
-    key: 'logs',
-    section: 'main',
-    icon: ['M8 7h13', 'M8 12h13', 'M8 17h13', 'M3 7h.01', 'M3 12h.01', 'M3 17h.01'],
-  },
-  {
-    key: 'misc',
-    section: 'main',
-    icon: ['M12 3v3', 'M12 18v3', 'M4.8 6.8l2.1 2.1', 'M17.1 15.1l2.1 2.1', 'M3 12h3', 'M18 12h3', 'M4.8 17.2l2.1-2.1', 'M17.1 8.9l2.1-2.1', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6'],
-  },
-  {
-    key: 'game',
-    section: 'extra',
-    icon: ['M4 4h16v16H4z', 'M4 12h16', 'M12 4v16'],
-  },
+  { key: 'dashboard', section: 'main' },
+  { key: 'nodes', section: 'main' },
+  { key: 'routing', section: 'main' },
+  { key: 'tun', section: 'main' },
+  { key: 'relay', section: 'main' },
+  { key: 'logs', section: 'main' },
+  { key: 'misc', section: 'main' },
+  { key: 'game', section: 'extra' },
 ] as const
 
 type TabKey = (typeof navItems)[number]['key']
@@ -96,7 +64,7 @@ const toggleSidebar = () => {
 const busy = ref(false)
 const proxyOpBusy = ref(false)
 type ProxyOpState = 'idle' | 'starting' | 'stopping' | 'restarting'
-type ResolvedThemeName = 'light' | 'dark' | 'qingshanlan' | 'langhualv' | 'fengxinzi' | 'manjianghong'
+type ResolvedThemeName = 'atelier' | 'light' | 'dark' | 'qingshanlan' | 'langhualv' | 'fengxinzi' | 'manjianghong'
 const proxyOpState = ref<ProxyOpState>('idle')
 const notice = ref('')
 const noticeType = ref<'ok' | 'error'>('ok')
@@ -181,7 +149,7 @@ const config = reactive<AppConfig>({
   reverseClient: { clientId: '', routes: [] },
   reverseForward: { dialUrl: '', listenAddr: '127.0.0.1:2222', insecure: false },
   portForwards: [],
-  ui: { language: 'auto', theme: 'auto', launchAtLogin: false },
+  ui: { language: 'auto', theme: 'atelier', launchAtLogin: false },
   lastStartedNode: '',
 })
 
@@ -265,6 +233,7 @@ const applyLocaleFromConfig = () => {
 
 const resolveThemeName = (): ResolvedThemeName => {
   switch (config.ui.theme) {
+    case 'atelier':
     case 'light':
     case 'dark':
     case 'qingshanlan':
@@ -967,8 +936,20 @@ const parseShortlinkFromClipboard = async () => {
   }
 }
 
-const setRoutingMode = (mode: ProxyMode) => {
+const setRoutingMode = async (mode: ProxyMode) => {
+  if (config.routing.proxyMode === mode) return
+  const previous = config.routing.proxyMode
   config.routing.proxyMode = mode
+  busy.value = true
+  try {
+    await backendApi.setRoutingMode(mode)
+    flash(t('routingApplied'))
+  } catch (e: any) {
+    config.routing.proxyMode = previous
+    flash(e?.message || t('saveFailed'), 'error')
+  } finally {
+    busy.value = false
+  }
 }
 
 const addPacRule = () => {
@@ -981,6 +962,10 @@ const removePacRule = (idx: number) => {
 
 const normalizePacRules = () => {
   config.routing.ruleUrls = config.routing.ruleUrls.map((x) => x.trim()).filter(Boolean)
+}
+
+const openLogs = () => {
+  currentTab.value = 'logs'
 }
 
 const canHandleNodePaste = (target: EventTarget | null): boolean => {
@@ -1247,6 +1232,7 @@ onUnmounted(() => {
     addPacRule,
     removePacRule,
     normalizePacRules,
+    openLogs,
     saveConfig,
     resetTunFactory,
     addPortForward,

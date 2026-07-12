@@ -2,7 +2,6 @@ package core
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	sudokukey "github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
 	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
@@ -151,20 +149,4 @@ func decodeASCII(v string) string {
 		return normalized
 	}
 	return "prefer_entropy"
-}
-
-func tableSeedKey(key string) string {
-	trimmed := strings.TrimSpace(key)
-	if trimmed == "" {
-		return ""
-	}
-	keyBytes, err := hex.DecodeString(trimmed)
-	if err != nil || len(keyBytes) != 64 {
-		return trimmed
-	}
-	pubKeyPoint, err := sudokukey.RecoverPublicKey(trimmed)
-	if err != nil {
-		return trimmed
-	}
-	return sudokukey.EncodePoint(pubKeyPoint)
 }

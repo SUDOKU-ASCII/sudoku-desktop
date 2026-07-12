@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { X } from 'lucide-vue-next'
 import type { NodeConfig } from '../../types'
 import { buildAsciiMode, parseAsciiMode, type ASCIIStyleToken } from '../../sudoku/asciiMode'
 
@@ -44,7 +45,7 @@ const downlinkStyle = computed<ASCIIStyleToken>({
       <header class="modal-head">
         <h3>{{ props.nodeEditorMode === 'create' ? props.t('addNode') : props.t('editNode') }}</h3>
         <button class="iconbtn" @click="emit('close')" :title="props.t('close')">
-          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <X :size="18" aria-hidden="true" />
         </button>
       </header>
 

@@ -120,11 +120,20 @@ func main() {
 		MinWidth:               390,
 		MinHeight:              560,
 		URL:                    "/",
-		BackgroundColour:       application.NewRGB(246, 247, 249),
+		Frameless:              true,
+		BackgroundType:         application.BackgroundTypeTransparent,
+		BackgroundColour:       application.NewRGBA(0, 0, 0, 0),
 		Hidden:                 startHidden,
 		OpenInspectorOnStartup: false,
+		Mac: application.MacWindow{
+			Backdrop: application.MacBackdropTransparent,
+		},
+		Windows: application.WindowsWindow{
+			DisableFramelessWindowDecorations: false,
+		},
 		Linux: application.LinuxWindow{
-			Icon: trayIcon,
+			Icon:                trayIcon,
+			WindowIsTranslucent: true,
 		},
 		KeyBindings: map[string]func(window application.Window){
 			"cmd+q": func(window application.Window) {
@@ -146,15 +155,14 @@ func main() {
 		},
 	})
 
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			if quitting.Load() {
-				return
-			}
-			event.Cancel()
-			mainWindow.Hide()
-		})
-	}
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		if quitting.Load() {
+			return
+		}
+		event.Cancel()
+		mainWindow.Hide()
+	})
+	configureApplicationMenu(app, mainWindow)
 
 	tray := app.SystemTray.New().
 		AttachWindow(mainWindow).

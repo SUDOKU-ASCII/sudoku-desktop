@@ -128,23 +128,18 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 	}
 
 	cmdline := shellJoin(append([]string{command}, args...)...)
-
 	inner := fmt.Sprintf(
-		"set -e; cd %s && umask 022 && ("+
-			" pid=0;"+
-			" if [ -f %s ]; then p=$(cat %s 2>/dev/null || true); case \"$p\" in (''|*[!0-9]*) p=0 ;; esac; if [ \"$p\" -gt 0 ] && kill -0 \"$p\" >/dev/null 2>&1; then pid=$p; fi; fi;"+
-			" if [ \"$pid\" -gt 0 ]; then echo \"$pid\" > %s; exit 0; fi;"+
-			" rm -f %s >/dev/null 2>&1 || true;"+
-			" : > %s;"+
-			" ( %s ) >> %s 2>&1 &"+
-			" pid=$!; echo ${pid:-0} > %s;"+
-			" sleep 0.2;"+
-			" if [ \"$pid\" -le 0 ] || ! kill -0 \"$pid\" >/dev/null 2>&1; then rm -f %s >/dev/null 2>&1 || true; exit 23; fi;"+
-			" )",
+		"set -e; cd %s; umask 022; "+
+			"launchctl remove %s >/dev/null 2>&1 || true; "+
+			"rm -f %s >/dev/null 2>&1 || true; "+
+			": > %s; "+
+			"/usr/bin/nohup %s </dev/null >> %s 2>&1 & "+
+			"pid=$!; echo ${pid:-0} > %s; "+
+			"sleep 0.2; "+
+			"if [ \"$pid\" -le 0 ] || ! kill -0 \"$pid\" >/dev/null 2>&1; then "+
+			"rm -f %s >/dev/null 2>&1 || true; exit 23; fi",
 		shellQuote(workdirOrDot(workdir)),
-		shellQuote(pidFile),
-		shellQuote(pidFile),
-		shellQuote(pidFile),
+		shellQuote(label),
 		shellQuote(pidFile),
 		shellQuote(logFile),
 		cmdline,
@@ -152,7 +147,7 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 		shellQuote(pidFile),
 		shellQuote(pidFile),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	output, err := darwinAdminRunShLC(ctx, inner)
 	if err != nil {
@@ -165,7 +160,7 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 		return 0, fmt.Errorf("start (admin): %w: %s", err, strings.TrimSpace(output))
 	}
 
-	pid, err := readPIDEventually(pidFile, 1500*time.Millisecond)
+	pid, err := readPIDEventually(pidFile, 1*time.Second)
 	if err != nil {
 		if tail := strings.TrimSpace(tailFile(logFile, 80)); tail != "" {
 			return 0, fmt.Errorf("start (admin): %w; hev log tail:\n%s", err, tail)
@@ -189,12 +184,6 @@ func (p *darwinAdminDetachedProcess) Start(command string, args []string, workdi
 var (
 	darwinHevMarkerIF = regexp.MustCompile(`(?m)^__SUDOKU_TUN_IF__=([^\s]+)\s*$`)
 )
-
-func escapeForDoubleQuotes(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	return s
-}
 
 func ensureShellStmt(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
@@ -236,10 +225,7 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		return 0, "", "", fmt.Errorf("process already running (pid=%d)", p.pid)
 	}
 
-	quotedArgs := make([]string, 0, len(args))
-	for _, a := range args {
-		quotedArgs = append(quotedArgs, shellQuote(a))
-	}
+	cmdline := shellJoin(append([]string{command}, args...)...)
 
 	label := p.label
 	if strings.TrimSpace(label) == "" {
@@ -316,18 +302,26 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 		setDefaultV6Snippet = ` route -n change -inet6 default -interface "$tun_if" || true;`
 	}
 	guardOKPath := pidFile + ".start_ok"
+	cleanupHEV := fmt.Sprintf(
+		`if [ "${pid:-0}" -gt 0 ]; then kill -TERM "$pid" >/dev/null 2>&1 || true; sleep 0.4; kill -KILL "$pid" >/dev/null 2>&1 || true; fi; rm -f %s >/dev/null 2>&1 || true%s`,
+		shellQuote(pidFile),
+		restoreSnippet,
+	)
 
 	inner := fmt.Sprintf(
 		"set -e; cd %s && umask 022 && ("+
 			" before_ifs=\"$(ifconfig -l 2>/dev/null || true)\";"+
 			" launchctl remove %s >/dev/null 2>&1 || true;"+
-			" launchctl submit -l %s -o %s -e %s -- %s %s;"+
+			" rm -f %s >/dev/null 2>&1 || true;"+
+			" : > %s;"+
+			" /usr/bin/nohup %s </dev/null >> %s 2>&1 &"+
+			" pid=$!;"+
 			" sleep 0.2;"+
-			" pid=0; for i in $(seq 1 50); do p=$(launchctl list | awk -v label=%s '$3==label {print $1; exit}'); case \"$p\" in (''|'-'|*[!0-9]*) p=0 ;; esac; if [ \"$p\" -gt 0 ]; then pid=$p; break; fi; sleep 0.1; done;"+
+			" if [ \"$pid\" -le 0 ] || ! kill -0 \"$pid\" >/dev/null 2>&1; then rm -f %s >/dev/null 2>&1 || true; exit 23; fi;"+
 			" echo ${pid:-0} > %s;"+
 			" guard_ok=%s; rm -f \"$guard_ok\" >/dev/null 2>&1 || true;"+
-			" trap \"launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s\" EXIT;"+
-			" ( sleep 35; if [ ! -f \"$guard_ok\" ]; then echo '__SUDOKU_GUARD__=revert'; launchctl remove %s >/dev/null 2>&1 || true; rm -f \\\"%s\\\" >/dev/null 2>&1 || true%s; fi ) >/dev/null 2>&1 &"+
+			" trap %s EXIT;"+
+			" ( sleep 35; if [ ! -f \"$guard_ok\" ]; then echo '__SUDOKU_GUARD__=revert'; %s; fi ) >/dev/null 2>&1 &"+
 			" tun_if=''; for i in $(seq 1 120); do tun_if=$(%s); [ -n \"$tun_if\" ] && break; sleep 0.1; done;"+
 			" if [ -z \"$tun_if\" ]; then tun_if=$(%s); fi;"+
 			" case \" $before_ifs \" in (*\" $tun_if \"*) echo '__SUDOKU_WARN__=reused_existing_tun_interface_'${tun_if} ;; esac;"+
@@ -353,20 +347,15 @@ func (p *darwinAdminDetachedProcess) StartWithRoutes(ctx context.Context, comman
 			" )",
 		shellQuote(workdirOrDot(workdir)),
 		shellQuote(label),
-		shellQuote(label),
+		shellQuote(pidFile),
 		shellQuote(logFile),
+		cmdline,
 		shellQuote(logFile),
-		shellQuote(command),
-		strings.Join(quotedArgs, " "),
-		shellQuote(label),
+		shellQuote(pidFile),
 		shellQuote(pidFile),
 		shellQuote(guardOKPath),
-		shellQuote(label),
-		escapeForDoubleQuotes(pidFile),
-		escapeForDoubleQuotes(restoreSnippet),
-		shellQuote(label),
-		escapeForDoubleQuotes(pidFile),
-		escapeForDoubleQuotes(restoreSnippet),
+		shellQuote(cleanupHEV),
+		cleanupHEV,
 		findTunIFNew,
 		findTunIFAny,
 		func() string {

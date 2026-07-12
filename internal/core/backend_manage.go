@@ -53,23 +53,96 @@ func (b *Backend) StartReverseForwarder() error {
 
 func (b *Backend) StopReverseForwarder() error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if err := b.revProc.Stop(2 * time.Second); err != nil {
-		b.state.LastError = err.Error()
+	running := b.revProc.IsRunning()
+	b.mu.Unlock()
+
+	var stopErr error
+	if running {
+		stopErr = b.revProc.Stop(2 * time.Second)
+	}
+
+	b.mu.Lock()
+	if stopErr != nil {
+		b.state.LastError = stopErr.Error()
 	}
 	b.state.ReverseRunning = false
 	b.emitStateLocked()
+	b.mu.Unlock()
+	if stopErr != nil {
+		return stopErr
+	}
+	return nil
+}
+
+func (b *Backend) SetRoutingMode(mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "global", "direct", "pac":
+	default:
+		return fmt.Errorf("invalid routing mode: %s", mode)
+	}
+
+	b.mu.Lock()
+	if strings.EqualFold(strings.TrimSpace(b.cfg.Routing.ProxyMode), mode) {
+		b.mu.Unlock()
+		return nil
+	}
+	previous := b.cfg.Routing.ProxyMode
+	b.cfg.Routing.ProxyMode = mode
+	if err := b.store.Save(b.cfg); err != nil {
+		b.cfg.Routing.ProxyMode = previous
+		b.mu.Unlock()
+		return err
+	}
+	running := b.state.Running
+	withTun := b.state.TunRunning
+	b.emitStateLocked()
+	b.mu.Unlock()
+
+	if !running {
+		return nil
+	}
+	b.addLog("info", "route", fmt.Sprintf("routing mode changed to %s; applying now", mode))
+	if err := b.RestartProxy(StartRequest{WithTun: withTun}); err != nil {
+		b.mu.Lock()
+		b.cfg.Routing.ProxyMode = previous
+		saveErr := b.store.Save(b.cfg)
+		stillRunning := b.state.Running
+		b.emitStateLocked()
+		b.mu.Unlock()
+
+		var recoverErr error
+		if !stillRunning {
+			recoverErr = b.StartProxy(StartRequest{WithTun: withTun})
+		}
+		if saveErr != nil {
+			return fmt.Errorf("apply routing mode %s failed: %w; rollback save failed: %v", mode, err, saveErr)
+		}
+		if recoverErr != nil {
+			return fmt.Errorf("apply routing mode %s failed: %w; restoring previous mode failed: %v", mode, err, recoverErr)
+		}
+		return fmt.Errorf("apply routing mode %s failed; restored previous mode: %w", mode, err)
+	}
 	return nil
 }
 
 func (b *Backend) ProbeNode(nodeID string) (LatencyResult, error) {
-	b.mu.RLock()
+	b.mu.Lock()
+	if err := b.ensureCoreBinariesLocked(); err != nil {
+		b.mu.Unlock()
+		return LatencyResult{}, err
+	}
 	node := b.findNode(nodeID)
-	b.mu.RUnlock()
+	var nodeCopy NodeConfig
+	if node != nil {
+		nodeCopy = *node
+	}
+	cfg := cloneConfig(b.cfg)
+	b.mu.Unlock()
 	if node == nil {
 		return LatencyResult{}, fmt.Errorf("node not found")
 	}
-	result := probeNodeLatency(*node)
+	result := probeNodeLatency(nodeCopy, *cfg)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.latencyByID[nodeID] = result
@@ -82,12 +155,19 @@ func (b *Backend) ProbeNode(nodeID string) (LatencyResult, error) {
 }
 
 func (b *Backend) ProbeAllNodes() []LatencyResult {
-	b.mu.RLock()
+	b.mu.Lock()
+	if err := b.ensureCoreBinariesLocked(); err != nil {
+		b.state.LastError = err.Error()
+		b.emitStateLocked()
+		b.mu.Unlock()
+		return []LatencyResult{}
+	}
 	nodes := append([]NodeConfig(nil), b.cfg.Nodes...)
-	b.mu.RUnlock()
+	cfg := cloneConfig(b.cfg)
+	b.mu.Unlock()
 	results := make([]LatencyResult, 0, len(nodes))
 	for _, node := range nodes {
-		results = append(results, probeNodeLatency(node))
+		results = append(results, probeNodeLatency(node, *cfg))
 	}
 	sortLatencyResults(results)
 	b.mu.Lock()

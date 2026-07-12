@@ -9,101 +9,113 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	sudokuapis "github.com/SUDOKU-ASCII/sudoku/apis"
-	sudokutable "github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 	"golang.org/x/net/proxy"
 )
 
-func buildProtocolConfig(node NodeConfig, target string) (*sudokuapis.ProtocolConfig, error) {
-	seedKey := tableSeedKey(node.Key)
-	cfg := sudokuapis.DefaultConfig()
-	cfg.ServerAddress = strings.TrimSpace(node.ServerAddress)
-	cfg.TargetAddress = strings.TrimSpace(target)
-	cfg.Key = strings.TrimSpace(node.Key)
-	if cfg.Key == "" {
-		return nil, fmt.Errorf("empty node key")
-	}
-	if node.AEAD != "" {
-		cfg.AEADMethod = strings.TrimSpace(node.AEAD)
-	}
-	cfg.PaddingMin = node.PaddingMin
-	cfg.PaddingMax = node.PaddingMax
-	cfg.EnablePureDownlink = node.EnablePureDownlink
-	cfg.DisableHTTPMask = node.HTTPMask.Disable
-	cfg.HTTPMaskMode = strings.TrimSpace(node.HTTPMask.Mode)
-	cfg.HTTPMaskTLSEnabled = node.HTTPMask.TLS
-	cfg.HTTPMaskHost = strings.TrimSpace(node.HTTPMask.Host)
-	cfg.HTTPMaskPathRoot = strings.TrimSpace(node.HTTPMask.PathRoot)
-	cfg.HTTPMaskMultiplex = strings.TrimSpace(node.HTTPMask.Multiplex)
-	if cfg.HTTPMaskMode == "" {
-		cfg.HTTPMaskMode = "legacy"
-	}
-	if cfg.HTTPMaskMultiplex == "" {
-		cfg.HTTPMaskMultiplex = "off"
-	}
-	if cfg.PaddingMax <= 0 {
-		cfg.PaddingMax = 15
-	}
-	if cfg.PaddingMin > cfg.PaddingMax {
-		cfg.PaddingMin = cfg.PaddingMax
-	}
-
-	ascii := normalizeASCII(node.ASCII)
-	if len(node.CustomTables) > 0 {
-		tables := make([]*sudokutable.Table, 0, len(node.CustomTables))
-		for _, layout := range node.CustomTables {
-			table, err := sudokutable.NewTableWithCustom(seedKey, ascii, layout)
-			if err != nil {
-				return nil, err
-			}
-			tables = append(tables, table)
-		}
-		cfg.Tables = tables
-	} else if strings.TrimSpace(node.CustomTable) != "" {
-		table, err := sudokutable.NewTableWithCustom(seedKey, ascii, strings.TrimSpace(node.CustomTable))
-		if err != nil {
-			return nil, err
-		}
-		cfg.Table = table
-	} else {
-		table := sudokutable.NewTable(seedKey, ascii)
-		if table == nil {
-			return nil, fmt.Errorf("build table failed")
-		}
-		cfg.Table = table
-	}
-	if err := cfg.ValidateClient(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
-func probeNodeLatency(node NodeConfig) LatencyResult {
+func probeNodeLatency(node NodeConfig, appCfg AppConfig) LatencyResult {
 	result := LatencyResult{
 		NodeID:        node.ID,
 		NodeName:      node.Name,
 		LatencyMs:     -1,
 		CheckedAtUnix: time.Now().UnixMilli(),
 	}
-	start := time.Now()
-	cfg, err := buildProtocolConfig(node, "i.ytimg.com:443")
+	if strings.TrimSpace(appCfg.Core.SudokuBinary) == "" {
+		result.Error = "sudoku binary is empty"
+		return result
+	}
+
+	ln, err := net.Listen("tcp4", net.JoinHostPort(localLoopbackIPv4, "0"))
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
+	localPort := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	tempDir, err := os.MkdirTemp("", "sudoku-node-probe-*")
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer os.RemoveAll(tempDir)
+
+	node.LocalPort = localPort
+	appCfg.Core.LocalPort = localPort
+	appCfg.Routing.ProxyMode = "global"
+	appCfg.ReverseClient = ReverseClientSettings{Routes: []ReverseRoute{}}
+	clientCfg, err := buildSudokuClientConfig(&appCfg, node, "", true)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	configPath := filepath.Join(tempDir, "client.config.json")
+	if err := writeJSONFile(configPath, clientCfg); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	var logMu sync.Mutex
+	var lastLines []string
+	proc := NewManagedProcess("sudoku-probe")
+	if err := proc.Start(
+		appCfg.Core.SudokuBinary,
+		[]string{"-c", configPath},
+		[]string{"SUDOKU_LOG_LEVEL=error"},
+		tempDir,
+		func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				return
+			}
+			logMu.Lock()
+			lastLines = append(lastLines, line)
+			if len(lastLines) > 8 {
+				lastLines = lastLines[len(lastLines)-8:]
+			}
+			logMu.Unlock()
+		},
+	); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer proc.Stop(1200 * time.Millisecond)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, err := sudokuapis.Dial(ctx, cfg)
+	socksAddr := net.JoinHostPort(localLoopbackIPv4, strconv.Itoa(localPort))
+	if err := waitForTCPReady(ctx, socksAddr, 4*time.Second); err != nil {
+		logMu.Lock()
+		tail := strings.Join(lastLines, " | ")
+		logMu.Unlock()
+		if tail != "" {
+			result.Error = fmt.Sprintf("%v: %s", err, tail)
+		} else {
+			result.Error = err.Error()
+		}
+		return result
+	}
+
+	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: 8 * time.Second})
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	start := time.Now()
+	conn, err := dialer.Dial("tcp", "i.ytimg.com:443")
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
 
 	tlsConn := tls.Client(conn, &tls.Config{ServerName: "i.ytimg.com"})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {

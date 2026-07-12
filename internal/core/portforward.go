@@ -61,10 +61,9 @@ func (f *forwardInstance) stop() {
 }
 
 type portForwardManager struct {
-	mu      sync.Mutex
-	active  map[string]*forwardInstance
-	onLog   func(string)
-	enabled bool
+	mu     sync.Mutex
+	active map[string]*forwardInstance
+	onLog  func(string)
 }
 
 func newPortForwardManager(onLog func(string)) *portForwardManager {

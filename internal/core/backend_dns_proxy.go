@@ -85,7 +85,7 @@ func (b *Backend) newTunDNSDirectDialer() (*net.Dialer, error) {
 	cfg := outboundBypassConfig{}
 	switch runtime.GOOS {
 	case "darwin":
-		ifName, err := darwinResolveOutboundBypassInterface(2 * time.Second)
+		ifName, sourceIP, err := darwinResolveOutboundBypass(2 * time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -94,6 +94,7 @@ func (b *Backend) newTunDNSDirectDialer() (*net.Dialer, error) {
 			return nil, fmt.Errorf("default physical interface not found")
 		}
 		cfg.DarwinInterface = ifName
+		cfg.DarwinSourceIP = strings.TrimSpace(sourceIP)
 	case "linux":
 		if srcIP, err := linuxDefaultOutboundIPv4(); err == nil && strings.TrimSpace(srcIP) != "" {
 			cfg.LinuxSourceIP = strings.TrimSpace(srcIP)

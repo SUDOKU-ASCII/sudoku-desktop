@@ -1,5 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import {
+  Activity,
+  ArrowDown,
+  ArrowUp,
+  Cable,
+  Gauge,
+  Network,
+  Power,
+  RefreshCw,
+  Split,
+} from 'lucide-vue-next'
 import TrafficChart from '../TrafficChart.vue'
 import UsageHistoryChart from '../UsageHistoryChart.vue'
 import type { AppConfig, IPDetectResult, LANProxyInfo, RuntimeState, UsageDay } from '../../types'
@@ -29,6 +40,7 @@ const props = defineProps<{
   detectProxyIp: () => void
   closeConnection: (id: string) => void
   closeAllConnections: () => void
+  openLogs: () => void
 }>()
 
 const lanEndpointsText = computed(() => {
@@ -75,12 +87,17 @@ const activeNodeLabel = computed(() => props.state.activeNodeName || props.confi
 
 const recentActivity = computed(() => {
   const logs = Array.isArray(props.state.recentLogs) ? props.state.recentLogs : []
-  const out = logs.slice(0, 5).map((item) => ({
+  const out = logs
+    .filter((item) => !String(item.component || '').toLowerCase().includes('traffic'))
+    .slice()
+    .reverse()
+    .slice(0, 5)
+    .map((item) => ({
     key: item.id,
     title: item.message || item.raw || '-',
     level: item.level || 'info',
     time: new Date(item.timestamp).toLocaleTimeString([], { hour12: false }),
-  }))
+    }))
   if (out.length > 0) return out
   return [
     { key: 'state', title: props.state.running ? props.t('systemRunning') : props.t('systemStopped'), meta: 'core', level: props.state.running ? 'info' : 'warn', time: '-' },
@@ -100,70 +117,83 @@ const coreRows = computed(() => [
 
 <template>
   <main class="panel dashboard-page">
-    <section class="control-console">
-      <label class="control-field">
-        <span>{{ props.t('runningNode') }}</span>
-        <select
-          v-model="props.config.activeNodeId"
-          :disabled="props.config.nodes.length === 0"
-          @change="props.switchNode(props.config.activeNodeId)"
-        >
-          <option v-for="n in props.config.nodes" :key="n.id" :value="n.id">{{ n.name || n.serverAddress }}</option>
-        </select>
-      </label>
-
-      <label class="console-switch">
-        <span>{{ props.t('tunEnabled') }}</span>
-        <span class="switch-control">
-          <input type="checkbox" v-model="props.config.tun.enabled" />
-          <span class="switch-ui" />
+    <section class="connection-hub" :class="{ online: props.state.running }">
+      <div class="connection-copy">
+        <span class="connection-kicker">
+          <span class="connection-dot" />
+          {{ props.primaryProxyActionHint }}
         </span>
-      </label>
+        <h3>{{ activeNodeLabel }}</h3>
+        <label class="node-selector">
+          <Network :size="17" aria-hidden="true" />
+          <select
+            v-model="props.config.activeNodeId"
+            :disabled="props.config.nodes.length === 0"
+            @change="props.switchNode(props.config.activeNodeId)"
+          >
+            <option v-for="n in props.config.nodes" :key="n.id" :value="n.id">{{ n.name || n.serverAddress }}</option>
+          </select>
+        </label>
+      </div>
 
-      <div class="console-actions">
+      <div class="connection-primary">
         <button
-          class="power-btn"
-          :class="props.state.running ? 'stop' : 'start'"
+          class="power-orb"
+          :class="{ online: props.state.running }"
           :disabled="props.proxyOpBusy"
+          :title="props.primaryProxyActionLabel"
           @click="props.state.running ? props.stopProxy() : props.startProxy()"
         >
-          <span class="power-indicator" />
-          <strong>{{ props.primaryProxyActionLabel }}</strong>
-          <small>{{ props.primaryProxyActionHint }}</small>
+          <Power :size="30" :stroke-width="1.8" aria-hidden="true" />
         </button>
-        <button class="btn ghost console-secondary" :disabled="props.proxyOpBusy || !props.state.running" @click="props.restartProxy">
-          {{ props.proxyOpState === 'restarting' ? props.t('restartInProgress') : props.t('restart') }}
+        <strong>{{ props.primaryProxyActionLabel }}</strong>
+      </div>
+
+      <div class="connection-quick-actions">
+        <label class="quick-toggle">
+          <span>
+            <Network :size="16" aria-hidden="true" />
+            {{ props.t('tunEnabled') }}
+          </span>
+          <span class="switch-control">
+            <input type="checkbox" v-model="props.config.tun.enabled" />
+            <span class="switch-ui" />
+          </span>
+        </label>
+        <button class="quick-command" :disabled="props.proxyOpBusy || !props.state.running" @click="props.restartProxy">
+          <RefreshCw :size="16" :class="{ spinning: props.proxyOpState === 'restarting' }" aria-hidden="true" />
+          <span>{{ props.proxyOpState === 'restarting' ? props.t('restartInProgress') : props.t('restart') }}</span>
         </button>
       </div>
     </section>
 
     <section class="metric-strip">
       <article class="metric tile-upload">
-        <div class="metric-icon">↑</div>
+        <div class="metric-icon"><ArrowUp :size="17" aria-hidden="true" /></div>
         <h3>{{ props.t('totalUpload') }}</h3>
         <strong>{{ props.humanBytes(props.state.traffic.totalTx) }}</strong>
         <small>{{ props.state.traffic.interface || 'tun0' }} · {{ props.state.traffic.interfaceFound ? props.t('interfaceOk') : props.t('interfaceMissing') }}</small>
       </article>
       <article class="metric tile-download">
-        <div class="metric-icon">↓</div>
+        <div class="metric-icon"><ArrowDown :size="17" aria-hidden="true" /></div>
         <h3>{{ props.t('totalDownload') }}</h3>
         <strong>{{ props.humanBytes(props.state.traffic.totalRx) }}</strong>
         <small>{{ props.humanTime(props.state.traffic.lastSampleUnixMillis) }}</small>
       </article>
       <article class="metric">
-        <div class="metric-icon">◔</div>
+        <div class="metric-icon"><Gauge :size="17" aria-hidden="true" /></div>
         <h3>{{ props.t('proxyShare') }}</h3>
         <strong>{{ props.trafficProxyShare.toFixed(1) }}%</strong>
         <small>{{ props.humanBytes(props.state.traffic.estimatedProxyTx + props.state.traffic.estimatedProxyRx) }}</small>
       </article>
       <article class="metric">
-        <div class="metric-icon">⌁</div>
+        <div class="metric-icon"><Split :size="17" aria-hidden="true" /></div>
         <h3>{{ props.t('directShare') }}</h3>
         <strong>{{ props.trafficDirectShare.toFixed(1) }}%</strong>
         <small>{{ props.humanBytes(props.state.traffic.estimatedDirectTx + props.state.traffic.estimatedDirectRx) }}</small>
       </article>
       <article class="metric">
-        <div class="metric-icon">▤</div>
+        <div class="metric-icon"><Cable :size="17" aria-hidden="true" /></div>
         <h3>{{ props.t('proxyAccess') }}</h3>
         <strong>SOCKS5</strong>
         <small>{{ lanEndpointsText }}</small>
@@ -198,8 +228,8 @@ const coreRows = computed(() => [
     <section class="dashboard-bottom">
       <article class="deck-card activity-card">
         <div class="card-head">
-          <h3>{{ props.t('recentActivity') }}</h3>
-          <button class="ghost-link">{{ props.t('viewDetails') }}</button>
+          <h3><Activity :size="17" aria-hidden="true" />{{ props.t('recentActivity') }}</h3>
+          <button class="ghost-link" @click="props.openLogs">{{ props.t('viewDetails') }}</button>
         </div>
         <div class="activity-list">
           <div v-for="item in recentActivity" :key="item.key" class="activity-row">
@@ -261,8 +291,8 @@ const coreRows = computed(() => [
           {{ props.t('closeAllConnections') }}
         </button>
       </div>
-      <div class="table-wrap flush">
-        <table>
+      <div class="table-wrap flush connections-table-wrap">
+        <table class="connections-table">
           <thead>
             <tr>
               <th>{{ props.t('network') }}</th>
@@ -276,15 +306,15 @@ const coreRows = computed(() => [
           </thead>
           <tbody>
             <tr v-for="item in props.state.connections.slice(0, 16)" :key="item.id">
-              <td>{{ item.network }}</td>
-              <td>{{ item.source }}</td>
-              <td>{{ item.destination }}</td>
-              <td><span class="pill" :class="item.direction">{{ item.direction }}</span></td>
-              <td>{{ new Date(item.lastSeen).toLocaleTimeString() }}</td>
-              <td>{{ item.hits }}</td>
-              <td><button class="btn mini danger" :disabled="props.connectionOpBusy" @click="props.closeConnection(item.id)">{{ props.t('disconnect') }}</button></td>
+              <td :data-label="props.t('network')">{{ item.network }}</td>
+              <td :data-label="props.t('source')">{{ item.source }}</td>
+              <td :data-label="props.t('destination')">{{ item.destination }}</td>
+              <td :data-label="props.t('direction')"><span class="pill" :class="item.direction">{{ item.direction }}</span></td>
+              <td :data-label="props.t('seen')">{{ new Date(item.lastSeen).toLocaleTimeString() }}</td>
+              <td :data-label="props.t('hits')">{{ item.hits }}</td>
+              <td :data-label="props.t('action')"><button class="btn mini danger" :disabled="props.connectionOpBusy" @click="props.closeConnection(item.id)">{{ props.t('disconnect') }}</button></td>
             </tr>
-            <tr v-if="props.state.connections.length === 0"><td colspan="7">{{ props.t('none') }}</td></tr>
+            <tr v-if="props.state.connections.length === 0" class="connections-empty"><td colspan="7">{{ props.t('none') }}</td></tr>
           </tbody>
         </table>
       </div>

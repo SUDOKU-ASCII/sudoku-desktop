@@ -15,6 +15,7 @@ import type {
 export const backendApi = {
   getConfig: () => App.GetConfig() as Promise<AppConfig>,
   saveConfig: (cfg: AppConfig) => App.SaveConfig(cfg) as Promise<void>,
+  setRoutingMode: (mode: string) => App.SetRoutingMode(mode) as Promise<void>,
   getState: () => App.GetState() as unknown as Promise<RuntimeState>,
   startProxy: (req: StartRequest) => App.StartProxy(req) as Promise<void>,
   stopProxy: () => App.StopProxy() as Promise<void>,
@@ -38,6 +39,7 @@ export const backendApi = {
   startReverseForwarder: () => App.StartReverseForwarder() as Promise<void>,
   stopReverseForwarder: () => App.StopReverseForwarder() as Promise<void>,
   getLogs: (level: string, limit: number) => App.GetLogs(level, limit) as Promise<LogEntry[]>,
+  exportLogs: (entries: LogEntry[]) => App.ExportLogs(entries) as Promise<string>,
   getConnections: () => App.GetConnections() as Promise<ActiveConnection[]>,
   closeConnection: (id: string) => App.CloseConnection(id) as Promise<void>,
   closeAllConnections: () => App.CloseAllConnections() as Promise<void>,
