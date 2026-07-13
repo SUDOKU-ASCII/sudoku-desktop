@@ -112,6 +112,7 @@ func main() {
 		app.Quit()
 	}
 
+	backgroundType, backgroundColour := mainWindowBackground()
 	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:                   "main",
 		Title:                  "4x4 sudoku",
@@ -121,8 +122,8 @@ func main() {
 		MinHeight:              560,
 		URL:                    "/",
 		Frameless:              true,
-		BackgroundType:         application.BackgroundTypeTransparent,
-		BackgroundColour:       application.NewRGBA(0, 0, 0, 0),
+		BackgroundType:         backgroundType,
+		BackgroundColour:       backgroundColour,
 		Hidden:                 startHidden,
 		OpenInspectorOnStartup: false,
 		Mac: application.MacWindow{
