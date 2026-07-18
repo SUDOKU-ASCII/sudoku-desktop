@@ -1,6 +1,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Clipboard, Dialogs, Events } from '@wailsio/runtime'
+import { Clipboard, Events } from '@wailsio/runtime'
 import { backendApi } from '../api'
+import { confirmDestructiveAction } from '../dialogs'
 import { useI18n } from '../i18n'
 import { canonicalizeAsciiMode } from '../sudoku/asciiMode'
 import type {
@@ -632,19 +633,12 @@ const saveNode = async () => {
 }
 
 const removeNode = async (id: string) => {
-  let confirmed = false
-  try {
-    const action = await Dialogs.Question({
-      Message: t('confirmDeleteNode'),
-      Buttons: [
-        { Label: t('cancel'), IsCancel: true, IsDefault: true },
-        { Label: t('delete') },
-      ],
-    })
-    confirmed = action === t('delete') || action === 'Yes'
-  } catch {
-    confirmed = window.confirm(t('confirmDeleteNode'))
-  }
+  const confirmed = await confirmDestructiveAction({
+    message: t('confirmDeleteNode'),
+    cancelLabel: t('cancel'),
+    confirmLabel: t('delete'),
+    windows: isWindowsLike,
+  })
   if (!confirmed) return
   busy.value = true
   try {
