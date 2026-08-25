@@ -1,8 +1,11 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildWindowsRouteScriptPinsPhysicalDefaultRoute(t *testing.T) {
@@ -55,5 +58,22 @@ func TestBuildWindowsRouteScriptRestoresDefaultWithInterface(t *testing.T) {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("script missing %q", needle)
 		}
+	}
+}
+
+func TestWindowsTunInterfaceResolutionHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	_, _, err := windowsResolveTunInterfaceIndex(ctx, TunSettings{
+		InterfaceName: "sudoku0",
+		IPv4:          "198.18.0.1",
+	}, 10*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled interface resolution took too long: %v", elapsed)
 	}
 }

@@ -152,7 +152,7 @@ Get-ChildItem -Path $runtimeBinRoot -Directory -ErrorAction SilentlyContinue |
 #
 if ($What -eq "all" -or $What -eq "hev") {
   $hevVersion = $env:HEV_VERSION
-  if (-not $hevVersion) { $hevVersion = "2.15.0" }
+  if (-not $hevVersion) { $hevVersion = "2.17.1" }
 
   if ($goos -eq "windows" -and $goarch -eq "amd64") {
     $asset = "hev-socks5-tunnel-win64.zip"

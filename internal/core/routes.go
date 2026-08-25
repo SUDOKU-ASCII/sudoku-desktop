@@ -42,7 +42,7 @@ type darwinDNSSnapshot struct {
 	WasAutomatic bool
 }
 
-func setupRoutes(activeNode NodeConfig, tun TunSettings, logf func(string)) (*routeContext, error) {
+func setupRoutes(operationCtx context.Context, activeNode NodeConfig, tun TunSettings, windowsPrepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
 	ctx := &routeContext{}
 	ctx.ServerIP = resolveServerIPFromAddress(activeNode.ServerAddress)
 	switch runtime.GOOS {
@@ -51,7 +51,7 @@ func setupRoutes(activeNode NodeConfig, tun TunSettings, logf func(string)) (*ro
 	case "darwin":
 		return setupRoutesDarwin(ctx, tun, logf)
 	case "windows":
-		return setupRoutesWindows(ctx, tun, logf)
+		return setupRoutesWindows(operationCtx, ctx, tun, windowsPrepared, logf)
 	default:
 		return nil, nil
 	}
@@ -513,8 +513,11 @@ func runDarwinBatch(logf func(string), cmds ...string) error {
 	return runCmdExec(logf, "sh", "-lc", "set -e; "+strings.Join(cmds, "; "))
 }
 
-func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
-	idx, alias, err := windowsResolveTunInterfaceIndex(tun, 10*time.Second)
+func setupRoutesWindows(operationCtx context.Context, ctx *routeContext, tun TunSettings, prepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
+	if operationCtx == nil {
+		operationCtx = context.Background()
+	}
+	idx, alias, err := windowsResolveTunInterfaceIndex(operationCtx, tun, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -533,6 +536,9 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 	}
 	ctx.DefaultGateway = gw
 	ctx.WindowsDefaultIfIndex = if4
+	if err := operationCtx.Err(); err != nil {
+		return nil, err
+	}
 	firewallRule := "4x4-sudoku Block QUIC (UDP/443)"
 	if tun.BlockQUIC {
 		ctx.WindowsFirewallRule = firewallRule
@@ -557,8 +563,15 @@ func setupRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)) (
 		strings.TrimSpace(tun.MapDNSAddress),
 		dnsBackupName,
 	)
-	if err := runCmdsWindowsAdmin(logf, ps, 5*time.Minute); err != nil {
-		_ = teardownRoutesWindows(ctx, tun, logf)
+	if prepared != nil {
+		if err := prepared(ctx); err != nil {
+			return nil, fmt.Errorf("prepare windows route recovery: %w", err)
+		}
+	}
+	if err := runCmdsWindowsAdmin(operationCtx, logf, ps, 30*time.Second); err != nil {
+		if rollbackErr := teardownRoutesWindows(ctx, tun, logf); rollbackErr != nil {
+			return ctx, fmt.Errorf("setup windows routes: %w; rollback failed: %v", err, rollbackErr)
+		}
 		return nil, err
 	}
 	return ctx, nil
@@ -586,7 +599,7 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 		strings.TrimSpace(tun.MapDNSAddress),
 		ctx.WindowsDNSBackup,
 	)
-	return runCmdsWindowsAdmin(logf, ps, 5*time.Minute)
+	return runCmdsWindowsAdmin(context.Background(), logf, ps, 12*time.Second)
 }
 
 func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
@@ -620,7 +633,7 @@ func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
 	return nil
 }
 
-func runCmdsWindowsAdmin(logf func(string), scriptBody string, timeout time.Duration) error {
+func runCmdsWindowsAdmin(parent context.Context, logf func(string), scriptBody string, timeout time.Duration) error {
 	script := windowsAdminWrapper(scriptBody)
 	f, err := os.CreateTemp("", "sudoku-admin-*.ps1")
 	if err != nil {
@@ -640,18 +653,21 @@ func runCmdsWindowsAdmin(logf func(string), scriptBody string, timeout time.Dura
 
 	// PowerShell script self-elevates if needed (UAC prompt).
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
 	applyManagedProcessSysProcAttr(cmd)
 	output, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctx.Err() != nil {
 		if clean := strings.TrimSpace(string(output)); clean != "" {
-			return fmt.Errorf("windows admin: timeout: %s", clean)
+			return fmt.Errorf("windows admin: %w: %s", ctx.Err(), clean)
 		}
-		return errors.New("windows admin: timeout")
+		return fmt.Errorf("windows admin: %w", ctx.Err())
 	}
 	clean := strings.TrimSpace(string(output))
 	if logf != nil {
@@ -990,11 +1006,17 @@ func windowsInterfaceIndex(name string) (int, error) {
 	return parseFirstInt(string(output))
 }
 
-func windowsResolveTunInterfaceIndex(tun TunSettings, timeout time.Duration) (int, string, error) {
+func windowsResolveTunInterfaceIndex(ctx context.Context, tun TunSettings, timeout time.Duration) (int, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	tunIPv4 := strings.TrimSpace(tun.IPv4)
 	for {
+		if err := ctx.Err(); err != nil {
+			return 0, "", err
+		}
 		// Prefer resolving the actual TUN interface by its configured IPv4. This avoids
 		// accidentally picking an unrelated Wintun adapter (e.g. from other apps).
 		if tunIPv4 != "" {
@@ -1039,7 +1061,11 @@ func windowsResolveTunInterfaceIndex(tun TunSettings, timeout time.Duration) (in
 			}
 			return 0, "", errors.New("resolve windows tun interface index failed")
 		}
-		time.Sleep(350 * time.Millisecond)
+		select {
+		case <-time.After(350 * time.Millisecond):
+		case <-ctx.Done():
+			return 0, "", ctx.Err()
+		}
 	}
 }
 

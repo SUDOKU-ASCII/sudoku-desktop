@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { System, Window } from '@wailsio/runtime'
+import { Application, System, Window } from '@wailsio/runtime'
 import {
   ArrowLeftRight,
   Gauge,
@@ -142,6 +142,11 @@ const updateNavScrollbar = () => {
 }
 
 const closeWindow = () => {
+  if (System.IsWindows()) {
+    void Window.Hide()
+    void Application.Quit()
+    return
+  }
   void Window.Hide()
 }
 

@@ -21,6 +21,7 @@ type Backend struct {
 	startMu      sync.Mutex
 	startOpID    uint64
 	startCancel  context.CancelFunc
+	startDone    chan struct{}
 	shutdownOnce sync.Once
 
 	eventMu             sync.RWMutex
@@ -166,16 +167,17 @@ func (b *Backend) newStartContext() (context.Context, uint64) {
 	opID := b.startOpID
 	ctx, cancel := context.WithCancel(context.Background())
 	b.startCancel = cancel
+	b.startDone = make(chan struct{})
 	return ctx, opID
 }
 
-func (b *Backend) cancelStart() {
+func (b *Backend) cancelStart() <-chan struct{} {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
 	if b.startCancel != nil {
 		b.startCancel()
-		b.startCancel = nil
 	}
+	return b.startDone
 }
 
 func (b *Backend) clearStartIfMatch(opID uint64) {
@@ -187,7 +189,17 @@ func (b *Backend) clearStartIfMatch(opID uint64) {
 	if b.startCancel != nil {
 		b.startCancel()
 	}
+	if b.startDone != nil {
+		close(b.startDone)
+	}
 	b.startCancel = nil
+	b.startDone = nil
+}
+
+func (b *Backend) startInFlight() bool {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	return b.startDone != nil
 }
 
 func (b *Backend) tunRunningLocked() bool {
@@ -264,15 +276,28 @@ func migrateStoreIfNeeded(oldStoreName, newStoreName string) error {
 }
 
 func (b *Backend) Startup(_ context.Context) {
+	var windowsRecoveryErr error
+	if runtime.GOOS == "windows" {
+		windowsRecoveryErr = b.recoverWindowsRouteCheckpoint()
+	}
+
 	b.mu.Lock()
 	autoStart := b.cfg.Core.AutoStart
 	withTun := b.cfg.Tun.Enabled
+	if windowsRecoveryErr != nil {
+		autoStart = false
+		b.state.RouteSetupError = windowsRecoveryErr.Error()
+		b.state.LastError = windowsRecoveryErr.Error()
+	}
 	b.mu.Unlock()
 
 	go b.emitterLoop()
 	b.startPACServer()
 
 	go b.monitorLoop()
+	if windowsRecoveryErr != nil {
+		b.addLog("warn", "route", fmt.Sprintf("windows startup route recovery failed; auto-start disabled: %v", windowsRecoveryErr))
+	}
 	if autoStart {
 		go func() {
 			_ = b.StartProxy(StartRequest{WithTun: withTun})
@@ -296,8 +321,8 @@ func (b *Backend) Shutdown() {
 	hasActiveRoutes := b.routeState != nil || b.state.TunRunning
 	b.mu.RUnlock()
 	shutdownTimeout := 4 * time.Second
-	if hasActiveRoutes {
-		shutdownTimeout = 12 * time.Second
+	if hasActiveRoutes || b.startInFlight() {
+		shutdownTimeout = 20 * time.Second
 	}
 
 	done := make(chan struct{})
@@ -356,6 +381,8 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		b.opMu.Unlock()
 		return nil
 	}
+	startCtx, startID := b.newStartContext()
+	defer b.clearStartIfMatch(startID)
 	plan, err := b.prepareProxyStartLocked(req)
 	b.mu.Unlock()
 	if err != nil {
@@ -385,9 +412,6 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	routingCfg := plan.routing
 	tunCfg := plan.tun
 	portForwards := plan.portForwards
-
-	startCtx, startID := b.newStartContext()
-	defer b.clearStartIfMatch(startID)
 
 	if err := ensureDir(workDir); err != nil {
 		b.mu.Lock()
@@ -643,10 +667,53 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		routeCtx := preRouteCtx
 		if !routeAlreadySetup {
 			var routeErr error
-			routeCtx, routeErr = setupRoutes(nodeCopy, tunCfg, func(line string) {
+			windowsRoutePrepared := false
+			var windowsPreparedCtx *routeContext
+			routeCtx, routeErr = setupRoutes(startCtx, nodeCopy, tunCfg, func(prepared *routeContext) error {
+				if err := b.saveWindowsRouteCheckpoint(prepared, tunCfg); err != nil {
+					return err
+				}
+				b.mu.Lock()
+				b.routeState = prepared
+				if strings.TrimSpace(prepared.TunAlias) != "" {
+					b.runningTunInterface = strings.TrimSpace(prepared.TunAlias)
+				}
+				b.mu.Unlock()
+				windowsRoutePrepared = true
+				windowsPreparedCtx = prepared
+				return nil
+			}, func(line string) {
 				b.addLog("info", "route", line)
 			})
 			if routeErr != nil {
+				if routeCtx != nil {
+					// Route setup failed and its rollback also failed. Keep the dataplane alive
+					// so the system does not point at a dead TUN while StopProxy retries cleanup.
+					b.mu.Lock()
+					b.routeState = routeCtx
+					if runtime.GOOS == "windows" && strings.TrimSpace(routeCtx.TunAlias) != "" {
+						b.runningTunInterface = strings.TrimSpace(routeCtx.TunAlias)
+					}
+					b.state.NeedsAdmin = isLikelyPermissionError(routeErr)
+					b.state.RouteSetupError = routeErr.Error()
+					b.state.TunRunning = b.tunRunningLocked()
+					b.state.CoreRunning = b.coreProc.IsRunning()
+					b.state.Running = b.state.CoreRunning
+					b.state.LastError = routeErr.Error()
+					b.emitStateLocked()
+					b.mu.Unlock()
+					dnsProxyOK = true
+					return routeErr
+				}
+				if windowsRoutePrepared {
+					b.mu.Lock()
+					if b.routeState == windowsPreparedCtx {
+						b.routeState = nil
+					}
+					b.runningTunInterface = ""
+					b.mu.Unlock()
+					b.removeWindowsRouteCheckpoint()
+				}
 				_ = b.stopTunLocked(2 * time.Second)
 				_ = b.coreProc.Stop(2 * time.Second)
 				b.mu.Lock()
@@ -665,7 +732,7 @@ func (b *Backend) StartProxy(req StartRequest) error {
 		// Post-start health checks (production safety):
 		// If we changed system routes/DNS but the proxy isn't actually usable, revert immediately.
 		socksAddr := net.JoinHostPort(localLoopbackIPv4, fmt.Sprintf("%d", localPort))
-		hctx, cancelHC := context.WithTimeout(context.Background(), 10*time.Second)
+		hctx, cancelHC := context.WithTimeout(startCtx, 10*time.Second)
 		hcErr := func() error {
 			if err := waitForTCPReady(hctx, socksAddr, 3*time.Second); err != nil {
 				return fmt.Errorf("core socks not ready: %w", err)
@@ -737,6 +804,15 @@ func (b *Backend) StartProxy(req StartRequest) error {
 				b.mu.Unlock()
 				dnsProxyOK = true
 				return fmt.Errorf("post-start health check failed: %w; rollback failed: %v", hcErr, rollbackErr)
+			}
+			if runtime.GOOS == "windows" {
+				b.mu.Lock()
+				if b.routeState == routeCtx {
+					b.routeState = nil
+				}
+				b.runningTunInterface = ""
+				b.mu.Unlock()
+				b.removeWindowsRouteCheckpoint()
 			}
 			_ = b.stopTunLocked(4 * time.Second)
 			if runtime.GOOS == "darwin" {
@@ -876,7 +952,14 @@ func (b *Backend) retryApplySystemProxy(ctx context.Context, localPort int, maxD
 
 func (b *Backend) StopProxy() error {
 	// Interrupt any pending start (e.g. waiting for admin privileges/network readiness).
-	b.cancelStart()
+	startDone := b.cancelStart()
+	if startDone != nil {
+		select {
+		case <-startDone:
+		case <-time.After(12 * time.Second):
+			b.addLog("warn", "app", "timed out waiting for the pending start to roll back; continuing shutdown cleanup")
+		}
+	}
 	b.opMu.Lock()
 	defer b.opMu.Unlock()
 
@@ -954,6 +1037,9 @@ func (b *Backend) StopProxy() error {
 		}
 		b.emitStateLocked()
 		b.mu.Unlock()
+		if runtime.GOOS == "windows" {
+			b.removeWindowsRouteCheckpoint()
+		}
 	}
 
 	b.mu.Lock()

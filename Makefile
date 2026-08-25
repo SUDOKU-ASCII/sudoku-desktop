@@ -21,7 +21,7 @@ else
 OUTPUT_BIN := build/bin/$(APP_NAME)
 endif
 
-HEV_VERSION ?= 2.15.0
+HEV_VERSION ?= 2.17.1
 
 .PHONY: help frontend core core-clean-foreign core-sudoku core-hev dev build bundle
 

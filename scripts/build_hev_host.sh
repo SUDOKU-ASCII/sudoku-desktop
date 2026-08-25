@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HEV_REPO="${HEV_REPO:-https://github.com/heiher/hev-socks5-tunnel}"
 OUT_DIR="${ROOT_DIR}/runtime/bin/$(go env GOOS)-$(go env GOARCH)"
-HEV_VERSION="${HEV_VERSION:-2.15.0}"
+HEV_VERSION="${HEV_VERSION:-2.17.1}"
 
 if [[ "$(go env GOOS)" == "windows" ]]; then
   echo "[note] Windows host detected; using release assets to include wintun/msys dependencies"
