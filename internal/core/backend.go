@@ -374,6 +374,7 @@ func (b *Backend) Shutdown() {
 
 func (b *Backend) StartProxy(req StartRequest) error {
 	b.opMu.Lock()
+	startAttemptedAt := time.Now()
 
 	b.mu.Lock()
 	if b.state.Running {
@@ -510,6 +511,20 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	}
 
 	if withTun {
+		if err := b.preflightTunUpstream(startCtx, localPort, routingCfg, startAttemptedAt); err != nil {
+			_ = b.coreProc.Stop(2 * time.Second)
+			b.mu.Lock()
+			b.state.NeedsAdmin = false
+			b.state.RouteSetupError = ""
+			b.state.TunRunning = false
+			b.state.CoreRunning = false
+			b.state.Running = false
+			b.state.LastError = err.Error()
+			b.emitStateLocked()
+			b.mu.Unlock()
+			return err
+		}
+
 		beforeTunIfs := map[string]struct{}{}
 		if runtime.GOOS == "darwin" {
 			beforeTunIfs = darwinListTunInterfaces()
@@ -881,6 +896,48 @@ func (b *Backend) StartProxy(req StartRequest) error {
 	b.emitStateLocked()
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *Backend) preflightTunUpstream(ctx context.Context, localPort int, routing RoutingSettings, attemptedAt time.Time) error {
+	mode := strings.ToLower(strings.TrimSpace(routing.ProxyMode))
+	if mode != "global" && mode != "pac" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	preflightCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	socksAddr := net.JoinHostPort(localLoopbackIPv4, fmt.Sprintf("%d", localPort))
+	if err := waitForTCPReady(preflightCtx, socksAddr, 2*time.Second); err != nil {
+		return fmt.Errorf("TUN preflight failed before changing system routes: core SOCKS proxy is not ready: %w", err)
+	}
+	if err := healthCheckSOCKS5Connect(preflightCtx, socksAddr, "1.1.1.1:443", 3*time.Second); err != nil {
+		if b.hasUpstreamHTTP403Since(attemptedAt) {
+			return errors.New("TUN preflight failed before changing system routes: upstream returned HTTP 403; check the node key and HTTPMask host/path, and ensure the server uses a compatible sudoku version")
+		}
+		return fmt.Errorf("TUN preflight failed before changing system routes: upstream proxy is unavailable: %w", err)
+	}
+	b.addLog("info", "tun", "upstream proxy preflight passed before Windows route switch")
+	return nil
+}
+
+func (b *Backend) hasUpstreamHTTP403Since(since time.Time) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for i := len(b.logs) - 1; i >= 0; i-- {
+		entry := b.logs[i]
+		if !since.IsZero() && entry.Timestamp.Before(since) {
+			break
+		}
+		message := strings.ToLower(entry.Message + " " + entry.Raw)
+		if strings.Contains(message, "handshake response status code 101 but got 403") ||
+			strings.Contains(message, "upstream returned http 403") {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) applySystemProxyWhenCoreReady(ctx context.Context, localPort int, readyTimeout time.Duration) error {
