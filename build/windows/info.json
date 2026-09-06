@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "0.2.1"
+		"file_version": "0.2.2"
 	},
 	"info": {
 		"0409": {
-			"ProductVersion": "0.2.1",
+			"ProductVersion": "0.2.2",
 			"CompanyName": "SUDOKU-ASCII",
 			"FileDescription": "4x4 sudoku",
 			"LegalCopyright": "(c) 2026, SUDOKU-ASCII",
