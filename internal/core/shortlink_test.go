@@ -84,10 +84,10 @@ func TestDirectionalASCIIModeRoundTrip(t *testing.T) {
 		LocalPort:          1080,
 		Enabled:            true,
 		HTTPMask: HTTPMaskSettings{
-			Mode:      "auto",
-			TLS:       true,
-			Multiplex: "auto",
+			Mode: "auto",
+			TLS:  true,
 		},
+		Multiplex: "auto",
 	}
 
 	link, err := BuildShortLink(node)

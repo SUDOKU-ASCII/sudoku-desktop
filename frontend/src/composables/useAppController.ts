@@ -98,13 +98,13 @@ const emptyNode = (): NodeConfig => ({
   enablePureDownlink: true,
   customTable: '',
   customTables: [],
+  multiplex: 'auto',
   httpMask: {
     disable: false,
     mode: 'auto',
     tls: true,
     host: '',
     pathRoot: '',
-    multiplex: 'auto',
   },
   localPort: 1080,
   enabled: true,
@@ -897,7 +897,7 @@ const applyShortlinkToEditable = (link: string, nameOverride = '', preferHostAsN
   editableNode.httpMask.tls = payload.ht ?? true
   editableNode.httpMask.host = payload.hh || ''
   editableNode.httpMask.pathRoot = payload.hy || ''
-  editableNode.httpMask.multiplex = payload.hx || 'auto'
+  editableNode.multiplex = payload.hx || 'auto'
 
   if (nameOverride.trim()) {
     editableNode.name = nameOverride.trim()

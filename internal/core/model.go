@@ -8,12 +8,13 @@ const (
 )
 
 type HTTPMaskSettings struct {
-	Disable   bool   `json:"disable"`
-	Mode      string `json:"mode"`
-	TLS       bool   `json:"tls"`
-	Host      string `json:"host"`
-	PathRoot  string `json:"pathRoot"`
-	Multiplex string `json:"multiplex"`
+	Disable  bool   `json:"disable"`
+	Mode     string `json:"mode"`
+	TLS      bool   `json:"tls"`
+	Host     string `json:"host"`
+	PathRoot string `json:"pathRoot"`
+	// Multiplex is read only for migration from legacy configs.
+	Multiplex string `json:"multiplex,omitempty"`
 }
 
 type NodeConfig struct {
@@ -28,6 +29,7 @@ type NodeConfig struct {
 	EnablePureDownlink bool             `json:"enablePureDownlink"`
 	CustomTable        string           `json:"customTable"`
 	CustomTables       []string         `json:"customTables"`
+	Multiplex          string           `json:"multiplex"`
 	HTTPMask           HTTPMaskSettings `json:"httpMask"`
 	LocalPort          int              `json:"localPort"`
 	Enabled            bool             `json:"enabled"`

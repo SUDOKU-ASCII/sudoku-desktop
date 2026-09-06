@@ -6,7 +6,6 @@ export interface HTTPMaskSettings {
   tls: boolean
   host: string
   pathRoot: string
-  multiplex: string
 }
 
 export interface NodeConfig {
@@ -21,6 +20,7 @@ export interface NodeConfig {
   enablePureDownlink: boolean
   customTable: string
   customTables: string[]
+  multiplex: string
   httpMask: HTTPMaskSettings
   localPort: number
   enabled: boolean

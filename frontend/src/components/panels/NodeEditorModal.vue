@@ -74,6 +74,13 @@ const downlinkStyle = computed<ASCIIStyleToken>({
             <label class="field"><span>{{ props.t('localPort') }}</span><input v-model.number="props.editableNode.localPort" type="number" /></label>
             <label class="field"><span>{{ props.t('paddingMin') }}</span><input v-model.number="props.editableNode.paddingMin" type="number" /></label>
             <label class="field"><span>{{ props.t('paddingMax') }}</span><input v-model.number="props.editableNode.paddingMax" type="number" /></label>
+            <label class="field"><span>{{ props.t('multiplex') }}</span>
+              <select v-model="props.editableNode.multiplex">
+                <option>auto</option>
+                <option>on</option>
+                <option>off</option>
+              </select>
+            </label>
             <label class="switch-row compact"><span>{{ props.t('enableNode') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enabled" /><span class="switch-ui" /></span></label>
             <label class="switch-row compact"><span>{{ props.t('pureDownlink') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enablePureDownlink" /><span class="switch-ui" /></span></label>
           </div>
@@ -96,13 +103,6 @@ const downlinkStyle = computed<ASCIIStyleToken>({
             <label class="switch-row compact"><span>TLS</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.httpMask.tls" /><span class="switch-ui" /></span></label>
             <label class="field"><span>{{ props.t('host') }}</span><input v-model="props.editableNode.httpMask.host" placeholder="example.com" /></label>
             <label class="field"><span>{{ props.t('pathRoot') }}</span><input v-model="props.editableNode.httpMask.pathRoot" placeholder="aabbcc" /></label>
-            <label class="field"><span>{{ props.t('multiplex') }}</span>
-              <select v-model="props.editableNode.httpMask.multiplex">
-                <option>auto</option>
-                <option>on</option>
-                <option>off</option>
-              </select>
-            </label>
           </div>
         </section>
 

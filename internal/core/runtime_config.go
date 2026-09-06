@@ -11,12 +11,11 @@ import (
 )
 
 type sudokuHTTPMask struct {
-	Disable   bool   `json:"disable"`
-	Mode      string `json:"mode"`
-	TLS       bool   `json:"tls"`
-	Host      string `json:"host"`
-	PathRoot  string `json:"path_root"`
-	Multiplex string `json:"multiplex"`
+	Disable  bool   `json:"disable"`
+	Mode     string `json:"mode"`
+	TLS      bool   `json:"tls"`
+	Host     string `json:"host"`
+	PathRoot string `json:"path_root"`
 }
 
 type sudokuReverseRoute struct {
@@ -44,6 +43,7 @@ type sudokuClientConfig struct {
 	CustomTables       []string       `json:"custom_tables,omitempty"`
 	ASCII              string         `json:"ascii"`
 	EnablePureDownlink bool           `json:"enable_pure_downlink"`
+	Multiplex          string         `json:"multiplex"`
 	HTTPMask           sudokuHTTPMask `json:"httpmask"`
 	RuleURLs           []string       `json:"rule_urls"`
 	Reverse            *sudokuReverse `json:"reverse,omitempty"`
@@ -91,13 +91,13 @@ func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL strin
 		CustomTables:       append([]string(nil), node.CustomTables...),
 		ASCII:              normalizeASCII(node.ASCII),
 		EnablePureDownlink: node.EnablePureDownlink,
+		Multiplex:          strings.TrimSpace(node.Multiplex),
 		HTTPMask: sudokuHTTPMask{
-			Disable:   node.HTTPMask.Disable,
-			Mode:      strings.TrimSpace(node.HTTPMask.Mode),
-			TLS:       node.HTTPMask.TLS,
-			Host:      strings.TrimSpace(node.HTTPMask.Host),
-			PathRoot:  strings.TrimSpace(node.HTTPMask.PathRoot),
-			Multiplex: strings.TrimSpace(node.HTTPMask.Multiplex),
+			Disable:  node.HTTPMask.Disable,
+			Mode:     strings.TrimSpace(node.HTTPMask.Mode),
+			TLS:      node.HTTPMask.TLS,
+			Host:     strings.TrimSpace(node.HTTPMask.Host),
+			PathRoot: strings.TrimSpace(node.HTTPMask.PathRoot),
 		},
 		RuleURLs: ruleURLs,
 	}
@@ -107,8 +107,8 @@ func buildSudokuClientConfig(cfg *AppConfig, node NodeConfig, customPACURL strin
 	if clientCfg.HTTPMask.Mode == "" {
 		clientCfg.HTTPMask.Mode = "legacy"
 	}
-	if clientCfg.HTTPMask.Multiplex == "" {
-		clientCfg.HTTPMask.Multiplex = "off"
+	if clientCfg.Multiplex == "" {
+		clientCfg.Multiplex = "off"
 	}
 	if clientCfg.PaddingMax <= 0 {
 		clientCfg.PaddingMax = 15

@@ -243,7 +243,11 @@ export class HTTPMaskSettings {
     "tls": boolean;
     "host": string;
     "pathRoot": string;
-    "multiplex": string;
+
+    /**
+     * Multiplex is read only for migration from legacy configs.
+     */
+    "multiplex"?: string;
 
     /** Creates a new HTTPMaskSettings instance. */
     constructor($$source: Partial<HTTPMaskSettings> = {}) {
@@ -261,9 +265,6 @@ export class HTTPMaskSettings {
         }
         if (!("pathRoot" in $$source)) {
             this["pathRoot"] = "";
-        }
-        if (!("multiplex" in $$source)) {
-            this["multiplex"] = "";
         }
 
         Object.assign(this, $$source);
@@ -499,6 +500,7 @@ export class NodeConfig {
     "enablePureDownlink": boolean;
     "customTable": string;
     "customTables": string[];
+    "multiplex": string;
     "httpMask": HTTPMaskSettings;
     "localPort": number;
     "enabled": boolean;
@@ -538,6 +540,9 @@ export class NodeConfig {
         if (!("customTables" in $$source)) {
             this["customTables"] = [];
         }
+        if (!("multiplex" in $$source)) {
+            this["multiplex"] = "";
+        }
         if (!("httpMask" in $$source)) {
             this["httpMask"] = (new HTTPMaskSettings());
         }
@@ -556,13 +561,13 @@ export class NodeConfig {
      */
     static createFrom($$source: any = {}): NodeConfig {
         const $$createField10_0 = $$createType10;
-        const $$createField11_0 = $$createType11;
+        const $$createField12_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("customTables" in $$parsedSource) {
             $$parsedSource["customTables"] = $$createField10_0($$parsedSource["customTables"]);
         }
         if ("httpMask" in $$parsedSource) {
-            $$parsedSource["httpMask"] = $$createField11_0($$parsedSource["httpMask"]);
+            $$parsedSource["httpMask"] = $$createField12_0($$parsedSource["httpMask"]);
         }
         return new NodeConfig($$parsedSource as Partial<NodeConfig>);
     }

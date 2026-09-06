@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_ROOT="${ROOT_DIR}/runtime/bin"
 SUDOKU_REPO="${SUDOKU_REPO:-https://github.com/SUDOKU-ASCII/sudoku.git}"
-SUDOKU_REF="${SUDOKU_REF:-v0.4.8}"
+SUDOKU_REF="${SUDOKU_REF:-v0.5.0}"
 PATCH_DIR="${PATCH_DIR:-${ROOT_DIR}/scripts/sudoku_patches}"
 TARGETS=(
   "darwin/amd64"

@@ -58,15 +58,15 @@ func ParseShortLink(link string) (*NodeConfig, error) {
 		EnablePureDownlink: !payload.PackedDownlink,
 		CustomTable:        strings.TrimSpace(payload.CustomTable),
 		CustomTables:       append([]string(nil), payload.CustomTables...),
+		Multiplex:          strings.TrimSpace(payload.HTTPMaskMux),
 		LocalPort:          payload.MixPort,
 		Enabled:            true,
 		HTTPMask: HTTPMaskSettings{
-			Disable:   payload.DisableHTTPMask,
-			Mode:      payload.HTTPMaskMode,
-			TLS:       payload.HTTPMaskTLS,
-			Host:      payload.HTTPMaskHost,
-			PathRoot:  payload.HTTPMaskPath,
-			Multiplex: payload.HTTPMaskMux,
+			Disable:  payload.DisableHTTPMask,
+			Mode:     payload.HTTPMaskMode,
+			TLS:      payload.HTTPMaskTLS,
+			Host:     payload.HTTPMaskHost,
+			PathRoot: payload.HTTPMaskPath,
 		},
 	}
 	if node.LocalPort <= 0 {
@@ -81,8 +81,8 @@ func ParseShortLink(link string) (*NodeConfig, error) {
 	if node.HTTPMask.Mode == "" {
 		node.HTTPMask.Mode = "legacy"
 	}
-	if node.HTTPMask.Multiplex == "" {
-		node.HTTPMask.Multiplex = "off"
+	if node.Multiplex == "" {
+		node.Multiplex = "off"
 	}
 	return node, nil
 }
@@ -110,7 +110,7 @@ func BuildShortLink(node NodeConfig) (string, error) {
 		HTTPMaskMode:    strings.TrimSpace(node.HTTPMask.Mode),
 		HTTPMaskTLS:     node.HTTPMask.TLS,
 		HTTPMaskHost:    strings.TrimSpace(node.HTTPMask.Host),
-		HTTPMaskMux:     strings.TrimSpace(node.HTTPMask.Multiplex),
+		HTTPMaskMux:     strings.TrimSpace(node.Multiplex),
 		HTTPMaskPath:    strings.TrimSpace(node.HTTPMask.PathRoot),
 	}
 	if payload.AEAD == "" {

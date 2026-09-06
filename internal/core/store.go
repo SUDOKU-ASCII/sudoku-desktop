@@ -361,9 +361,14 @@ func normalizeNode(node *NodeConfig, fallbackPort int) {
 	if node.HTTPMask.Mode == "" {
 		node.HTTPMask.Mode = "legacy"
 	}
-	if node.HTTPMask.Multiplex == "" {
-		node.HTTPMask.Multiplex = "off"
+	if node.Multiplex == "" {
+		// Migrate the legacy nested location without changing existing nodes.
+		node.Multiplex = strings.TrimSpace(node.HTTPMask.Multiplex)
 	}
+	if node.Multiplex == "" {
+		node.Multiplex = "off"
+	}
+	node.HTTPMask.Multiplex = ""
 	if node.CustomTables == nil {
 		node.CustomTables = []string{}
 	}
