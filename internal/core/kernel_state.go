@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	bundledSudokuVersion      = "v0.4.8"
+	bundledSudokuVersion      = "v0.5.1"
 	kernelLatencyProbeWindow  = 10 * time.Minute
 	kernelLatencyProbeTimeout = 12 * time.Second
 )
