@@ -81,7 +81,6 @@ const downlinkStyle = computed<ASCIIStyleToken>({
                 <option>off</option>
               </select>
             </label>
-            <label class="switch-row compact"><span>{{ props.t('enableNode') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enabled" /><span class="switch-ui" /></span></label>
             <label class="switch-row compact"><span>{{ props.t('pureDownlink') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enablePureDownlink" /><span class="switch-ui" /></span></label>
           </div>
           <p class="hint">{{ props.t('pureDownlinkHint') }}</p>

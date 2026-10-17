@@ -42,6 +42,8 @@ type Backend struct {
 	darwinNetLastSig    string
 	darwinNetLastErr    string
 	darwinNetLastErrAt  time.Time
+	darwinNetRepairAt   time.Time
+	darwinWakePending   bool
 	revProc             *ManagedProcess
 	routeState          *routeContext
 	pfMgr               *portForwardManager

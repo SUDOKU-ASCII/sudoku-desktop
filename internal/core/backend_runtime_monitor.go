@@ -272,14 +272,29 @@ func writeCoreTrafficStatsFile(path string, s coreTrafficFileSnapshot) error {
 	return os.Rename(tmp, path)
 }
 
+const (
+	systemWakeGap            = 10 * time.Second
+	darwinForcedRepairPeriod = 10 * time.Second
+)
+
 func (b *Backend) monitorLoop() {
 	t := time.NewTicker(1 * time.Second)
 	defer t.Stop()
+	// Round(0) drops the monotonic reading, which does not advance while the
+	// machine sleeps; the wall clock does.
+	lastWall := time.Now().Round(0)
 	for {
 		select {
 		case <-b.tickerStop:
 			return
 		case <-t.C:
+			wall := time.Now().Round(0)
+			if wall.Sub(lastWall) > systemWakeGap {
+				b.mu.Lock()
+				b.darwinWakePending = true
+				b.mu.Unlock()
+			}
+			lastWall = wall
 			b.tick()
 			b.maybeRepairDarwinTunNetwork()
 		}
@@ -315,9 +330,13 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 	routeCtx := b.routeState
 	tunRunning := b.state.TunRunning
 	if routeCtx == nil || !tunRunning {
+		b.darwinWakePending = false
 		b.mu.Unlock()
 		return
 	}
+	serverIP := strings.TrimSpace(routeCtx.ServerIP)
+	wakePending := b.darwinWakePending
+	lastRepairAt := b.darwinNetRepairAt
 	prevIf := strings.TrimSpace(routeCtx.DefaultInterface)
 	prevGW := strings.TrimSpace(routeCtx.DefaultGateway)
 	tunCfg := b.cfg.Tun
@@ -361,8 +380,20 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 		return
 	}
 
-	changed := prevIf != newIf || prevGW != newGW
-	if !changed {
+	// Interface/gateway often stay identical across sleep/wake or a Wi-Fi flap, yet the
+	// kernel drops every route tied to the interface (server host route, scoped bypass
+	// routes). Re-apply them after a wake, or whenever the server route leaks into the tun.
+	reason := ""
+	switch {
+	case prevIf != newIf || prevGW != newGW:
+		reason = "network changed"
+	case now.Sub(lastRepairAt) < darwinForcedRepairPeriod:
+		return
+	case wakePending:
+		reason = "system woke from sleep"
+	case darwinHostRouteLeaksIntoTun(serverIP):
+		reason = "server route lost"
+	default:
 		return
 	}
 
@@ -377,12 +408,14 @@ func (b *Backend) maybeRepairDarwinTunNetwork() {
 	}
 	b.darwinNetLastSig = sig
 	b.darwinNetRepairing = true
+	b.darwinNetRepairAt = now
+	b.darwinWakePending = false
 	b.mu.Unlock()
 
-	go b.repairDarwinTunNetwork(routeCtx, tunCfg, prevIf, prevGW, newIf, newGW, sig)
+	go b.repairDarwinTunNetwork(routeCtx, tunCfg, prevIf, prevGW, newIf, newGW, sig, reason)
 }
 
-func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSettings, prevIf string, prevGW string, newIf string, newGW string, sig string) {
+func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSettings, prevIf string, prevGW string, newIf string, newGW string, sig string, reason string) {
 	defer func() {
 		b.mu.Lock()
 		b.darwinNetRepairing = false
@@ -414,7 +447,7 @@ func (b *Backend) repairDarwinTunNetwork(routeCtx *routeContext, tunCfg TunSetti
 	pfAnchor := strings.TrimSpace(routeCtx.PFAnchor)
 	b.mu.Unlock()
 
-	b.addLog("warn", "tun", fmt.Sprintf("darwin network changed: %s/%s -> %s/%s; repairing TUN routes", prevIf, prevGW, newIf, newGW))
+	b.addLog("warn", "tun", fmt.Sprintf("darwin %s: %s/%s -> %s/%s; repairing TUN routes", reason, prevIf, prevGW, newIf, newGW))
 
 	newDNSService := ""
 	var newDNSSnap darwinDNSSnapshot

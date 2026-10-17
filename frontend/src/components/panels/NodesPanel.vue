@@ -56,7 +56,6 @@ const httpMaskText = (node: NodeConfig) => {
 }
 
 const selectNode = (item: NodeView) => {
-  if (!item.node.enabled) return
   props.pickNode(item.node)
   if (!item.active) props.switchNode(item.node.id)
 }
@@ -71,7 +70,6 @@ const selectNode = (item: NodeView) => {
           <h3>{{ activeNode?.node.name || activeNode?.node.serverAddress || '-' }}</h3>
           <p>{{ activeNode?.node.serverAddress || props.t('none') }}</p>
           <dl>
-            <div><dt>{{ props.t('enabled') }}</dt><dd>{{ activeNode?.node.enabled ? props.t('enabled') : props.t('disabled') }}</dd></div>
             <div><dt>{{ props.t('latency') }}</dt><dd>{{ activeNode ? latencyText(activeNode) : '-' }}</dd></div>
             <div><dt>{{ props.t('localPort') }}</dt><dd>{{ activeNode?.node.localPort || '-' }}</dd></div>
           </dl>
@@ -99,7 +97,7 @@ const selectNode = (item: NodeView) => {
             v-for="item in filteredNodes"
             :key="item.node.id"
             class="node-card"
-            :class="{ active: item.active, editing: item.editing, disabled: !item.node.enabled }"
+            :class="{ active: item.active, editing: item.editing }"
             @click="selectNode(item)"
           >
             <div class="node-head">
@@ -107,8 +105,8 @@ const selectNode = (item: NodeView) => {
                 <h4>{{ item.node.name || item.node.serverAddress }}</h4>
                 <p>{{ item.node.serverAddress }}</p>
               </div>
-              <span class="node-state" :class="item.active ? 'ok' : item.node.enabled ? 'idle' : 'off'">
-                {{ item.active ? props.t('nodeStateActive') : item.node.enabled ? props.t('nodeStateIdle') : props.t('disabled') }}
+              <span class="node-state" :class="item.active ? 'ok' : 'idle'">
+                {{ item.active ? props.t('nodeStateActive') : props.t('nodeStateIdle') }}
               </span>
             </div>
 

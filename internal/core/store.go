@@ -342,6 +342,7 @@ func normalizeNode(node *NodeConfig, fallbackPort int) {
 	if node == nil {
 		return
 	}
+	node.Enabled = true
 	if node.LocalPort <= 0 {
 		node.LocalPort = fallbackPort
 	}

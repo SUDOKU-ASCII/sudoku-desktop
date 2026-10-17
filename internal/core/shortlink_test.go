@@ -144,3 +144,40 @@ func decodeShortLinkForTest(t *testing.T, link string) shortLinkPayload {
 	}
 	return payload
 }
+
+func TestParseShortLinkUsesNodeName(t *testing.T) {
+	link := encodeShortLinkForTest(t, shortLinkPayload{Name: "HKG", Host: "203.0.113.7", Port: 443, Key: "k"})
+	node, err := ParseShortLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if node.Name != "HKG" {
+		t.Fatalf("expected name HKG, got %q", node.Name)
+	}
+	rt, err := BuildShortLink(*node)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if got := decodeShortLinkForTest(t, rt).Name; got != "HKG" {
+		t.Fatalf("expected round-trip name HKG, got %q", got)
+	}
+
+	noName := encodeShortLinkForTest(t, shortLinkPayload{Host: "203.0.113.7", Port: 443, Key: "k"})
+	node, err = ParseShortLink(noName)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if node.Name != "203.0.113.7" {
+		t.Fatalf("expected host fallback name, got %q", node.Name)
+	}
+}
+
+func TestParseShortLinkFromUserSample(t *testing.T) {
+	node, err := ParseShortLink("sudoku://eyJhIjoiZW50cm9weSIsImUiOiJjaGFjaGEyMC1wb2x5MTMwNSIsImgiOiIyMTYuMjM2LjYzLjEzNSIsImhkIjp0cnVlLCJoeCI6Im9uIiwiaHkiOiJxaHp3bXJ2dCIsImsiOiI3NWJmNGUwNGQ1Njk5NDQyOGFlZGM2YWUxODM3OGFjMzRkZDQ0MmM3YTQyNjNmNzQxNDM5YmU2Y2I3ODkwZDBlMWNkNGRiZjEyMjg3ZDQxYTM4MDFlODUwMjIyYWQzYWQ1YTdlN2M4NTFlZThkNTgxYzRlYzQyNDZjMjQ1NWUwOCIsIm4iOiJIS0ciLCJwIjoxMDIzMywieCI6dHJ1ZX0")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if node.Name != "HKG" {
+		t.Fatalf("expected HKG, got %q", node.Name)
+	}
+}

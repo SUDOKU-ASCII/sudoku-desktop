@@ -108,43 +108,52 @@ func probeNodeLatency(node NodeConfig, appCfg AppConfig) LatencyResult {
 		result.Error = err.Error()
 		return result
 	}
-	start := time.Now()
-	conn, err := dialer.Dial("tcp", "i.ytimg.com:443")
+	// The first connection through a freshly spawned core pays one-off setup
+	// costs (resolver/route init, first handshake), so warm up and time the second.
+	if _, _, err := probeGenerate204(ctx, dialer); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	latency, statusCode, err := probeGenerate204(ctx, dialer)
+	result.StatusCode = statusCode
 	if err != nil {
 		result.Error = err.Error()
 		return result
+	}
+	result.ConnectOK = statusCode >= 200 && statusCode < 500
+	result.LatencyMs = latency.Milliseconds()
+	result.CheckedAtUnix = time.Now().UnixMilli()
+	if !result.ConnectOK {
+		result.Error = fmt.Sprintf("unexpected HTTP status %d", statusCode)
+	}
+	return result
+}
+
+func probeGenerate204(ctx context.Context, dialer proxy.Dialer) (time.Duration, int, error) {
+	start := time.Now()
+	conn, err := dialer.Dial("tcp", "i.ytimg.com:443")
+	if err != nil {
+		return 0, 0, err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
 
 	tlsConn := tls.Client(conn, &tls.Config{ServerName: "i.ytimg.com"})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		result.Error = err.Error()
-		return result
+		return 0, 0, err
 	}
 	if _, err := io.WriteString(tlsConn, "GET /generate_204 HTTP/1.1\r\nHost: i.ytimg.com\r\nConnection: close\r\n\r\n"); err != nil {
-		result.Error = err.Error()
-		return result
+		return 0, 0, err
 	}
-	reader := bufio.NewReader(tlsConn)
-	line, err := reader.ReadString('\n')
+	line, err := bufio.NewReader(tlsConn).ReadString('\n')
 	if err != nil {
-		result.Error = err.Error()
-		return result
+		return 0, 0, err
 	}
-	parts := strings.Fields(strings.TrimSpace(line))
 	statusCode := 0
-	if len(parts) >= 2 {
+	if parts := strings.Fields(strings.TrimSpace(line)); len(parts) >= 2 {
 		statusCode, _ = strconv.Atoi(parts[1])
 	}
-	result.StatusCode = statusCode
-	result.ConnectOK = statusCode >= 200 && statusCode < 500
-	result.LatencyMs = time.Since(start).Milliseconds()
-	result.CheckedAtUnix = time.Now().UnixMilli()
-	if !result.ConnectOK {
-		result.Error = fmt.Sprintf("unexpected HTTP status %d", statusCode)
-	}
-	return result
+	return time.Since(start), statusCode, nil
 }
 
 func detectIP(useProxy bool, localPort int) IPDetectResult {

@@ -13,6 +13,7 @@ import (
 )
 
 type shortLinkPayload struct {
+	Name            string   `json:"n,omitempty"`
 	Host            string   `json:"h"`
 	Port            int      `json:"p"`
 	Key             string   `json:"k"`
@@ -46,9 +47,13 @@ func ParseShortLink(link string) (*NodeConfig, error) {
 	if payload.Host == "" || payload.Port <= 0 || payload.Key == "" {
 		return nil, errors.New("short link missing required fields")
 	}
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		name = payload.Host
+	}
 	node := &NodeConfig{
 		ID:                 newID("node_"),
-		Name:               payload.Host,
+		Name:               name,
 		ServerAddress:      net.JoinHostPort(payload.Host, strconv.Itoa(payload.Port)),
 		Key:                payload.Key,
 		AEAD:               payload.AEAD,
@@ -97,6 +102,7 @@ func BuildShortLink(node NodeConfig) (string, error) {
 		return "", fmt.Errorf("invalid server port: %w", err)
 	}
 	payload := shortLinkPayload{
+		Name:            strings.TrimSpace(node.Name),
 		Host:            host,
 		Port:            port,
 		Key:             strings.TrimSpace(node.Key),
