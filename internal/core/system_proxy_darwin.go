@@ -3,249 +3,212 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-type darwinProxySnapshot struct {
-	Service string
-
-	AutoProxyState bool
-	AutoProxyURL   string
-
-	WebEnabled    bool
-	WebServer     string
-	WebPort       int
-	SecureEnabled bool
-	SecureServer  string
-	SecurePort    int
-	SOCKSEnabled  bool
-	SOCKSServer   string
-	SOCKSPort     int
-
-	BypassDomains []string
+func platformCaptureSystemProxy(ctx context.Context) (*systemProxySnapshot, error) {
+	services, err := darwinNetworkServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snaps := make([]darwinProxySnapshot, len(services))
+	var wg sync.WaitGroup
+	for i, svc := range services {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			snaps[i] = darwinReadProxySnapshot(ctx, svc)
+			// A leftover of an earlier crashed run is not "the user's setting".
+			for _, p := range []*darwinProxy{&snaps[i].Web, &snaps[i].Secure, &snaps[i].SOCKS} {
+				if isLocalProxy(p.Server, p.Port, ProxyPort) {
+					*p = darwinProxy{}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return &systemProxySnapshot{Darwin: snaps}, nil
 }
 
-func platformApplySystemProxy(cfg systemProxyConfig) (func() error, error) {
-	_, ifName, err := darwinDefaultRoute()
-	if err != nil {
-		return nil, err
+func platformSetSystemProxy(ctx context.Context, base *systemProxySnapshot, port int, logf func(string)) error {
+	if base == nil || len(base.Darwin) == 0 {
+		return errors.New("no network service found")
 	}
-	ifName = strings.TrimSpace(ifName)
-	if ifName == "" {
-		return nil, errors.New("default interface not found")
+	portStr := strconv.Itoa(port)
+	var wg sync.WaitGroup
+	errs := make([]error, len(base.Darwin))
+	for i, snap := range base.Darwin {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			svc := snap.Service
+			steps := [][]string{
+				{"-setautoproxystate", svc, "off"},
+				{"-setwebproxy", svc, "127.0.0.1", portStr},
+				{"-setsecurewebproxy", svc, "127.0.0.1", portStr},
+				{"-setsocksfirewallproxy", svc, "127.0.0.1", portStr},
+			}
+			merged := uniqueStrings(append(append([]string(nil), snap.BypassDomains...), proxyBypassLocal...))
+			steps = append(steps, append([]string{"-setproxybypassdomains", svc}, merged...))
+			for _, args := range steps {
+				if err := darwinNS(ctx, logf, args...); err != nil {
+					errs[i] = err
+					return
+				}
+			}
+		}()
 	}
-	svc, err := darwinNetworkServiceForDevice(ifName)
-	if err != nil {
-		return nil, err
-	}
-	svc = strings.TrimSpace(svc)
-	if svc == "" {
-		return nil, errors.New("network service not found")
-	}
-
-	snap, err := darwinReadProxySnapshot(svc)
-	if err != nil {
-		return nil, err
-	}
-	logf := cfg.Logf
-
-	applyErr := func() error {
-		if cfg.LocalPort <= 0 || cfg.LocalPort > 65535 {
-			return fmt.Errorf("invalid local port: %d", cfg.LocalPort)
-		}
-
-		_ = darwinNS(logf, "networksetup", "-setautoproxystate", svc, "off")
-
-		portStr := strconv.Itoa(cfg.LocalPort)
-		_ = darwinNS(logf, "networksetup", "-setwebproxy", svc, "127.0.0.1", portStr)
-		_ = darwinNS(logf, "networksetup", "-setsecurewebproxy", svc, "127.0.0.1", portStr)
-		_ = darwinNS(logf, "networksetup", "-setsocksfirewallproxy", svc, "127.0.0.1", portStr)
-		_ = darwinNS(logf, "networksetup", "-setwebproxystate", svc, "on")
-		_ = darwinNS(logf, "networksetup", "-setsecurewebproxystate", svc, "on")
-		_ = darwinNS(logf, "networksetup", "-setsocksfirewallproxystate", svc, "on")
-
-		needBypass := []string{"localhost", "127.0.0.1", "::1"}
-		merged := uniqueStrings(append(append([]string(nil), snap.BypassDomains...), needBypass...))
-		if len(merged) == 0 {
-			_ = darwinNS(logf, "networksetup", "-setproxybypassdomains", svc, "Empty")
-		} else {
-			args := append([]string{"-setproxybypassdomains", svc}, merged...)
-			_ = darwinNS(logf, "networksetup", args...)
-		}
-		return nil
-	}()
-	if applyErr != nil {
-		return nil, applyErr
-	}
-
-	return func() error {
-		return darwinRestoreProxySnapshot(snap, logf)
-	}, nil
-}
-
-func darwinNS(logf func(string), name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
-	clean := strings.TrimSpace(string(out))
-	if logf != nil {
-		if clean != "" {
-			logf(fmt.Sprintf("[system-proxy] %s %s => %s", name, strings.Join(args, " "), clean))
-		} else {
-			logf(fmt.Sprintf("[system-proxy] %s %s", name, strings.Join(args, " ")))
+	wg.Wait()
+	var failed []string
+	for i, err := range errs {
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", base.Darwin[i].Service, err))
 		}
 	}
-	if err != nil {
-		if clean != "" {
-			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, clean)
-		}
-		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	if len(failed) == len(errs) {
+		return errors.New(strings.Join(failed, "; "))
+	}
+	if len(failed) > 0 && logf != nil {
+		logf("system proxy partially applied: " + strings.Join(failed, "; "))
 	}
 	return nil
 }
 
-func darwinReadProxySnapshot(service string) (darwinProxySnapshot, error) {
-	service = strings.TrimSpace(service)
-	if service == "" {
-		return darwinProxySnapshot{}, errors.New("empty service")
-	}
-	snap := darwinProxySnapshot{Service: service}
-
-	if st, url, err := darwinGetAutoProxy(service); err == nil {
-		snap.AutoProxyState = st
-		snap.AutoProxyURL = url
-	}
-	if p, err := darwinGetProxy(service, "-getwebproxy"); err == nil {
-		snap.WebEnabled, snap.WebServer, snap.WebPort = p.Enabled, p.Server, p.Port
-	}
-	if p, err := darwinGetProxy(service, "-getsecurewebproxy"); err == nil {
-		snap.SecureEnabled, snap.SecureServer, snap.SecurePort = p.Enabled, p.Server, p.Port
-	}
-	if p, err := darwinGetProxy(service, "-getsocksfirewallproxy"); err == nil {
-		snap.SOCKSEnabled, snap.SOCKSServer, snap.SOCKSPort = p.Enabled, p.Server, p.Port
-	}
-	if domains, err := darwinGetBypassDomains(service); err == nil {
-		snap.BypassDomains = domains
-	}
-	return snap, nil
-}
-
-type darwinProxy struct {
-	Enabled bool
-	Server  string
-	Port    int
-}
-
-func darwinGetProxy(service string, getCmd string) (darwinProxy, error) {
-	out, err := exec.Command("networksetup", getCmd, service).CombinedOutput()
-	if err != nil {
-		return darwinProxy{}, err
-	}
-	lines := strings.Split(string(out), "\n")
-	p := darwinProxy{}
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "Enabled:") {
-			v := strings.TrimSpace(strings.TrimPrefix(line, "Enabled:"))
-			p.Enabled = strings.EqualFold(v, "yes") || strings.EqualFold(v, "on") || v == "1"
-		}
-		if strings.HasPrefix(line, "Server:") {
-			p.Server = strings.TrimSpace(strings.TrimPrefix(line, "Server:"))
-		}
-		if strings.HasPrefix(line, "Port:") {
-			v := strings.TrimSpace(strings.TrimPrefix(line, "Port:"))
-			if n, _ := strconv.Atoi(v); n > 0 {
-				p.Port = n
+func platformRestoreSystemProxy(ctx context.Context, snap *systemProxySnapshot, port int, logf func(string)) error {
+	var wg sync.WaitGroup
+	for _, s := range snap.Darwin {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cur := darwinReadProxySnapshot(ctx, s.Service)
+			ours := func(p darwinProxy) bool { return p.Enabled && isLocalProxy(p.Server, p.Port, port) }
+			svc := s.Service
+			set := func(on bool) string { return map[bool]string{true: "on", false: "off"}[on] }
+			restore := func(kind string, now, orig darwinProxy) {
+				if !ours(now) {
+					return
+				}
+				if orig.Server != "" && orig.Port > 0 && orig.Port <= 65535 {
+					_ = darwinNS(ctx, logf, "-set"+kind, svc, orig.Server, strconv.Itoa(orig.Port))
+				}
+				_ = darwinNS(ctx, logf, "-set"+kind+"state", svc, set(orig.Enabled && !isLocalProxy(orig.Server, orig.Port, port)))
 			}
-		}
+			restore("webproxy", cur.Web, s.Web)
+			restore("securewebproxy", cur.Secure, s.Secure)
+			restore("socksfirewallproxy", cur.SOCKS, s.SOCKS)
+			if ours(cur.Web) || ours(cur.Secure) || ours(cur.SOCKS) {
+				if s.AutoProxyURL != "" {
+					_ = darwinNS(ctx, logf, "-setautoproxyurl", svc, s.AutoProxyURL)
+				}
+				_ = darwinNS(ctx, logf, "-setautoproxystate", svc, set(s.AutoProxyOn))
+				if len(s.BypassDomains) == 0 {
+					_ = darwinNS(ctx, logf, "-setproxybypassdomains", svc, "Empty")
+				} else {
+					_ = darwinNS(ctx, logf, append([]string{"-setproxybypassdomains", svc}, s.BypassDomains...)...)
+				}
+			}
+		}()
 	}
-	return p, nil
+	wg.Wait()
+	return nil
 }
 
-func darwinGetAutoProxy(service string) (state bool, url string, err error) {
-	out, err := exec.Command("networksetup", "-getautoproxystate", service).CombinedOutput()
+// darwinNetworkServices lists the enabled network services (disabled ones are prefixed "*").
+func darwinNetworkServices(ctx context.Context) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "networksetup", "-listallnetworkservices").Output()
 	if err != nil {
-		return false, "", err
+		return nil, fmt.Errorf("list network services: %w", err)
 	}
-	s := strings.TrimSpace(string(out))
-	state = strings.Contains(strings.ToLower(s), "on")
-
-	out2, err := exec.Command("networksetup", "-getautoproxyurl", service).CombinedOutput()
-	if err != nil {
-		return state, "", nil
-	}
-	lines := strings.Split(string(out2), "\n")
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "URL:") {
-			url = strings.TrimSpace(strings.TrimPrefix(line, "URL:"))
-		}
-		if strings.HasPrefix(line, "Enabled:") {
-			v := strings.TrimSpace(strings.TrimPrefix(line, "Enabled:"))
-			state = state && (strings.EqualFold(v, "yes") || strings.EqualFold(v, "on") || v == "1")
-		}
-	}
-	return state, url, nil
-}
-
-func darwinGetBypassDomains(service string) ([]string, error) {
-	out, err := exec.Command("networksetup", "-getproxybypassdomains", service).CombinedOutput()
-	if err != nil {
-		return nil, err
-	}
-	s := strings.TrimSpace(string(out))
-	if s == "" {
-		return nil, nil
-	}
-	if strings.Contains(strings.ToLower(s), "there aren't any") || strings.Contains(strings.ToLower(s), "there are no") {
-		return nil, nil
-	}
-	lines := strings.Split(s, "\n")
-	outDomains := make([]string, 0, len(lines))
-	for _, ln := range lines {
-		ln = strings.TrimSpace(ln)
-		if ln == "" {
+	var services []string
+	for i, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "*") {
 			continue
 		}
-		outDomains = append(outDomains, ln)
+		if i == 0 && strings.Contains(line, "asterisk") {
+			continue
+		}
+		services = append(services, line)
 	}
-	return uniqueStrings(outDomains), nil
+	return services, nil
 }
 
-func darwinRestoreProxySnapshot(snap darwinProxySnapshot, logf func(string)) error {
-	svc := strings.TrimSpace(snap.Service)
-	if svc == "" {
+func darwinNS(ctx context.Context, logf func(string), args ...string) error {
+	out, err := exec.CommandContext(ctx, "networksetup", args...).CombinedOutput()
+	clean := strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("networksetup %s: %w: %s", strings.Join(args, " "), err, clean)
+	}
+	return nil
+}
+
+func darwinReadProxySnapshot(ctx context.Context, service string) darwinProxySnapshot {
+	snap := darwinProxySnapshot{Service: service}
+	snap.AutoProxyOn, snap.AutoProxyURL = darwinGetAutoProxy(ctx, service)
+	snap.Web = darwinGetProxy(ctx, service, "-getwebproxy")
+	snap.Secure = darwinGetProxy(ctx, service, "-getsecurewebproxy")
+	snap.SOCKS = darwinGetProxy(ctx, service, "-getsocksfirewallproxy")
+	snap.BypassDomains = darwinGetBypassDomains(ctx, service)
+	return snap
+}
+
+func darwinGetProxy(ctx context.Context, service string, getCmd string) darwinProxy {
+	out, err := exec.CommandContext(ctx, "networksetup", getCmd, service).Output()
+	if err != nil {
+		return darwinProxy{}
+	}
+	var p darwinProxy
+	for _, raw := range strings.Split(string(out), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "Enabled:"):
+			v := strings.TrimSpace(strings.TrimPrefix(line, "Enabled:"))
+			p.Enabled = strings.EqualFold(v, "yes") || strings.EqualFold(v, "on") || v == "1"
+		case strings.HasPrefix(line, "Server:"):
+			p.Server = strings.TrimSpace(strings.TrimPrefix(line, "Server:"))
+		case strings.HasPrefix(line, "Port:"):
+			p.Port, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Port:")))
+		}
+	}
+	return p
+}
+
+func darwinGetAutoProxy(ctx context.Context, service string) (on bool, url string) {
+	out, err := exec.CommandContext(ctx, "networksetup", "-getautoproxyurl", service).Output()
+	if err != nil {
+		return false, ""
+	}
+	for _, raw := range strings.Split(string(out), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "URL:"):
+			url = strings.TrimSpace(strings.TrimPrefix(line, "URL:"))
+			if url == "(null)" {
+				url = ""
+			}
+		case strings.HasPrefix(line, "Enabled:"):
+			v := strings.TrimSpace(strings.TrimPrefix(line, "Enabled:"))
+			on = strings.EqualFold(v, "yes") || strings.EqualFold(v, "on") || v == "1"
+		}
+	}
+	return on, url
+}
+
+func darwinGetBypassDomains(ctx context.Context, service string) []string {
+	out, err := exec.CommandContext(ctx, "networksetup", "-getproxybypassdomains", service).Output()
+	if err != nil {
 		return nil
 	}
-
-	// Restore auto proxy first.
-	if strings.TrimSpace(snap.AutoProxyURL) != "" {
-		_ = darwinNS(logf, "networksetup", "-setautoproxyurl", svc, strings.TrimSpace(snap.AutoProxyURL))
+	s := strings.TrimSpace(string(out))
+	low := strings.ToLower(s)
+	if s == "" || strings.Contains(low, "there aren't any") || strings.Contains(low, "there are no") {
+		return nil
 	}
-	_ = darwinNS(logf, "networksetup", "-setautoproxystate", svc, map[bool]string{true: "on", false: "off"}[snap.AutoProxyState])
-
-	// Restore manual proxies.
-	restoreOne := func(kind string, enabled bool, server string, port int) {
-		server = strings.TrimSpace(server)
-		if server != "" && port > 0 && port <= 65535 {
-			_ = darwinNS(logf, "networksetup", "-set"+kind, svc, server, strconv.Itoa(port))
-		}
-		_ = darwinNS(logf, "networksetup", "-set"+kind+"state", svc, map[bool]string{true: "on", false: "off"}[enabled])
-	}
-	restoreOne("webproxy", snap.WebEnabled, snap.WebServer, snap.WebPort)
-	restoreOne("securewebproxy", snap.SecureEnabled, snap.SecureServer, snap.SecurePort)
-	restoreOne("socksfirewallproxy", snap.SOCKSEnabled, snap.SOCKSServer, snap.SOCKSPort)
-
-	// Restore bypass domains.
-	if len(snap.BypassDomains) == 0 {
-		_ = darwinNS(logf, "networksetup", "-setproxybypassdomains", svc, "Empty")
-	} else {
-		args := append([]string{"-setproxybypassdomains", svc}, snap.BypassDomains...)
-		_ = darwinNS(logf, "networksetup", args...)
-	}
-
-	return nil
+	return uniqueStrings(strings.Split(s, "\n"))
 }

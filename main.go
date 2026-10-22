@@ -4,9 +4,11 @@ import (
 	"embed"
 	"errors"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
@@ -30,9 +32,24 @@ var trayTemplateIcon []byte
 func init() {
 	application.RegisterEvent[core.RuntimeState](core.EventStateUpdated)
 	application.RegisterEvent[core.LogEntry](core.EventLogAdded)
+	application.RegisterEvent[core.TrafficTick](core.EventTrafficUpdated)
 }
 
 func main() {
+	// Helper roles are second instances of this executable and must run before any GUI
+	// initialisation (and before the single-instance lock).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--guard":
+			if len(os.Args) > 2 {
+				core.GuardMain(os.Args[2])
+			}
+			return
+		case "--tun-helper":
+			os.Exit(core.RunTunHelper(os.Args[2:], bundledRuntime, "runtime/bin"))
+		}
+	}
+
 	startHidden := false
 	for _, arg := range os.Args[1:] {
 		switch strings.ToLower(strings.TrimSpace(arg)) {
@@ -209,11 +226,9 @@ func main() {
 		mainWindow.Show().Focus()
 	})
 	proxyToggleItem.OnClick(func(_ *application.Context) {
-		if err := appService.trayToggleProxy(); err != nil {
+		if err := appService.trayToggleProxy(); err != nil && !errors.Is(err, core.ErrStartCancelled) {
 			logx.Errorf("Desktop", "tray toggle proxy failed: %v", err)
-			if errors.Is(err, core.ErrAdminRequired) {
-				mainWindow.Show().Focus()
-			}
+			mainWindow.Show().Focus()
 		}
 		refreshTrayMenu()
 	})
@@ -245,6 +260,13 @@ func main() {
 		tray.OpenMenu()
 	})
 	refreshTrayMenu()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		requestQuit()
+	}()
 
 	err := app.Run()
 	if err != nil {

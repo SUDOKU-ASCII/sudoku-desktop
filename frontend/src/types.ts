@@ -1,5 +1,9 @@
 export type ProxyMode = 'global' | 'direct' | 'pac'
 
+export const BALANCE_NODE_ID = '@balance'
+export const DEFAULT_PROXY_PORT = 10233
+export const DEFAULT_CONTROLLER_PORT = 9097
+
 export interface HTTPMaskSettings {
   disable: boolean
   mode: string
@@ -22,8 +26,6 @@ export interface NodeConfig {
   customTables: string[]
   multiplex: string
   httpMask: HTTPMaskSettings
-  localPort: number
-  enabled: boolean
 }
 
 export interface ReverseRoute {
@@ -71,10 +73,15 @@ export interface CoreSettings {
   sudokuBinary: string
   hevBinary: string
   workingDir: string
-  localPort: number
-  allowLan: boolean
   logLevel: string
   autoStart: boolean
+  allowLan: boolean
+}
+
+export interface ControllerSettings {
+  port: number
+  secret: string
+  allowLan: boolean
 }
 
 export interface ReverseForwarderSettings {
@@ -104,6 +111,7 @@ export interface AppConfig {
   routing: RoutingSettings
   tun: TunSettings
   core: CoreSettings
+  controller: ControllerSettings
   reverseClient: ReverseClientSettings
   reverseForward: ReverseForwarderSettings
   portForwards: PortForwardRule[]
@@ -123,11 +131,15 @@ export interface LogEntry {
 export interface ActiveConnection {
   id: string
   network: string
+  type: string
   source: string
   destination: string
-  direction: string
-  lastSeen: string
-  hits: number
+  direction: 'direct' | 'proxy' | 'reject' | string
+  node: string
+  rule: string
+  upload: number
+  download: number
+  startedAt: string
 }
 
 export interface BandwidthSample {
@@ -147,21 +159,13 @@ export interface TrafficState {
   estimatedDirectRx: number
   estimatedProxyTx: number
   estimatedProxyRx: number
-  directConnDecisions: number
-  proxyConnDecisions: number
-  recentBandwidth: BandwidthSample[]
-  interface: string
-  interfaceFound: boolean
-  lastSampleUnixMillis: number
+  directConns: number
+  proxyConns: number
 }
 
 export interface KernelState {
   version: string
   memoryBytes: number
-  latencyMs: number
-  latencyStatusCode: number
-  latencyCheckedAt: number
-  latencyError: string
 }
 
 export interface LatencyResult {
@@ -169,7 +173,6 @@ export interface LatencyResult {
   nodeName: string
   latencyMs: number
   connectOk: boolean
-  statusCode: number
   checkedAtUnix: number
   error: string
 }
@@ -191,22 +194,53 @@ export interface LANProxyInfo {
   ready: boolean
 }
 
+export type Phase = 'stopped' | 'starting' | 'running' | 'stopping'
+
 export interface RuntimeState {
+  phase: Phase
   running: boolean
   coreRunning: boolean
   tunRunning: boolean
+  tunRequested: boolean
   reverseRunning: boolean
+  systemProxyOn: boolean
   startedAtUnix: number
   activeNodeId: string
   activeNodeName: string
+  mode: string
   lastError: string
   traffic: TrafficState
   kernel: KernelState
   latencies: LatencyResult[]
-  connections: ActiveConnection[]
-  recentLogs: LogEntry[]
+  connectionCount: number
+  needsNetRepair: boolean
+  proxyPort: number
   needsAdmin: boolean
-  routeSetupError: string
+  adminError: string
+}
+
+export interface TrafficTick {
+  sample: BandwidthSample
+  traffic: TrafficState
+  memoryBytes: number
+  connectionCount: number
+}
+
+export interface ControllerBoard {
+  id: string
+  name: string
+  url: string
+}
+
+export interface ControllerInfo {
+  ready: boolean
+  port: number
+  secret: string
+  allowLan: boolean
+  url: string
+  lanUrls: string[]
+  boards: ControllerBoard[]
+  version: string
 }
 
 export interface StartRequest {

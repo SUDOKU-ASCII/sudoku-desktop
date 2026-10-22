@@ -2,9 +2,35 @@ package core
 
 import "time"
 
+// Events pushed to the frontend. Keep payloads small: the state event fires on
+// every lifecycle change, the traffic event once per second while running.
 const (
-	EventStateUpdated = "core:state"
-	EventLogAdded     = "core:log"
+	EventStateUpdated   = "core:state"
+	EventTrafficUpdated = "core:traffic"
+	EventLogAdded       = "core:log"
+)
+
+const (
+	// ProxyPort is the fixed local mixed (HTTP/SOCKS) port. It is also the system proxy
+	// port and the SOCKS upstream of the TUN. Intentionally not user-configurable.
+	ProxyPort = 10233
+
+	// DefaultControllerPort is the default Clash-compatible external controller port
+	// (the port web dashboards such as zashboard/metacubexd/yacd default to).
+	DefaultControllerPort = 9097
+
+	// BalanceNodeID in AppConfig.ActiveNodeID selects the upstream "Balance" group,
+	// which spreads connections over every node.
+	BalanceNodeID = "@balance"
+)
+
+type Phase string
+
+const (
+	PhaseStopped  Phase = "stopped"
+	PhaseStarting Phase = "starting"
+	PhaseRunning  Phase = "running"
+	PhaseStopping Phase = "stopping"
 )
 
 type HTTPMaskSettings struct {
@@ -31,8 +57,6 @@ type NodeConfig struct {
 	CustomTables       []string         `json:"customTables"`
 	Multiplex          string           `json:"multiplex"`
 	HTTPMask           HTTPMaskSettings `json:"httpMask"`
-	LocalPort          int              `json:"localPort"`
-	Enabled            bool             `json:"enabled"`
 }
 
 type ReverseRoute struct {
@@ -55,36 +79,47 @@ type RoutingSettings struct {
 }
 
 type TunSettings struct {
-	Enabled          bool   `json:"enabled"`
-	InterfaceName    string `json:"interfaceName"`
-	MTU              int    `json:"mtu"`
-	IPv4             string `json:"ipv4"`
-	IPv6             string `json:"ipv6"`
-	BlockQUIC        bool   `json:"blockQuic"`
-	SocksUDP         string `json:"socksUdp"`
-	SocksMark        int    `json:"socksMark"`
-	RouteTable       int    `json:"routeTable"`
-	LogLevel         string `json:"logLevel"`
-	MapDNSEnabled    bool   `json:"mapDnsEnabled"`
-	MapDNSAddress    string `json:"mapDnsAddress"`
-	MapDNSPort       int    `json:"mapDnsPort"`
-	MapDNSNetwork    string `json:"mapDnsNetwork"`
-	MapDNSNetmask    string `json:"mapDnsNetmask"`
-	TaskStackSize    int    `json:"taskStackSize"`
-	TCPBufferSize    int    `json:"tcpBufferSize"`
-	MaxSession       int    `json:"maxSession"`
-	ConnectTimeout   int    `json:"connectTimeout"`
-	MapDNSLocalProxy bool   `json:"-"`
+	Enabled        bool   `json:"enabled"`
+	InterfaceName  string `json:"interfaceName"`
+	MTU            int    `json:"mtu"`
+	IPv4           string `json:"ipv4"`
+	IPv6           string `json:"ipv6"`
+	BlockQUIC      bool   `json:"blockQuic"`
+	SocksUDP       string `json:"socksUdp"`
+	SocksMark      int    `json:"socksMark"`
+	RouteTable     int    `json:"routeTable"`
+	LogLevel       string `json:"logLevel"`
+	MapDNSEnabled  bool   `json:"mapDnsEnabled"`
+	MapDNSAddress  string `json:"mapDnsAddress"`
+	MapDNSPort     int    `json:"mapDnsPort"`
+	MapDNSNetwork  string `json:"mapDnsNetwork"`
+	MapDNSNetmask  string `json:"mapDnsNetmask"`
+	TaskStackSize  int    `json:"taskStackSize"`
+	TCPBufferSize  int    `json:"tcpBufferSize"`
+	MaxSession     int    `json:"maxSession"`
+	ConnectTimeout int    `json:"connectTimeout"`
 }
 
 type CoreSettings struct {
 	SudokuBinary string `json:"sudokuBinary"`
 	HevBinary    string `json:"hevBinary"`
 	WorkingDir   string `json:"workingDir"`
-	LocalPort    int    `json:"localPort"`
-	AllowLAN     bool   `json:"allowLan"`
 	LogLevel     string `json:"logLevel"`
 	AutoStart    bool   `json:"autoStart"`
+	// AllowLAN lets other devices on the network use the local proxy port.
+	AllowLAN bool `json:"allowLan"`
+}
+
+// ControllerSettings configures the Clash-compatible external controller that the
+// Sudoku core exposes. The desktop app itself uses it for everything (mode/node
+// switching, latency tests, traffic, connections) and web dashboards can connect too.
+type ControllerSettings struct {
+	// Port is the controller TCP port (1-65535).
+	Port int `json:"port"`
+	// Secret is the bearer token. Never empty: a random one is generated on first run.
+	Secret string `json:"secret"`
+	// AllowLAN makes the controller listen on every interface instead of loopback only.
+	AllowLAN bool `json:"allowLan"`
 }
 
 type ReverseForwarderSettings struct {
@@ -114,6 +149,7 @@ type AppConfig struct {
 	Routing         RoutingSettings          `json:"routing"`
 	Tun             TunSettings              `json:"tun"`
 	Core            CoreSettings             `json:"core"`
+	Controller      ControllerSettings       `json:"controller"`
 	ReverseClient   ReverseClientSettings    `json:"reverseClient"`
 	ReverseForward  ReverseForwarderSettings `json:"reverseForward"`
 	PortForwards    []PortForwardRule        `json:"portForwards"`
@@ -130,14 +166,19 @@ type LogEntry struct {
 	Raw       string    `json:"raw"`
 }
 
+// ActiveConnection is one live connection as reported by the core's /connections.
 type ActiveConnection struct {
 	ID          string    `json:"id"`
 	Network     string    `json:"network"`
+	Type        string    `json:"type"`
 	Source      string    `json:"source"`
 	Destination string    `json:"destination"`
-	Direction   string    `json:"direction"`
-	LastSeen    time.Time `json:"lastSeen"`
-	Hits        int64     `json:"hits"`
+	Direction   string    `json:"direction"` // "direct" | "proxy" | "reject"
+	Node        string    `json:"node"`      // outbound node name ("DIRECT" for direct)
+	Rule        string    `json:"rule"`
+	Upload      uint64    `json:"upload"`
+	Download    uint64    `json:"download"`
+	StartedAt   time.Time `json:"startedAt"`
 }
 
 type BandwidthSample struct {
@@ -151,27 +192,19 @@ type BandwidthSample struct {
 }
 
 type TrafficState struct {
-	TotalTx              uint64            `json:"totalTx"`
-	TotalRx              uint64            `json:"totalRx"`
-	EstimatedDirectTx    uint64            `json:"estimatedDirectTx"`
-	EstimatedDirectRx    uint64            `json:"estimatedDirectRx"`
-	EstimatedProxyTx     uint64            `json:"estimatedProxyTx"`
-	EstimatedProxyRx     uint64            `json:"estimatedProxyRx"`
-	DirectConnDecisions  uint64            `json:"directConnDecisions"`
-	ProxyConnDecisions   uint64            `json:"proxyConnDecisions"`
-	RecentBandwidth      []BandwidthSample `json:"recentBandwidth"`
-	Interface            string            `json:"interface"`
-	InterfaceFound       bool              `json:"interfaceFound"`
-	LastSampleUnixMillis int64             `json:"lastSampleUnixMillis"`
+	TotalTx           uint64 `json:"totalTx"`
+	TotalRx           uint64 `json:"totalRx"`
+	EstimatedDirectTx uint64 `json:"estimatedDirectTx"`
+	EstimatedDirectRx uint64 `json:"estimatedDirectRx"`
+	EstimatedProxyTx  uint64 `json:"estimatedProxyTx"`
+	EstimatedProxyRx  uint64 `json:"estimatedProxyRx"`
+	DirectConns       int    `json:"directConns"`
+	ProxyConns        int    `json:"proxyConns"`
 }
 
 type KernelState struct {
-	Version           string `json:"version"`
-	MemoryBytes       uint64 `json:"memoryBytes"`
-	LatencyMs         int64  `json:"latencyMs"`
-	LatencyStatusCode int    `json:"latencyStatusCode"`
-	LatencyCheckedAt  int64  `json:"latencyCheckedAt"`
-	LatencyError      string `json:"latencyError"`
+	Version     string `json:"version"`
+	MemoryBytes uint64 `json:"memoryBytes"`
 }
 
 type LatencyResult struct {
@@ -179,7 +212,6 @@ type LatencyResult struct {
 	NodeName      string `json:"nodeName"`
 	LatencyMs     int64  `json:"latencyMs"`
 	ConnectOK     bool   `json:"connectOk"`
-	StatusCode    int    `json:"statusCode"`
 	CheckedAtUnix int64  `json:"checkedAtUnix"`
 	Error         string `json:"error"`
 }
@@ -201,22 +233,58 @@ type LANProxyInfo struct {
 	Ready bool     `json:"ready"`
 }
 
+// ControllerInfo describes how to reach the external controller (for the web dashboard
+// buttons and the "copy endpoint" helpers in the UI).
+type ControllerInfo struct {
+	Ready    bool     `json:"ready"`
+	Port     int      `json:"port"`
+	Secret   string   `json:"secret"`
+	AllowLAN bool     `json:"allowLan"`
+	URL      string   `json:"url"`     // http://127.0.0.1:9097
+	LANURLs  []string `json:"lanUrls"` // http://192.168.x.x:9097 (only when AllowLAN)
+	Boards   []Board  `json:"boards"`  // ready-to-open dashboard links
+	Version  string   `json:"version"` // core version string reported by /version
+}
+
+// Board is a hosted web dashboard with the connection parameters pre-filled.
+type Board struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
 type RuntimeState struct {
-	Running         bool               `json:"running"`
-	CoreRunning     bool               `json:"coreRunning"`
-	TunRunning      bool               `json:"tunRunning"`
-	ReverseRunning  bool               `json:"reverseRunning"`
-	StartedAtUnix   int64              `json:"startedAtUnix"`
-	ActiveNodeID    string             `json:"activeNodeId"`
-	ActiveNodeName  string             `json:"activeNodeName"`
-	LastError       string             `json:"lastError"`
-	Traffic         TrafficState       `json:"traffic"`
-	Kernel          KernelState        `json:"kernel"`
-	Latencies       []LatencyResult    `json:"latencies"`
-	Connections     []ActiveConnection `json:"connections"`
-	RecentLogs      []LogEntry         `json:"recentLogs"`
-	NeedsAdmin      bool               `json:"needsAdmin"`
-	RouteSetupError string             `json:"routeSetupError"`
+	Phase          Phase  `json:"phase"`
+	Running        bool   `json:"running"`
+	CoreRunning    bool   `json:"coreRunning"`
+	TunRunning     bool   `json:"tunRunning"`
+	TunRequested   bool   `json:"tunRequested"`
+	ReverseRunning bool   `json:"reverseRunning"`
+	SystemProxyOn  bool   `json:"systemProxyOn"`
+	StartedAtUnix  int64  `json:"startedAtUnix"`
+	ActiveNodeID   string `json:"activeNodeId"`
+	ActiveNodeName string `json:"activeNodeName"`
+	// Mode is the routing mode the core is using right now (pac|global|direct).
+	Mode            string          `json:"mode"`
+	LastError       string          `json:"lastError"`
+	Traffic         TrafficState    `json:"traffic"`
+	Kernel          KernelState     `json:"kernel"`
+	Latencies       []LatencyResult `json:"latencies"`
+	ConnectionCount int             `json:"connectionCount"`
+	NeedsNetRepair  bool            `json:"needsNetRepair"`
+	ProxyPort       int             `json:"proxyPort"`
+	// NeedsAdmin asks the UI for the login password (macOS / Linux): an action that needs
+	// the tunnel helper is waiting for it. AdminError is set after a rejected password.
+	NeedsAdmin bool   `json:"needsAdmin"`
+	AdminError string `json:"adminError"`
+}
+
+// TrafficTick is the once-per-second payload of the traffic event.
+type TrafficTick struct {
+	Sample          BandwidthSample `json:"sample"`
+	Traffic         TrafficState    `json:"traffic"`
+	MemoryBytes     uint64          `json:"memoryBytes"`
+	ConnectionCount int             `json:"connectionCount"`
 }
 
 type StartRequest struct {

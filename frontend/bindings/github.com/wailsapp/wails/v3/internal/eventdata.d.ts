@@ -14,6 +14,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "core:log": core$0.LogEntry;
             "core:state": core$0.RuntimeState;
+            "core:traffic": core$0.TrafficTick;
         }
     }
 }

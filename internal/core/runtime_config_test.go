@@ -1,45 +1,77 @@
 package core
 
 import (
-	"encoding/json"
+	"reflect"
 	"testing"
 )
 
-func TestBuildSudokuClientConfigPlacesMultiplexAtTopLevel(t *testing.T) {
+func TestNodeProxyNamesDeduplicatesAndAvoidsReserved(t *testing.T) {
+	nodes := []NodeConfig{
+		{ID: "a", Name: "HKG"}, {ID: "b", Name: "HKG"}, {ID: "c", Name: "PROXY"}, {ID: "d", Name: ""},
+	}
+	got := nodeProxyNames(nodes)
+	want := map[string]string{"a": "HKG", "b": "HKG#2", "c": "PROXY#2", "d": "d"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestBuildKernelConfigsPutsControllerOnFirstConfig(t *testing.T) {
 	cfg := &AppConfig{
-		Core:    CoreSettings{LocalPort: 1080},
-		Routing: RoutingSettings{ProxyMode: "global"},
-	}
-	node := NodeConfig{
-		ServerAddress: "example.com:8443",
-		Key:           "split-private-key",
-		Multiplex:     "on",
-		HTTPMask: HTTPMaskSettings{
-			Mode: "auto",
+		Nodes: []NodeConfig{
+			{ID: "a", Name: "one", ServerAddress: "203.0.113.1:443", Key: "k1", AEAD: "chacha20-poly1305", ASCII: "prefer_entropy"},
+			{ID: "b", Name: "two", ServerAddress: "203.0.113.2:443", Key: "k2", AEAD: "chacha20-poly1305", ASCII: "prefer_entropy"},
 		},
+		Controller: ControllerSettings{Port: 9097, Secret: "s3cret"},
+		Routing:    RoutingSettings{ProxyMode: "pac"},
 	}
-
-	runtimeCfg, err := buildSudokuClientConfig(cfg, node, "", false)
+	files, err := buildKernelConfigs(cfg, "")
 	if err != nil {
-		t.Fatalf("build runtime config: %v", err)
+		t.Fatal(err)
 	}
+	if len(files) != 2 {
+		t.Fatalf("want 2 configs, got %d", len(files))
+	}
+	if files[0].Config.ExternalController != "127.0.0.1:9097" || files[0].Config.Secret != "s3cret" {
+		t.Fatalf("controller not on first config: %+v", files[0].Config)
+	}
+	if files[1].Config.ExternalController != "" || files[1].Config.Secret != "" {
+		t.Fatalf("controller leaked into second config")
+	}
+	if len(files[0].Config.RuleURLs) == 0 {
+		t.Fatal("expected default rule urls")
+	}
+	cfg.Controller.AllowLAN = true
+	files, _ = buildKernelConfigs(cfg, "")
+	if files[0].Config.ExternalController != ":9097" {
+		t.Fatalf("LAN controller addr: %q", files[0].Config.ExternalController)
+	}
+	if _, err := buildKernelConfigs(&AppConfig{}, ""); err == nil {
+		t.Fatal("expected error without nodes")
+	}
+}
 
-	raw, err := json.Marshal(runtimeCfg)
-	if err != nil {
-		t.Fatalf("marshal runtime config: %v", err)
+func TestValidateTunPlan(t *testing.T) {
+	good := func() *tunPlan {
+		cfg := DefaultConfig("/tmp/x")
+		return &tunPlan{Tun: cfg.Tun, ProxyPort: ProxyPort, Mode: "global", ServerAddrs: []string{"203.0.113.1:443"}}
 	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		t.Fatalf("decode runtime config: %v", err)
+	if err := validateTunPlan(good()); err != nil {
+		t.Fatalf("good plan rejected: %v", err)
 	}
-	if got, ok := document["multiplex"].(string); !ok || got != "on" {
-		t.Fatalf("top-level multiplex = %#v, want %q", document["multiplex"], "on")
+	cases := map[string]func(p *tunPlan){
+		"port":     func(p *tunPlan) { p.ProxyPort = 1 },
+		"mode":     func(p *tunPlan) { p.Mode = "x" },
+		"iface":    func(p *tunPlan) { p.Tun.InterfaceName = "utun9; rm -rf /" },
+		"server":   func(p *tunPlan) { p.ServerAddrs = []string{"a b;c:1"} },
+		"noserver": func(p *tunPlan) { p.ServerAddrs = nil },
+		"rule":     func(p *tunPlan) { p.DirectRuleURLs = []string{"file:///etc/passwd"} },
 	}
-	httpmask, ok := document["httpmask"].(map[string]any)
-	if !ok {
-		t.Fatalf("httpmask has unexpected type: %#v", document["httpmask"])
-	}
-	if _, exists := httpmask["multiplex"]; exists {
-		t.Fatalf("httpmask unexpectedly contains multiplex: %#v", httpmask)
+	for name, mut := range cases {
+		p := good()
+		mut(p)
+		if err := validateTunPlan(p); err == nil {
+			t.Errorf("%s: expected rejection", name)
+		}
 	}
 }

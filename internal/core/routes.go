@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -15,10 +14,12 @@ import (
 	"time"
 )
 
+// routeContext records everything the TUN route setup changed so the matching teardown
+// (also after a crash, from the journal) can undo exactly that.
 type routeContext struct {
 	DefaultGateway        string
 	DefaultInterface      string
-	ServerIP              string
+	ServerIPs             []string
 	TunIndex              int
 	TunAlias              string
 	DNSService            string
@@ -42,39 +43,67 @@ type darwinDNSSnapshot struct {
 	WasAutomatic bool
 }
 
-func setupRoutes(operationCtx context.Context, activeNode NodeConfig, tun TunSettings, windowsPrepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
-	ctx := &routeContext{}
-	ctx.ServerIP = resolveServerIPFromAddress(activeNode.ServerAddress)
+// routePlan is the input of setupRoutes. SystemDNS is the resolver the OS should use while
+// the tunnel is up ("" leaves DNS alone); DNSRedirectPort > 0 additionally redirects
+// 127.0.0.1:53 to that local split-DNS port (macOS pf / Linux iptables).
+type routePlan struct {
+	Tun             TunSettings
+	ServerIPs       []string
+	SystemDNS       string
+	DNSRedirectPort int
+}
+
+// setupRoutes must run with administrator privileges (it is only called by the TUN helper).
+// prepared is invoked after the context is filled in but before the system is mutated, so the
+// caller can persist a recovery journal first.
+func setupRoutes(operationCtx context.Context, plan routePlan, prepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
+	ctx := &routeContext{ServerIPs: uniqueStrings(plan.ServerIPs), DNSProxyRedirectPort: plan.DNSRedirectPort}
+	tun := plan.Tun
+	tun.MapDNSAddress = strings.TrimSpace(plan.SystemDNS)
+	tun.MapDNSEnabled = tun.MapDNSAddress != ""
+	if !tun.MapDNSEnabled {
+		ctx.DNSProxyRedirectPort = 0
+	}
 	switch runtime.GOOS {
 	case "linux":
-		return setupRoutesLinux(ctx, tun, logf)
+		return setupRoutesLinux(ctx, tun, prepared, logf)
 	case "darwin":
-		return setupRoutesDarwin(ctx, tun, logf)
+		return setupRoutesDarwin(ctx, tun, prepared, logf)
 	case "windows":
-		return setupRoutesWindows(operationCtx, ctx, tun, windowsPrepared, logf)
+		return setupRoutesWindows(operationCtx, ctx, tun, prepared, logf)
 	default:
-		return nil, nil
+		return nil, errors.New("tun is not supported on " + runtime.GOOS)
 	}
 }
 
-func resolveServerIPFromAddress(serverAddress string) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(serverAddress))
-	if err != nil {
-		return ""
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String()
+// resolveServerIPv4s resolves every node's server address to IPv4 addresses. It must run
+// before the tunnel routes exist.
+func resolveServerIPv4s(addresses []string) []string {
+	var out []string
+	for _, address := range addresses {
+		host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+		if err != nil {
+			host = strings.TrimSpace(address)
 		}
-		return ""
-	}
-	ips, _ := net.LookupIP(host)
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String()
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if v4 := ip.To4(); v4 != nil {
+				out = append(out, v4.String())
+			}
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ips, _ := net.DefaultResolver.LookupIPAddr(ctx, host)
+		cancel()
+		for _, ip := range ips {
+			if v4 := ip.IP.To4(); v4 != nil {
+				out = append(out, v4.String())
+			}
 		}
 	}
-	return ""
+	return uniqueStrings(out)
 }
 
 func teardownRoutes(ctx *routeContext, tun TunSettings, logf func(string)) error {
@@ -92,17 +121,16 @@ func teardownRoutes(ctx *routeContext, tun TunSettings, logf func(string)) error
 	return nil
 }
 
-func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
+func setupRoutesLinux(ctx *routeContext, tun TunSettings, prepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
 	if !linuxHasCommand("ip") {
 		return nil, errors.New("required command not found on linux: ip")
 	}
 
-	uid := os.Getuid()
 	hasIPTables := linuxHasCommand("iptables")
 
 	cmdlines := make([]string, 0, 32)
-	if ctx.ServerIP != "" {
-		cmdlines = append(cmdlines, shellJoin("ip", "rule", "add", "to", ctx.ServerIP, "lookup", "main", "pref", "5")+" || true")
+	for _, ip := range ctx.ServerIPs {
+		cmdlines = append(cmdlines, shellJoin("ip", "rule", "add", "to", ip, "lookup", "main", "pref", "5")+" || true")
 	}
 
 	// Ensure the core process can bypass the TUN by binding to the physical source IP.
@@ -124,7 +152,7 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
 		dnsAddr := strings.TrimSpace(tun.MapDNSAddress)
 		ctx.DNSOverrideAddress = dnsAddr
-		if tun.MapDNSLocalProxy {
+		if localDNSProxyActive(tun) {
 			ctx.DNSProxyRedirectPort = localDNSProxyRedirectPort(dnsAddr)
 			if ctx.DNSProxyRedirectPort > 0 {
 				if !hasIPTables {
@@ -146,7 +174,7 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 			)
 		} else {
 			ctx.LinuxDNSMode = "resolvconf"
-			ctx.LinuxResolvConfBackup = fmt.Sprintf("/tmp/sudoku4x4-resolv.conf.%d.bak", uid)
+			ctx.LinuxResolvConfBackup = linuxResolvConfBackupPath
 			cmdlines = append(cmdlines,
 				"cp -f /etc/resolv.conf "+shellQuote(ctx.LinuxResolvConfBackup)+" >/dev/null 2>&1 || true",
 				"printf 'nameserver "+dnsAddr+"\\n' > /etc/resolv.conf",
@@ -163,7 +191,12 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 		shellJoin("ip", "rule", "add", "lookup", strconv.Itoa(tun.RouteTable), "pref", "20")+" || true",
 	)
 
-	if err := runCmdsLinuxAdmin(logf, cmdlines...); err != nil {
+	if prepared != nil {
+		if err := prepared(ctx); err != nil {
+			return nil, fmt.Errorf("persist route journal: %w", err)
+		}
+	}
+	if err := runShellBatch(logf, cmdlines...); err != nil {
 		// Best-effort cleanup to avoid leaving the system half-configured.
 		_ = teardownRoutesLinux(ctx, tun, logf)
 		return nil, err
@@ -221,8 +254,10 @@ func setupRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) (*r
 
 func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) error {
 	cmdlines := make([]string, 0, 32)
-	if ctx != nil && ctx.ServerIP != "" {
-		cmdlines = append(cmdlines, shellJoin("ip", "rule", "del", "to", ctx.ServerIP, "lookup", "main", "pref", "5")+" || true")
+	if ctx != nil {
+		for _, ip := range ctx.ServerIPs {
+			cmdlines = append(cmdlines, shellJoin("ip", "rule", "del", "to", ip, "lookup", "main", "pref", "5")+" || true")
+		}
 	}
 	if ctx != nil && strings.TrimSpace(ctx.LinuxOutboundSrcIP) != "" {
 		cmdlines = append(cmdlines, shellJoin("ip", "rule", "del", "from", ctx.LinuxOutboundSrcIP, "lookup", "main", "pref", "8")+" || true")
@@ -272,11 +307,10 @@ func teardownRoutesLinux(ctx *routeContext, tun TunSettings, logf func(string)) 
 		shellJoin("ip", "route", "del", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
 		shellJoin("ip", "-6", "route", "del", "default", "dev", tun.InterfaceName, "table", strconv.Itoa(tun.RouteTable))+" || true",
 	)
-	_ = runCmdsLinuxAdmin(logf, cmdlines...)
-	return nil
+	return runShellBatch(logf, cmdlines...)
 }
 
-func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*routeContext, error) {
+func setupRoutesDarwin(ctx *routeContext, tun TunSettings, prepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
 	info, _ := darwinPrimaryNetworkInfo()
 	gw := strings.TrimSpace(info.Router4)
 	ifName := strings.TrimSpace(info.Interface4)
@@ -341,7 +375,7 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 		if svc, derr := darwinNetworkServiceForDevice(ctx.DefaultInterface); derr == nil && strings.TrimSpace(svc) != "" {
 			ctx.DNSService = svc
 			ctx.DNSOverrideAddress = strings.TrimSpace(tun.MapDNSAddress)
-			if tun.MapDNSLocalProxy {
+			if localDNSProxyActive(tun) {
 				ctx.DNSProxyRedirectPort = localDNSProxyRedirectPort(ctx.DNSOverrideAddress)
 			}
 			prev, wasAuto, gerr := darwinGetDNSServers(svc)
@@ -359,15 +393,15 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	}
 
 	pfSetCmd := ""
-	if runtime.GOOS == "darwin" && (tun.BlockQUIC || ctx.DNSProxyRedirectPort > 0) {
-		ctx.PFAnchor = fmt.Sprintf("com.apple/sudoku4x4.tun.%d", os.Getuid())
+	if tun.BlockQUIC || ctx.DNSProxyRedirectPort > 0 {
+		ctx.PFAnchor = darwinPFAnchor
 		pfSetCmd = darwinBuildPFSetCmd(ctx.PFAnchor, tun.InterfaceName, tun.BlockQUIC, ctx.DNSProxyRedirectPort)
 	}
 	cmds := make([]string, 0, 8)
-	if ctx.ServerIP != "" {
+	for _, ip := range ctx.ServerIPs {
 		cmds = append(cmds,
-			shellJoin("route", "-n", "add", "-host", ctx.ServerIP, gw)+" || "+
-				shellJoin("route", "-n", "change", "-host", ctx.ServerIP, gw),
+			shellJoin("route", "-n", "add", "-host", ip, gw)+" || "+
+				shellJoin("route", "-n", "change", "-host", ip, gw),
 		)
 	}
 	cmds = append(cmds, darwinAddTunnelRouteCommands(strings.TrimSpace(tun.InterfaceName))...)
@@ -378,7 +412,12 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 	if dnsSetCmd != "" {
 		cmds = append(cmds, dnsSetCmd, dnsFlushCmd)
 	}
-	if err := runDarwinBatch(logf, cmds...); err != nil {
+	if prepared != nil {
+		if err := prepared(ctx); err != nil {
+			return nil, fmt.Errorf("persist route journal: %w", err)
+		}
+	}
+	if err := runShellBatch(logf, cmds...); err != nil {
 		_ = teardownRoutesDarwin(ctx, tun, logf)
 		return nil, err
 	}
@@ -387,10 +426,8 @@ func setupRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) (*
 
 func teardownRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string)) error {
 	tunIf := strings.TrimSpace(tun.InterfaceName)
-	if runtime.GOOS == "darwin" {
-		if actual := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tun.IPv4)); actual != "" {
-			tunIf = actual
-		}
+	if actual := strings.TrimSpace(darwinFindTunInterfaceByIPv4(tun.IPv4)); actual != "" {
+		tunIf = actual
 	}
 
 	dnsFlushCmd := "dscacheutil -flushcache >/dev/null 2>&1 || true; killall -HUP mDNSResponder >/dev/null 2>&1 || true"
@@ -416,8 +453,8 @@ func teardownRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string))
 
 	cmds := darwinDeleteTunnelRouteCommands(tunIf)
 	cmds = append(cmds, darwinDeletePhysicalBypassRouteCommands(ctx.DefaultInterface, ctx.DefaultGateway)...)
-	if strings.TrimSpace(ctx.ServerIP) != "" {
-		cmds = append(cmds, shellJoin("route", "-n", "delete", "-host", strings.TrimSpace(ctx.ServerIP))+" >/dev/null 2>&1 || true")
+	for _, ip := range ctx.ServerIPs {
+		cmds = append(cmds, shellJoin("route", "-n", "delete", "-host", ip)+" >/dev/null 2>&1 || true")
 	}
 
 	if len(snaps) > 0 {
@@ -445,7 +482,7 @@ func teardownRoutesDarwin(ctx *routeContext, tun TunSettings, logf func(string))
 	if strings.TrimSpace(ctx.PFAnchor) != "" {
 		cmds = append(cmds, shellJoin("pfctl", "-a", strings.TrimSpace(ctx.PFAnchor), "-F", "all")+" >/dev/null 2>&1 || true")
 	}
-	return runDarwinBatch(logf, cmds...)
+	return runShellBatch(logf, cmds...)
 }
 
 func darwinAddTunnelRouteCommands(tunIf string) []string {
@@ -503,16 +540,6 @@ func darwinDeletePhysicalBypassRouteCommands(ifName string, gateway string) []st
 	return cmds
 }
 
-func runDarwinBatch(logf func(string), cmds ...string) error {
-	if len(cmds) == 0 {
-		return nil
-	}
-	if os.Geteuid() != 0 {
-		return runCmdsDarwinAdmin(logf, cmds...)
-	}
-	return runCmdExec(logf, "sh", "-lc", "set -e; "+strings.Join(cmds, "; "))
-}
-
 func setupRoutesWindows(operationCtx context.Context, ctx *routeContext, tun TunSettings, prepared func(*routeContext) error, logf func(string)) (*routeContext, error) {
 	if operationCtx == nil {
 		operationCtx = context.Background()
@@ -548,12 +575,12 @@ func setupRoutesWindows(operationCtx context.Context, ctx *routeContext, tun Tun
 	if tun.MapDNSEnabled && strings.TrimSpace(tun.MapDNSAddress) != "" {
 		ctx.DNSOverrideAddress = strings.TrimSpace(tun.MapDNSAddress)
 		// Use PID to avoid collisions (os.Getuid is not meaningful on Windows).
-		dnsBackupName = fmt.Sprintf("sudoku4x4-dns-%d.json", os.Getpid())
+		dnsBackupName = windowsDNSBackupFile
 		ctx.WindowsDNSBackup = dnsBackupName
 	}
 	ps := buildWindowsRouteScript(
 		true,
-		ctx.ServerIP,
+		ctx.ServerIPs,
 		firewallRule,
 		tun.BlockQUIC,
 		idx,
@@ -568,7 +595,7 @@ func setupRoutesWindows(operationCtx context.Context, ctx *routeContext, tun Tun
 			return nil, fmt.Errorf("prepare windows route recovery: %w", err)
 		}
 	}
-	if err := runCmdsWindowsAdmin(operationCtx, logf, ps, 30*time.Second); err != nil {
+	if err := runPowerShellScript(operationCtx, logf, ps, 30*time.Second); err != nil {
 		if rollbackErr := teardownRoutesWindows(ctx, tun, logf); rollbackErr != nil {
 			return ctx, fmt.Errorf("setup windows routes: %w; rollback failed: %v", err, rollbackErr)
 		}
@@ -589,7 +616,7 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 	mapDNSEnabled := strings.TrimSpace(ctx.WindowsDNSBackup) != ""
 	ps := buildWindowsRouteScript(
 		false,
-		ctx.ServerIP,
+		ctx.ServerIPs,
 		firewallRule,
 		tun.BlockQUIC,
 		ctx.TunIndex,
@@ -599,117 +626,12 @@ func teardownRoutesWindows(ctx *routeContext, tun TunSettings, logf func(string)
 		strings.TrimSpace(tun.MapDNSAddress),
 		ctx.WindowsDNSBackup,
 	)
-	return runCmdsWindowsAdmin(context.Background(), logf, ps, 12*time.Second)
-}
-
-func runCmdsLinuxAdmin(logf func(string), cmdlines ...string) error {
-	if len(cmdlines) == 0 {
-		return nil
-	}
-	shell := "set -e; PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH; " + strings.Join(cmdlines, "; ")
-	if os.Geteuid() == 0 {
-		return runCmdExec(logf, "sh", "-lc", shell)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	output, err := linuxAdminRunShLC(ctx, shell)
-	if ctx.Err() == context.DeadlineExceeded {
-		return errors.New("linux admin batch: timeout")
-	}
-	clean := strings.TrimSpace(output)
-	if logf != nil {
-		if clean != "" {
-			logf(fmt.Sprintf("[route] sudo (batch) => %s", clean))
-		} else {
-			logf("[route] sudo (batch)")
-		}
-	}
-	if err != nil {
-		if clean != "" {
-			return fmt.Errorf("linux admin batch: %w: %s", err, clean)
-		}
-		return fmt.Errorf("linux admin batch: %w", err)
-	}
-	return nil
-}
-
-func runCmdsWindowsAdmin(parent context.Context, logf func(string), scriptBody string, timeout time.Duration) error {
-	script := windowsAdminWrapper(scriptBody)
-	f, err := os.CreateTemp("", "sudoku-admin-*.ps1")
-	if err != nil {
-		return err
-	}
-	path := f.Name()
-	if _, werr := f.WriteString(script); werr != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
-		return werr
-	}
-	if cerr := f.Close(); cerr != nil {
-		_ = os.Remove(path)
-		return cerr
-	}
-	defer os.Remove(path)
-
-	// PowerShell script self-elevates if needed (UAC prompt).
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
-	applyManagedProcessSysProcAttr(cmd)
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		if clean := strings.TrimSpace(string(output)); clean != "" {
-			return fmt.Errorf("windows admin: %w: %s", ctx.Err(), clean)
-		}
-		return fmt.Errorf("windows admin: %w", ctx.Err())
-	}
-	clean := strings.TrimSpace(string(output))
-	if logf != nil {
-		if clean != "" {
-			logf(fmt.Sprintf("[route] windows admin => %s", clean))
-		} else {
-			logf("[route] windows admin")
-		}
-	}
-	if err != nil {
-		if clean != "" {
-			return fmt.Errorf("windows admin: %w: %s", err, clean)
-		}
-		return fmt.Errorf("windows admin: %w", err)
-	}
-	return nil
-}
-
-func windowsAdminWrapper(body string) string {
-	// `$PSCommandPath` points to this script file.
-	return strings.Join([]string{
-		"param([switch]$Elevated)",
-		"$ErrorActionPreference = 'Stop'",
-		"function Test-Admin {",
-		"  $id = [Security.Principal.WindowsIdentity]::GetCurrent()",
-		"  $p = New-Object Security.Principal.WindowsPrincipal($id)",
-		"  return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-		"}",
-		"if (-not $Elevated -and -not (Test-Admin)) {",
-		"  $args = @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File', $PSCommandPath, '-Elevated')",
-		"  $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $args -Wait -PassThru",
-		"  exit $proc.ExitCode",
-		"}",
-		"",
-		body,
-		"",
-	}, "\r\n")
+	return runPowerShellScript(context.Background(), logf, ps, 20*time.Second)
 }
 
 func buildWindowsRouteScript(
 	start bool,
-	serverIP string,
+	serverIPs []string,
 	firewallRule string,
 	blockQUIC bool,
 	tunIfIndex int,
@@ -723,7 +645,6 @@ func buildWindowsRouteScript(
 	if !start {
 		op = "stop"
 	}
-	serverIP = strings.TrimSpace(serverIP)
 	firewallRule = strings.TrimSpace(firewallRule)
 	defaultGw4 = strings.TrimSpace(defaultGw4)
 	mapDNSAddress = strings.TrimSpace(mapDNSAddress)
@@ -744,11 +665,13 @@ func buildWindowsRouteScript(
 		"  if ($default4 -ne $null) { $gw4 = $default4.NextHop; $if4 = [int]$default4.InterfaceIndex }",
 		"}",
 	}
-	if serverIP != "" {
-		lines = append(lines, fmt.Sprintf("$serverIP = '%s'", strings.ReplaceAll(serverIP, "'", "''")))
-	} else {
-		lines = append(lines, "$serverIP = ''")
+	quoted := make([]string, 0, len(serverIPs))
+	for _, ip := range serverIPs {
+		if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
+			quoted = append(quoted, "'"+parsed.String()+"'")
+		}
 	}
+	lines = append(lines, "$serverIPs = @("+strings.Join(quoted, ",")+")")
 	lines = append(lines,
 		fmt.Sprintf("$fwRule = '%s'", strings.ReplaceAll(firewallRule, "'", "''")),
 		fmt.Sprintf("$blockQUIC = %s", map[bool]string{true: "$true", false: "$false"}[blockQUIC]),
@@ -774,9 +697,7 @@ func buildWindowsRouteScript(
 		"if ($dnsBackupName) { $dnsBackup = Join-Path $env:TEMP $dnsBackupName }",
 		"",
 		"if ($op -eq 'start') {",
-		"  if ($serverIP) {",
-		"    Add-RoutePrefix ($serverIP + '/32') $if4 $gw4",
-		"  }",
+		"  foreach ($sip in $serverIPs) { Add-RoutePrefix ($sip + '/32') $if4 $gw4 }",
 		"  if ($mapDNSEnabled -and $mapDNS) {",
 		"    $prev4 = @((Get-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)",
 		"    if ($dnsBackup) {",
@@ -869,9 +790,7 @@ func buildWindowsRouteScript(
 		"    $best4After = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { [int]$_.InterfaceIndex -ne $tunIf } | Sort-Object @{Expression={ [int]$_.RouteMetric + [int]$_.InterfaceMetric }},RouteMetric,InterfaceMetric | Select-Object -First 1",
 		"  }",
 		"  if ($best4After -eq $null) { throw 'windows restore default route failed after tun stop' }",
-		"  if ($serverIP) {",
-		"    Remove-RoutePrefix ($serverIP + '/32') $if4 $gw4",
-		"  }",
+		"  foreach ($sip in $serverIPs) { Remove-RoutePrefix ($sip + '/32') $if4 $gw4 }",
 		"  if (Get-NetFirewallRule -DisplayName $fwRule -ErrorAction SilentlyContinue) {",
 		"    Remove-NetFirewallRule -DisplayName $fwRule | Out-Null",
 		"  }",

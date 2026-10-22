@@ -1,128 +1,122 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { X } from 'lucide-vue-next'
-import type { NodeConfig } from '../../types'
+import { ChevronDown, ClipboardPaste, X } from 'lucide-vue-next'
+import { useApp } from '../../composables/appContext'
 import { buildAsciiMode, parseAsciiMode, type ASCIIStyleToken } from '../../sudoku/asciiMode'
 
-const props = defineProps<{
-  open: boolean
-  nodeEditorMode: 'create' | 'edit'
-  editableNode: NodeConfig
-  shortlinkInput: string
-  shortlinkName: string
-  t: (key: any) => string
-}>()
-
-const emit = defineEmits<{
-  (e: 'close'): void
-  (e: 'save'): void
-  (e: 'parse-shortlink'): void
-  (e: 'parse-clipboard'): void
-  (e: 'update:shortlinkInput', value: string): void
-  (e: 'update:shortlinkName', value: string): void
-}>()
+const {
+  t,
+  busy,
+  editableNode,
+  nodeEditorOpen,
+  nodeEditorMode,
+  shortlinkInput,
+  closeNodeEditor,
+  saveNode,
+  parseShortlinkFromInput,
+  parseShortlinkFromClipboard,
+} = useApp()
 
 const uplinkStyle = computed<ASCIIStyleToken>({
-  get: () => parseAsciiMode(props.editableNode.ascii).uplink,
+  get: () => parseAsciiMode(editableNode.ascii).uplink,
   set: (value) => {
-    const current = parseAsciiMode(props.editableNode.ascii)
-    props.editableNode.ascii = buildAsciiMode({ uplink: value, downlink: current.downlink })
+    editableNode.ascii = buildAsciiMode({ uplink: value, downlink: parseAsciiMode(editableNode.ascii).downlink })
   },
 })
 
 const downlinkStyle = computed<ASCIIStyleToken>({
-  get: () => parseAsciiMode(props.editableNode.ascii).downlink,
+  get: () => parseAsciiMode(editableNode.ascii).downlink,
   set: (value) => {
-    const current = parseAsciiMode(props.editableNode.ascii)
-    props.editableNode.ascii = buildAsciiMode({ uplink: current.uplink, downlink: value })
+    editableNode.ascii = buildAsciiMode({ uplink: parseAsciiMode(editableNode.ascii).uplink, downlink: value })
   },
 })
+
+const customTablesText = computed({
+  get: () => editableNode.customTables.join('\n'),
+  set: (value: string) => {
+    editableNode.customTables = value.split('\n').map((x) => x.trim()).filter(Boolean)
+  },
+})
+
+const canSave = computed(() => !!editableNode.serverAddress.trim() && !!editableNode.key.trim())
 </script>
 
 <template>
-  <div v-if="props.open" class="modal-overlay" @click.self="emit('close')">
-    <section class="modal-card">
-      <header class="modal-head">
-        <h3>{{ props.nodeEditorMode === 'create' ? props.t('addNode') : props.t('editNode') }}</h3>
-        <button class="iconbtn" @click="emit('close')" :title="props.t('close')">
-          <X :size="18" aria-hidden="true" />
-        </button>
-      </header>
+  <Transition name="modal">
+    <div v-if="nodeEditorOpen" class="modal-overlay" @mousedown.self="closeNodeEditor">
+      <form class="modal" @submit.prevent="canSave && saveNode()" @keydown.esc="closeNodeEditor">
+        <div class="modal-head">
+          <h2>{{ nodeEditorMode === 'create' ? t('addNode') : t('editNode') }}</h2>
+          <button class="icon-btn" type="button" :title="t('close')" @click="closeNodeEditor"><X :size="16" aria-hidden="true" /></button>
+        </div>
 
-      <div class="modal-content">
-        <section class="group-card">
-          <h4>{{ props.t('shortlinkQuickImport') }}</h4>
-          <div class="form-grid compact-grid">
-            <label class="field"><span>{{ props.t('nodeName') }}</span><input :value="props.shortlinkName" :placeholder="props.t('nodeNamePreferredPlaceholder')" @input="emit('update:shortlinkName', ($event.target as HTMLInputElement).value)" /></label>
-            <label class="field"><span>{{ props.t('shortlink') }}</span><input :value="props.shortlinkInput" placeholder="sudoku://..." @input="emit('update:shortlinkInput', ($event.target as HTMLInputElement).value)" /></label>
+        <div class="modal-body">
+          <div v-if="nodeEditorMode === 'create'" class="import-box">
+            <div class="input-group">
+              <input v-model="shortlinkInput" class="mono" placeholder="sudoku://…" spellcheck="false" @keydown.enter.prevent="parseShortlinkFromInput" />
+              <button class="btn sm" type="button" :disabled="!shortlinkInput.trim()" @click="parseShortlinkFromInput">{{ t('parseShortlink') }}</button>
+            </div>
+            <button class="btn" type="button" @click="parseShortlinkFromClipboard"><ClipboardPaste :size="15" aria-hidden="true" />{{ t('parseFromClipboard') }}</button>
           </div>
-          <div class="row">
-            <button class="btn ghost" @click="emit('parse-shortlink')">{{ props.t('parseShortlink') }}</button>
-            <button class="btn ghost" @click="emit('parse-clipboard')">{{ props.t('parseFromClipboard') }}</button>
-          </div>
-        </section>
 
-        <section class="group-card">
-          <h4>{{ props.t('basicConfig') }}</h4>
-          <div class="form-grid compact-grid align-end">
-            <label class="field"><span>{{ props.t('name') }}</span><input v-model="props.editableNode.name" /></label>
-            <label class="field"><span>{{ props.t('server') }}</span><input v-model="props.editableNode.serverAddress" placeholder="host:port" /></label>
-            <label class="field"><span>{{ props.t('key') }}</span><input v-model="props.editableNode.key" /></label>
-            <label class="field"><span>AEAD</span><select v-model="props.editableNode.aead"><option>chacha20-poly1305</option><option>aes-128-gcm</option><option>none</option></select></label>
-            <label class="field"><span>{{ props.t('uplinkStyle') }}</span><select v-model="uplinkStyle"><option value="entropy">{{ props.t('styleEntropy') }}</option><option value="ascii">{{ props.t('styleAscii') }}</option></select></label>
-            <label class="field"><span>{{ props.t('downlinkStyle') }}</span><select v-model="downlinkStyle"><option value="entropy">{{ props.t('styleEntropy') }}</option><option value="ascii">{{ props.t('styleAscii') }}</option></select></label>
-            <label class="field"><span>{{ props.t('localPort') }}</span><input v-model.number="props.editableNode.localPort" type="number" /></label>
-            <label class="field"><span>{{ props.t('paddingMin') }}</span><input v-model.number="props.editableNode.paddingMin" type="number" /></label>
-            <label class="field"><span>{{ props.t('paddingMax') }}</span><input v-model.number="props.editableNode.paddingMax" type="number" /></label>
-            <label class="field"><span>{{ props.t('multiplex') }}</span>
-              <select v-model="props.editableNode.multiplex">
-                <option>auto</option>
-                <option>on</option>
-                <option>off</option>
-              </select>
-            </label>
-            <label class="switch-row compact"><span>{{ props.t('pureDownlink') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.enablePureDownlink" /><span class="switch-ui" /></span></label>
+          <div class="fields">
+            <label class="field wide"><span>{{ t('name') }}</span><input v-model="editableNode.name" class="input" :placeholder="t('nodeNamePreferredPlaceholder')" /></label>
+            <label class="field wide"><span>{{ t('server') }}</span><input v-model="editableNode.serverAddress" class="input mono" placeholder="host:port" spellcheck="false" /></label>
+            <label class="field wide"><span>{{ t('key') }}</span><input v-model="editableNode.key" class="input mono" spellcheck="false" autocomplete="off" /></label>
           </div>
-          <p class="hint">{{ props.t('pureDownlinkHint') }}</p>
-        </section>
 
-        <section class="group-card">
-          <h4>HTTPMask</h4>
-          <div class="form-grid compact-grid align-end">
-            <label class="switch-row compact"><span>{{ props.t('disable') }}</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.httpMask.disable" /><span class="switch-ui" /></span></label>
-            <label class="field"><span>{{ props.t('mode') }}</span>
-              <select v-model="props.editableNode.httpMask.mode">
-                <option>legacy</option>
-                <option>stream</option>
-                <option>poll</option>
-                <option>auto</option>
-                <option>ws</option>
-              </select>
-            </label>
-            <label class="switch-row compact"><span>TLS</span><span class="switch-control"><input type="checkbox" v-model="props.editableNode.httpMask.tls" /><span class="switch-ui" /></span></label>
-            <label class="field"><span>{{ props.t('host') }}</span><input v-model="props.editableNode.httpMask.host" placeholder="example.com" /></label>
-            <label class="field"><span>{{ props.t('pathRoot') }}</span><input v-model="props.editableNode.httpMask.pathRoot" placeholder="aabbcc" /></label>
-          </div>
-        </section>
+          <details class="card">
+            <summary>{{ t('advancedOptions') }}<ChevronDown :size="16" aria-hidden="true" /></summary>
+            <div class="card-body">
+              <div class="fields">
+                <label class="field"><span>AEAD</span>
+                  <select v-model="editableNode.aead" class="select"><option>chacha20-poly1305</option><option>aes-128-gcm</option><option>none</option></select>
+                </label>
+                <label class="field"><span>{{ t('multiplex') }}</span>
+                  <select v-model="editableNode.multiplex" class="select"><option>auto</option><option>on</option><option>off</option></select>
+                </label>
+                <label class="field"><span>{{ t('uplinkStyle') }}</span>
+                  <select v-model="uplinkStyle" class="select"><option value="entropy">{{ t('styleEntropy') }}</option><option value="ascii">{{ t('styleAscii') }}</option></select>
+                </label>
+                <label class="field"><span>{{ t('downlinkStyle') }}</span>
+                  <select v-model="downlinkStyle" class="select"><option value="entropy">{{ t('styleEntropy') }}</option><option value="ascii">{{ t('styleAscii') }}</option></select>
+                </label>
+                <label class="field"><span>{{ t('paddingMin') }}</span><input v-model.number="editableNode.paddingMin" class="input" type="number" min="0" /></label>
+                <label class="field"><span>{{ t('paddingMax') }}</span><input v-model.number="editableNode.paddingMax" class="input" type="number" min="0" /></label>
+              </div>
+              <label class="inline-row">
+                <div class="row-text"><strong>{{ t('pureDownlink') }}</strong><small>{{ t('pureDownlinkHint') }}</small></div>
+                <span class="switch"><input v-model="editableNode.enablePureDownlink" type="checkbox" /><i /></span>
+              </label>
 
-        <section class="group-card">
-          <h4>{{ props.t('advancedOptions') }}</h4>
-          <div class="form-grid compact-grid">
-            <label class="field span-2"><span>{{ props.t('customTablesPerLine') }}</span>
-              <textarea
-                :value="props.editableNode.customTables.join('\n')"
-                rows="3"
-                @input="props.editableNode.customTables = ($event.target as HTMLTextAreaElement).value.split('\n').map((x) => x.trim()).filter(Boolean)"
-              />
-            </label>
-          </div>
-        </section>
-      </div>
+              <div class="section-title">HTTPMask</div>
+              <label class="inline-row">
+                <div class="row-text"><strong>{{ t('httpMaskEnabled') }}</strong></div>
+                <span class="switch"><input :checked="!editableNode.httpMask.disable" type="checkbox" @change="editableNode.httpMask.disable = !($event.target as HTMLInputElement).checked" /><i /></span>
+              </label>
+              <div v-if="!editableNode.httpMask.disable" class="fields">
+                <label class="field"><span>{{ t('mode') }}</span>
+                  <select v-model="editableNode.httpMask.mode" class="select"><option>auto</option><option>legacy</option><option>stream</option><option>poll</option><option>ws</option></select>
+                </label>
+                <label class="field"><span>TLS</span>
+                  <select v-model="editableNode.httpMask.tls" class="select"><option :value="true">{{ t('enabled') }}</option><option :value="false">{{ t('disabled') }}</option></select>
+                </label>
+                <label class="field"><span>{{ t('host') }}</span><input v-model="editableNode.httpMask.host" class="input mono" placeholder="example.com" spellcheck="false" /></label>
+                <label class="field"><span>{{ t('pathRoot') }}</span><input v-model="editableNode.httpMask.pathRoot" class="input mono" spellcheck="false" /></label>
+              </div>
 
-      <footer class="modal-foot">
-        <button class="btn ghost" @click="emit('close')">{{ props.t('cancel') }}</button>
-        <button class="btn" @click="emit('save')">{{ props.t('save') }}</button>
-      </footer>
-    </section>
-  </div>
+              <label class="field"><span>{{ t('customTablesPerLine') }}</span>
+                <textarea v-model.lazy="customTablesText" class="textarea mono" rows="3" spellcheck="false" />
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn" type="button" @click="closeNodeEditor">{{ t('cancel') }}</button>
+          <button class="btn primary" type="submit" :disabled="busy || !canSave">{{ t('save') }}</button>
+        </div>
+      </form>
+    </div>
+  </Transition>
 </template>

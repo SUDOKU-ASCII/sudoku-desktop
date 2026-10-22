@@ -1,302 +1,180 @@
 package core
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
-func probeNodeLatency(node NodeConfig, appCfg AppConfig) LatencyResult {
-	result := LatencyResult{
-		NodeID:        node.ID,
-		NodeName:      node.Name,
-		LatencyMs:     -1,
-		CheckedAtUnix: time.Now().UnixMilli(),
-	}
-	if strings.TrimSpace(appCfg.Core.SudokuBinary) == "" {
-		result.Error = "sudoku binary is empty"
-		return result
-	}
+const (
+	probeURL     = "https://i.ytimg.com/generate_204"
+	probeTimeout = 8 * time.Second
+	probeWorkers = 4
+)
 
+func freeLoopbackPort() (int, error) {
 	ln, err := net.Listen("tcp4", net.JoinHostPort(localLoopbackIPv4, "0"))
 	if err != nil {
-		result.Error = err.Error()
-		return result
+		return 0, err
 	}
-	localPort := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port, nil
+}
 
-	tempDir, err := os.MkdirTemp("", "sudoku-node-probe-*")
+func probeResult(n NodeConfig, ms int, err error) LatencyResult {
+	r := LatencyResult{NodeID: n.ID, NodeName: n.Name, LatencyMs: -1, CheckedAtUnix: time.Now().UnixMilli()}
 	if err != nil {
-		result.Error = err.Error()
-		return result
+		r.Error = err.Error()
+		return r
 	}
-	defer os.RemoveAll(tempDir)
+	r.LatencyMs, r.ConnectOK = int64(ms), ms > 0
+	return r
+}
 
-	node.LocalPort = localPort
-	appCfg.Core.LocalPort = localPort
-	appCfg.Routing.ProxyMode = "global"
-	appCfg.ReverseClient = ReverseClientSettings{Routes: []ReverseRoute{}}
-	clientCfg, err := buildSudokuClientConfig(&appCfg, node, "", true)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	configPath := filepath.Join(tempDir, "client.config.json")
-	if err := writeJSONFile(configPath, clientCfg); err != nil {
-		result.Error = err.Error()
-		return result
-	}
-
-	var logMu sync.Mutex
-	var lastLines []string
-	proc := NewManagedProcess("sudoku-probe")
-	if err := proc.Start(
-		appCfg.Core.SudokuBinary,
-		[]string{"-c", configPath},
-		[]string{"SUDOKU_LOG_LEVEL=error"},
-		tempDir,
-		func(line string) {
-			line = strings.TrimSpace(line)
-			if line == "" {
+// measureDelays times every node through the given controller, a few at a time.
+func measureDelays(ctx context.Context, ctl *ctlClient, nodes []NodeConfig, names map[string]string) []LatencyResult {
+	out := make([]LatencyResult, len(nodes))
+	sem := make(chan struct{}, probeWorkers)
+	var wg sync.WaitGroup
+	for i := range nodes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			n := nodes[i]
+			name := names[n.ID]
+			if name == "" {
+				out[i] = probeResult(n, 0, errors.New("node is not loaded by the core yet"))
 				return
 			}
-			logMu.Lock()
-			lastLines = append(lastLines, line)
-			if len(lastLines) > 8 {
-				lastLines = lastLines[len(lastLines)-8:]
-			}
-			logMu.Unlock()
-		},
-	); err != nil {
-		result.Error = err.Error()
-		return result
+			ms, err := ctl.Delay(ctx, name, probeURL, probeTimeout)
+			out[i] = probeResult(n, ms, err)
+		}(i)
 	}
-	defer proc.Stop(1200 * time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	socksAddr := net.JoinHostPort(localLoopbackIPv4, strconv.Itoa(localPort))
-	if err := waitForTCPReady(ctx, socksAddr, 4*time.Second); err != nil {
-		logMu.Lock()
-		tail := strings.Join(lastLines, " | ")
-		logMu.Unlock()
-		if tail != "" {
-			result.Error = fmt.Sprintf("%v: %s", err, tail)
-		} else {
-			result.Error = err.Error()
-		}
-		return result
-	}
-
-	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: 8 * time.Second})
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	// The first connection through a freshly spawned core pays one-off setup
-	// costs (resolver/route init, first handshake), so warm up and time the second.
-	if _, _, err := probeGenerate204(ctx, dialer); err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	latency, statusCode, err := probeGenerate204(ctx, dialer)
-	result.StatusCode = statusCode
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	result.ConnectOK = statusCode >= 200 && statusCode < 500
-	result.LatencyMs = latency.Milliseconds()
-	result.CheckedAtUnix = time.Now().UnixMilli()
-	if !result.ConnectOK {
-		result.Error = fmt.Sprintf("unexpected HTTP status %d", statusCode)
-	}
-	return result
+	wg.Wait()
+	return out
 }
 
-func probeGenerate204(ctx context.Context, dialer proxy.Dialer) (time.Duration, int, error) {
-	start := time.Now()
-	conn, err := dialer.Dial("tcp", "i.ytimg.com:443")
+// probeStopped measures nodes while the proxy is off using a throw-away core instance on
+// random loopback ports.
+func (b *Backend) probeStopped(ctx context.Context, nodes []NodeConfig) ([]LatencyResult, error) {
+	if err := b.EnsureCoreBinaries(); err != nil {
+		return nil, err
+	}
+	cfg := b.cfgClone()
+	ctlPort, err := freeLoopbackPort()
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
-
-	tlsConn := tls.Client(conn, &tls.Config{ServerName: "i.ytimg.com"})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return 0, 0, err
-	}
-	if _, err := io.WriteString(tlsConn, "GET /generate_204 HTTP/1.1\r\nHost: i.ytimg.com\r\nConnection: close\r\n\r\n"); err != nil {
-		return 0, 0, err
-	}
-	line, err := bufio.NewReader(tlsConn).ReadString('\n')
+	localPort, err := freeLoopbackPort()
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
-	statusCode := 0
-	if parts := strings.Fields(strings.TrimSpace(line)); len(parts) >= 2 {
-		statusCode, _ = strconv.Atoi(parts[1])
+	probeCfg := &AppConfig{
+		Nodes:      nodes,
+		Controller: ControllerSettings{Port: ctlPort, Secret: randomSecret()},
+		Routing:    RoutingSettings{ProxyMode: "global"},
 	}
-	return time.Since(start), statusCode, nil
+	files, err := buildKernelConfigs(probeCfg, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range files {
+		files[i].Config.LocalPort = localPort
+		files[i].Config.LocalAddress = localLoopbackIPv4
+	}
+	files[0].Config.RuleURLs = []string{"global"}
+	dir, err := os.MkdirTemp("", "sudoku-probe-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	paths, err := writeKernelConfigs(dir, files)
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, 2*len(paths))
+	for _, p := range paths {
+		args = append(args, "-c", p)
+	}
+	ctl := newCtlClient(ctlPort, probeCfg.Controller.Secret)
+	defer ctl.Close()
+	proc := NewManagedProcess("sudoku-probe")
+	if err := proc.Start(cfg.Core.SudokuBinary, args, []string{"SUDOKU_LOG_LEVEL=error"}, dir, nil); err != nil {
+		return nil, err
+	}
+	defer proc.Stop(1500 * time.Millisecond)
+	if _, err := ctl.WaitReady(ctx, 8*time.Second); err != nil {
+		return nil, fmt.Errorf("probe core did not start: %w", err)
+	}
+	return measureDelays(ctx, ctl, nodes, nodeProxyNames(nodes)), nil
 }
 
-func detectIP(useProxy bool, localPort int) IPDetectResult {
-	result := IPDetectResult{
-		Source:        "unknown",
-		UsedProxy:     useProxy,
-		CheckedAtUnix: time.Now().UnixMilli(),
+func (b *Backend) probe(nodes []NodeConfig) ([]LatencyResult, error) {
+	if len(nodes) == 0 {
+		return []LatencyResult{}, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	transport := &http.Transport{}
-	if useProxy {
-		proxyAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
-		if conn, err := net.DialTimeout("tcp", proxyAddr, 900*time.Millisecond); err != nil {
-			result.Error = fmt.Sprintf("proxy core not listening on %s: %v", proxyAddr, err)
-			return result
-		} else {
-			_ = conn.Close()
-		}
-		dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-		transport.DialContext = func(_ context.Context, network string, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		}
-	}
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   6 * time.Second,
-	}
-	endpoints := []struct {
-		source string
-		url    string
-	}{
-		{source: "api.ip.sb", url: "https://api.ip.sb/geoip"},
-		{source: "ipapi.co", url: "https://ipapi.co/json/"},
-		{source: "ipinfo.io", url: "https://ipinfo.io/json"},
-		{source: "api64.ipify.org", url: "https://api64.ipify.org?format=json"},
-		{source: "ifconfig.me", url: "https://ifconfig.me/ip"},
-	}
-	var errs []string
-	for _, ep := range endpoints {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ep.url, nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			errs = append(errs, ep.source+": "+err.Error())
-			continue
-		}
-		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-		_ = resp.Body.Close()
-		if rerr != nil {
-			errs = append(errs, ep.source+": "+rerr.Error())
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			errs = append(errs, ep.source+": http "+resp.Status)
-			continue
-		}
-
-		ip, country, region, isp := parseIPDetectPayload(body)
-		if ip == "" {
-			errs = append(errs, ep.source+": empty ip")
-			continue
-		}
-		result.Source = ep.source
-		result.IP = ip
-		result.Country = country
-		result.Region = region
-		result.ISP = isp
-		result.Error = ""
-		return result
-	}
-	if len(errs) > 0 {
-		result.Error = strings.Join(uniqueStrings(errs), " | ")
+	var res []LatencyResult
+	if k := b.kernelRef(); k != nil {
+		res = measureDelays(ctx, k.ctl, nodes, k.names)
 	} else {
-		result.Error = "no available ip detection endpoint"
+		var err error
+		if res, err = b.probeStopped(ctx, nodes); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	b.mu.Lock()
+	for _, r := range res {
+		b.latency[r.NodeID] = r
+	}
+	b.mu.Unlock()
+	b.markDirty()
+	return res, nil
 }
 
-func parseIPDetectPayload(body []byte) (ip, country, region, isp string) {
-	type payload struct {
-		IP           string `json:"ip"`
-		Query        string `json:"query"`
-		Country      string `json:"country"`
-		CountryName  string `json:"country_name"`
-		Region       string `json:"region"`
-		RegionName   string `json:"region_name"`
-		ISP          string `json:"isp"`
-		Org          string `json:"org"`
-		Organization string `json:"organization"`
-	}
-
-	var p payload
-	if err := json.Unmarshal(body, &p); err == nil {
-		ip = firstNonEmpty(strings.TrimSpace(p.IP), strings.TrimSpace(p.Query))
-		if ip != "" && net.ParseIP(ip) != nil {
-			country = firstNonEmpty(strings.TrimSpace(p.Country), strings.TrimSpace(p.CountryName))
-			region = firstNonEmpty(strings.TrimSpace(p.Region), strings.TrimSpace(p.RegionName))
-			isp = firstNonEmpty(strings.TrimSpace(p.ISP), strings.TrimSpace(p.Org), strings.TrimSpace(p.Organization))
-			return ip, country, region, isp
+func (b *Backend) ProbeNode(nodeID string) (LatencyResult, error) {
+	cfg := b.cfgClone()
+	for _, n := range cfg.Nodes {
+		if n.ID == nodeID {
+			res, err := b.probe([]NodeConfig{n})
+			if err != nil {
+				return LatencyResult{}, err
+			}
+			if res[0].Error != "" {
+				return res[0], errors.New(res[0].Error)
+			}
+			return res[0], nil
 		}
 	}
-
-	txt := strings.TrimSpace(string(body))
-	for _, field := range strings.FieldsFunc(txt, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ',' || r == ';'
-	}) {
-		candidate := strings.TrimSpace(field)
-		if net.ParseIP(candidate) != nil {
-			return candidate, "", "", ""
-		}
-	}
-	return "", "", "", ""
+	return LatencyResult{}, errors.New("node not found")
 }
 
-func firstNonEmpty(items ...string) string {
-	for _, it := range items {
-		if strings.TrimSpace(it) != "" {
-			return strings.TrimSpace(it)
-		}
+func (b *Backend) ProbeAllNodes() []LatencyResult {
+	cfg := b.cfgClone()
+	res, err := b.probe(cfg.Nodes)
+	if err != nil {
+		b.update(func(s *RuntimeState) { s.LastError = err.Error() })
+		return []LatencyResult{}
 	}
-	return ""
+	sortLatencyResults(res)
+	return res
 }
 
-func sortLatencyResults(results []LatencyResult) {
-	sort.SliceStable(results, func(i, j int) bool {
-		a := results[i]
-		b := results[j]
-		if a.ConnectOK != b.ConnectOK {
-			return a.ConnectOK
-		}
-		if a.LatencyMs < 0 {
-			return false
-		}
-		if b.LatencyMs < 0 {
-			return true
-		}
-		if a.LatencyMs == b.LatencyMs {
-			return strings.ToLower(a.NodeName) < strings.ToLower(b.NodeName)
-		}
-		return a.LatencyMs < b.LatencyMs
-	})
+func (b *Backend) AutoSelectLowestLatency() (LatencyResult, error) {
+	results := b.ProbeAllNodes()
+	if len(results) == 0 {
+		return LatencyResult{}, errors.New("no nodes")
+	}
+	best := results[0]
+	if !best.ConnectOK || best.LatencyMs < 0 {
+		return best, errors.New("no reachable node")
+	}
+	return best, b.SetActiveNode(best.NodeID)
 }

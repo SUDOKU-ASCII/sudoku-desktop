@@ -1,19 +1,11 @@
-//go:build !darwin && !linux
+//go:build !darwin
 
 package core
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"time"
 )
-
-func configureAdminDetachedProcess(_ adminDetachedProcess, _ *Store, _ *AppConfig) {}
-
-func newAdminDetachedProcess() adminDetachedProcess {
-	return nil
-}
 
 func darwinNetworkServiceForDevice(_ string) (string, error) { return "", nil }
 
@@ -41,18 +33,6 @@ func darwinPrimaryNetworkInfo() (darwinPrimaryRouteInfo, error) {
 
 func darwinProcessArgs(_ int) (string, error) {
 	return "", errors.New("darwin only")
-}
-
-func darwinAdminHasPassword() bool { return false }
-
-func darwinAdminAcquire(_ string) error {
-	return fmt.Errorf("%w: darwin only", ErrAdminRequired)
-}
-
-func darwinAdminForget() error { return nil }
-
-func darwinAdminRunShLC(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("%w: darwin only", ErrAdminRequired)
 }
 
 func darwinBuildPFSetCmd(anchor string, tunIfExpr string, blockQUIC bool, dnsProxyPort int) string {

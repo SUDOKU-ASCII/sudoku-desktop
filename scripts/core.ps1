@@ -59,66 +59,6 @@ function Replace-FirstN([string]$Text, [string]$Needle, [string]$Replacement, [i
   return $out
 }
 
-function Patch-ReplaceFirst([string]$Path, [string]$Needle, [string]$Replacement) {
-  $data = Read-Text $Path
-  if ($data.Contains($Replacement)) { return }
-  if (-not $data.Contains($Needle)) { throw "patch failed: needle not found in $Path" }
-  $new = Replace-First $data $Needle $Replacement
-  if ($null -eq $new) { throw "patch failed: replace failed in $Path" }
-  Write-Text $Path $new
-}
-
-function Patch-ReplaceFirstN([string]$Path, [string]$Needle, [string]$Replacement, [int]$Count) {
-  $data = Read-Text $Path
-  if ($data.Contains($Replacement)) { return }
-  if (-not $data.Contains($Needle)) { throw "patch failed: needle not found in $Path" }
-  $new = Replace-FirstN $data $Needle $Replacement $Count
-  if ($null -eq $new) { throw "patch failed: replace failed in $Path" }
-  Write-Text $Path $new
-}
-
-function Patch-GoDialTarget([string]$Path) {
-  $data = Read-Text $Path
-  $needle = "func dialTarget("
-  $start = $data.IndexOf($needle)
-  if ($start -lt 0) { throw "dialTarget not found in $Path (upstream changed?)" }
-  $braceStart = $data.IndexOf("{", $start)
-  if ($braceStart -lt 0) { throw "dialTarget brace not found in $Path" }
-  $level = 0
-  $end = -1
-  for ($i = $braceStart; $i -lt $data.Length; $i++) {
-    $ch = $data[$i]
-    if ($ch -eq "{") {
-      $level++
-    } elseif ($ch -eq "}") {
-      $level--
-      if ($level -eq 0) {
-        $end = $i + 1
-        break
-      }
-    }
-  }
-  if ($end -lt 0) { throw "dialTarget end not found in $Path" }
-  $funcText = $data.Substring($start, $end - $start)
-  if ($funcText.Contains("wrapConnForTrafficStats")) { return }
-  $patched = $funcText
-  $replacements = @(
-    @{ Needle = "return conn, decision, true"; Replacement = "return wrapConnForTrafficStats(conn, true), decision, true" },
-    @{ Needle = "return dConn, decision, true"; Replacement = "return wrapConnForTrafficStats(dConn, false), decision, true" },
-    @{ Needle = "return conn, true"; Replacement = "return wrapConnForTrafficStats(conn, true), true" },
-    @{ Needle = "return dConn, true"; Replacement = "return wrapConnForTrafficStats(dConn, false), true" }
-  )
-  foreach ($entry in $replacements) {
-    $next = Replace-First $patched $entry.Needle $entry.Replacement
-    if ($null -ne $next) {
-      $patched = $next
-    }
-  }
-  if ($patched -eq $funcText) { throw "patch failed: dialTarget return pattern not found in $Path" }
-  $out = $data.Substring(0, $start) + $patched + $data.Substring($end)
-  Write-Text $Path $out
-}
-
 function Invoke-Native([string]$FilePath, [string[]]$ArgumentList) {
   & $FilePath @ArgumentList
   if ($LASTEXITCODE -ne 0) {
@@ -184,101 +124,32 @@ if ($What -eq "all" -or $What -eq "hev") {
 }
 
 #
-# 2) Fetch + patch + build sudoku core
+# 2) Build the stock upstream sudoku core pinned in go.mod (no patching)
 #
 if ($What -eq "all" -or $What -eq "sudoku") {
-  $sudokuRepo = $env:SUDOKU_REPO
-  if (-not $sudokuRepo) { $sudokuRepo = "https://github.com/SUDOKU-ASCII/sudoku.git" }
-  $sudokuRef = $env:SUDOKU_REF
-  if (-not $sudokuRef) { $sudokuRef = "v0.5.1" }
-
-  $tmp = New-TempDir "sudoku-build-"
-  $sudokuDir = Join-Path $tmp "sudoku"
+  $out = Join-Path $outDir ("sudoku" + $(if ($goos -eq "windows") { ".exe" } else { "" }))
+  $ver = (& go list -m -f '{{.Version}}' github.com/SUDOKU-ASCII/sudoku).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $ver) { throw "cannot resolve sudoku version from go.mod" }
+  $tmpGo = New-TempDir "sudoku-build-"
   try {
-    $git = Get-Command git -ErrorAction SilentlyContinue
-    $cloned = $false
-    if ($git) {
-      $isCommitRef = $sudokuRef -match '^[0-9a-fA-F]{7,40}$'
-      try {
-        if ($isCommitRef) {
-          throw "exact commit ref requires detached checkout"
-        }
-        Invoke-Native $git.Source @("clone", "--depth", "1", "--branch", $sudokuRef, $sudokuRepo, $sudokuDir)
-        $cloned = $true
-      } catch {
-        $cloned = $false
-        Remove-Item -Recurse -Force -LiteralPath $sudokuDir -ErrorAction SilentlyContinue
-        try {
-          Invoke-Native $git.Source @("clone", "--depth", "1", $sudokuRepo, $sudokuDir)
-          Push-Location $sudokuDir
-          try {
-            & $git.Source checkout --detach $sudokuRef *> $null
-            if ($LASTEXITCODE -ne 0) {
-              & $git.Source fetch --depth "1" origin $sudokuRef *> $null
-              if ($LASTEXITCODE -ne 0) { throw "fetch ref failed: $sudokuRef" }
-              & $git.Source checkout --detach FETCH_HEAD *> $null
-              if ($LASTEXITCODE -ne 0) { throw "checkout FETCH_HEAD failed for: $sudokuRef" }
-            }
-          } finally {
-            Pop-Location
-          }
-          $cloned = $true
-        } catch {
-          $cloned = $false
-          Remove-Item -Recurse -Force -LiteralPath $sudokuDir -ErrorAction SilentlyContinue
-        }
-      }
-    }
-
-    if (-not $cloned) {
-      $tar = Get-Command tar -ErrorAction SilentlyContinue
-      if (-not $tar) { throw "git clone failed and 'tar' not found for tarball fallback" }
-      Ensure-Dir $sudokuDir
-      $tarUrl = "https://codeload.github.com/SUDOKU-ASCII/sudoku/tar.gz/${sudokuRef}"
-      $tgzPath = Join-Path $tmp "sudoku.tar.gz"
-      Invoke-WebRequest -Uri $tarUrl -OutFile $tgzPath | Out-Null
-      Invoke-Native $tar.Source @("-xzf", $tgzPath, "-C", $sudokuDir, "--strip-components=1")
-    }
-
-    # Relax upstream go.mod patch version (go 1.26.0 -> go 1.26) for toolchain compatibility.
-    $goMod = Join-Path $sudokuDir "go.mod"
-    if (Test-Path -LiteralPath $goMod) {
-      $data = Read-Text $goMod
-      $new = [Regex]::Replace($data, "(?m)^go\\s+(\\d+)\\.(\\d+)\\.\\d+\\s*$", { param($m) "go $($m.Groups[1].Value).$($m.Groups[2].Value)" })
-      if ($new -ne $data) {
-        Write-Text $goMod $new
-      }
-    }
-
-    # Overlay patch tree into upstream repo.
-    $patchDir = Join-Path $root "scripts/sudoku_patches"
-    if (Test-Path -LiteralPath $patchDir) {
-      Copy-Item -Recurse -Force -Path (Join-Path $patchDir "*") -Destination $sudokuDir
-    }
-
-    # Patch dialTarget() to wrap conns for traffic stats (direct/proxy).
-    Patch-GoDialTarget (Join-Path $sudokuDir "internal/app/client_target.go")
-
-    # Patch SOCKS5 UDP associate DIRECT path to avoid TUN self-loop for outbound UDP.
-    $socks5 = Join-Path $sudokuDir "internal/app/client_socks5.go"
-    $socksData = Read-Text $socks5
-    if (-not $socksData.Contains("udpWriteTo(")) {
-      Patch-ReplaceFirst $socks5 "s.udpConn.WriteToUDP(payload, directAddr)" "udpWriteTo(s.udpConn, payload, directAddr, true)"
-      Patch-ReplaceFirstN $socks5 "s.udpConn.WriteToUDP(resp, clientAddr)" "udpWriteTo(s.udpConn, resp, clientAddr, false)" 2
-    }
-
-    $out = Join-Path $outDir ("sudoku" + $(if ($goos -eq "windows") { ".exe" } else { "" }))
-    Push-Location $sudokuDir
+    # `go install pkg@version` uses upstream's own go.mod, keeping its CLI-only deps out of this module.
+    $env:GOPATH = Join-Path $tmpGo "gopath"
+    $env:GOMODCACHE = (& go env GOMODCACHE).Trim()
+    $env:GOFLAGS = "-mod=mod"
+    $env:CGO_ENABLED = "0"
+    $env:GOOS = $goos
+    $env:GOARCH = $goarch
+    Push-Location $tmpGo
     try {
-      $env:CGO_ENABLED = "0"
-      $env:GOOS = $goos
-      $env:GOARCH = $goarch
-      Invoke-Native "go" @("build", "-mod=mod", "-tags", "sudoku_patch", "-trimpath", "-ldflags", "-s -w", "-o", $out, "./cmd/sudoku-tunnel")
+      Invoke-Native "go" @("install", "-trimpath", "-ldflags", "-s -w", "github.com/SUDOKU-ASCII/sudoku/cmd/sudoku-tunnel@$ver")
     } finally {
       Pop-Location
     }
+    $built = Get-ChildItem -Path (Join-Path $env:GOPATH "bin") -Recurse -File | Where-Object { $_.Name -like "sudoku-tunnel*" } | Select-Object -First 1
+    if (-not $built) { throw "build produced no binary" }
+    Copy-Item -Force -LiteralPath $built.FullName -Destination $out
   } finally {
-    Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force -LiteralPath $tmpGo -ErrorAction SilentlyContinue
   }
 }
 

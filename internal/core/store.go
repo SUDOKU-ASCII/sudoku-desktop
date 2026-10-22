@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +12,10 @@ import (
 	"strings"
 )
 
-const configVersion = 6
+const configVersion = 7
 
+// Store owns every path the app writes to. The tree is private to the user (0700) because
+// it contains node keys and the controller secret.
 type Store struct {
 	rootDir    string
 	configPath string
@@ -25,13 +29,11 @@ func NewStore(appName string) (*Store, error) {
 		return nil, fmt.Errorf("resolve user config dir: %w", err)
 	}
 	root := filepath.Join(cfgRoot, appName)
-	runtimeDir := filepath.Join(root, "runtime")
-	logDir := filepath.Join(root, "logs")
 	st := &Store{
 		rootDir:    root,
 		configPath: filepath.Join(root, "config.json"),
-		runtimeDir: runtimeDir,
-		logDir:     logDir,
+		runtimeDir: filepath.Join(root, "runtime"),
+		logDir:     filepath.Join(root, "logs"),
 	}
 	if err := st.EnsureDirs(); err != nil {
 		return nil, err
@@ -41,32 +43,22 @@ func NewStore(appName string) (*Store, error) {
 
 func (s *Store) EnsureDirs() error {
 	for _, dir := range []string{s.rootDir, s.runtimeDir, s.logDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
 	return nil
 }
 
-func (s *Store) RootDir() string {
-	return s.rootDir
-}
+func (s *Store) RootDir() string    { return s.rootDir }
+func (s *Store) RuntimeDir() string { return s.runtimeDir }
+func (s *Store) LogDir() string     { return s.logDir }
+func (s *Store) ConfigPath() string { return s.configPath }
 
-func (s *Store) RuntimeDir() string {
-	return s.runtimeDir
-}
-
-func (s *Store) LogDir() string {
-	return s.logDir
-}
-
-func (s *Store) UsageHistoryPath() string {
-	return filepath.Join(s.runtimeDir, "usage_history.json")
-}
-
-func (s *Store) ConfigPath() string {
-	return s.configPath
-}
+func (s *Store) UsageHistoryPath() string { return filepath.Join(s.runtimeDir, "usage_history.json") }
+func (s *Store) JournalPath() string      { return filepath.Join(s.runtimeDir, "journal.json") }
+func (s *Store) ConfigsDir() string       { return filepath.Join(s.runtimeDir, "configs") }
+func (s *Store) RuleCacheDir() string     { return filepath.Join(s.runtimeDir, "cache", "sudoku-rules") }
 
 func (s *Store) Load() (*AppConfig, error) {
 	if err := s.EnsureDirs(); err != nil {
@@ -87,7 +79,12 @@ func (s *Store) Load() (*AppConfig, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	migrated := cfg.Version < configVersion
 	normalizeConfig(&cfg, s.runtimeDir)
+	if migrated {
+		// Persist the migration (and the freshly generated controller secret) right away.
+		_ = s.Save(&cfg)
+	}
 	return &cfg, nil
 }
 
@@ -103,7 +100,7 @@ func (s *Store) Save(cfg *AppConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := os.WriteFile(s.configPath, buf, 0o644); err != nil {
+	if err := writeFileAtomic(s.configPath, buf, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
@@ -111,41 +108,23 @@ func (s *Store) Save(cfg *AppConfig) error {
 
 func DefaultConfig(runtimeDir string) *AppConfig {
 	cfg := &AppConfig{
-		Version:      configVersion,
-		ActiveNodeID: "",
-		Nodes:        []NodeConfig{},
+		Version: configVersion,
+		Nodes:   []NodeConfig{},
 		Routing: RoutingSettings{
-			ProxyMode:          "pac",
-			RuleURLs:           defaultPACRuleURLs(),
-			CustomRulesEnabled: false,
-			CustomRules:        "",
+			ProxyMode: "pac",
+			RuleURLs:  defaultPACRuleURLs(),
 		},
 		Tun: defaultTunSettings(runtime.GOOS),
 		Core: CoreSettings{
 			SudokuBinary: defaultBinaryPath(runtimeDir, "sudoku"),
 			HevBinary:    defaultBinaryPath(runtimeDir, "hev-socks5-tunnel"),
 			WorkingDir:   filepath.Join(runtimeDir, "workspace"),
-			LocalPort:    1080,
-			AllowLAN:     false,
 			LogLevel:     "info",
-			AutoStart:    false,
 		},
-		ReverseClient: ReverseClientSettings{
-			ClientID: "",
-			Routes:   []ReverseRoute{},
-		},
-		ReverseForward: ReverseForwarderSettings{
-			DialURL:    "",
-			ListenAddr: "127.0.0.1:2222",
-			Insecure:   false,
-		},
-		PortForwards: []PortForwardRule{},
-		UI: UISettings{
-			Language: "auto",
-			Theme:    "atelier",
-			// launchAtLogin defaults to false and is only used by the desktop host app.
-			LaunchAtLogin: false,
-		},
+		ReverseClient:  ReverseClientSettings{Routes: []ReverseRoute{}},
+		ReverseForward: ReverseForwarderSettings{ListenAddr: "127.0.0.1:2222"},
+		PortForwards:   []PortForwardRule{},
+		UI:             UISettings{Language: "auto", Theme: "auto"},
 	}
 	normalizeConfig(cfg, runtimeDir)
 	return cfg
@@ -158,9 +137,8 @@ func normalizeConfig(cfg *AppConfig, runtimeDir string) {
 func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	prevVersion := cfg.Version
 	defaultTun := defaultTunSettings(goos)
-	if cfg.Version < configVersion {
-		cfg.Version = configVersion
-	}
+	cfg.Version = configVersion
+
 	if cfg.Nodes == nil {
 		cfg.Nodes = []NodeConfig{}
 	}
@@ -170,102 +148,85 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	if cfg.ReverseClient.Routes == nil {
 		cfg.ReverseClient.Routes = []ReverseRoute{}
 	}
-	if cfg.Routing.ProxyMode == "" {
-		cfg.Routing.ProxyMode = "pac"
-	}
-	if cfg.Routing.ProxyMode != "global" && cfg.Routing.ProxyMode != "direct" && cfg.Routing.ProxyMode != "pac" {
+
+	switch cfg.Routing.ProxyMode {
+	case "global", "direct", "pac":
+	default:
 		cfg.Routing.ProxyMode = "pac"
 	}
 	if cfg.Routing.RuleURLs == nil {
 		cfg.Routing.RuleURLs = []string{}
 	}
-	// PAC mode requires rule URLs. If a user accidentally cleared the list (and has no custom rules),
-	// fall back to the recommended defaults so routing doesn't silently become global.
-	if cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) == 0 {
-		if !cfg.Routing.CustomRulesEnabled || strings.TrimSpace(cfg.Routing.CustomRules) == "" {
-			cfg.Routing.RuleURLs = defaultPACRuleURLs()
-		}
+	// PAC needs rule sources. If the list was cleared by accident (and there are no custom
+	// rules), restore the recommended defaults so routing doesn't silently become global.
+	if cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) == 0 &&
+		(!cfg.Routing.CustomRulesEnabled || strings.TrimSpace(cfg.Routing.CustomRules) == "") {
+		cfg.Routing.RuleURLs = defaultPACRuleURLs()
 	}
 	if prevVersion < 6 && cfg.Routing.ProxyMode == "pac" && len(cfg.Routing.RuleURLs) > 0 {
-		hasRejectRule := false
+		hasReject := false
 		for _, raw := range cfg.Routing.RuleURLs {
 			if hasRejectRulePrefix(raw) {
-				hasRejectRule = true
+				hasReject = true
 				break
 			}
 		}
-		if !hasRejectRule {
+		if !hasReject {
 			cfg.Routing.RuleURLs = append(cfg.Routing.RuleURLs, "!"+defaultPACRejectRuleURL)
 		}
 	}
-	if cfg.Tun.InterfaceName == "" {
-		cfg.Tun.InterfaceName = defaultTun.InterfaceName
-	} else if goos == "darwin" && cfg.Tun.InterfaceName == "sudoku0" {
-		// Migrate old default to macOS-friendly default.
-		cfg.Tun.InterfaceName = defaultTun.InterfaceName
+
+	t := &cfg.Tun
+	if t.InterfaceName == "" || (goos == "darwin" && t.InterfaceName == "sudoku0") {
+		t.InterfaceName = defaultTun.InterfaceName
 	}
-	if cfg.Tun.MTU <= 0 {
-		cfg.Tun.MTU = defaultTun.MTU
+	if t.MTU <= 0 {
+		t.MTU = defaultTun.MTU
 	}
-	if cfg.Tun.IPv4 == "" {
-		cfg.Tun.IPv4 = defaultTun.IPv4
+	if t.IPv4 == "" {
+		t.IPv4 = defaultTun.IPv4
 	}
-	if cfg.Tun.IPv6 == "" {
-		cfg.Tun.IPv6 = defaultTun.IPv6
+	if t.IPv6 == "" {
+		t.IPv6 = defaultTun.IPv6
 	}
-	// v4 changes the default TUN posture to:
-	// - TUN disabled
-	// - QUIC blocking disabled
-	// - MapDNS enabled
-	// Only migrate when the old default tuple is still intact, so explicit user choices survive.
-	if prevVersion < 4 && !cfg.Tun.Enabled && cfg.Tun.BlockQUIC && !cfg.Tun.MapDNSEnabled {
-		cfg.Tun.BlockQUIC = false
-		cfg.Tun.MapDNSEnabled = true
+	if t.SocksUDP == "" {
+		t.SocksUDP = defaultTun.SocksUDP
 	}
-	if prevVersion < 5 && cfg.Tun.MapDNSAddress == "198.18.0.2" &&
-		cfg.Tun.MapDNSNetwork == "100.64.0.0" && cfg.Tun.MapDNSNetmask == "255.192.0.0" {
-		cfg.Tun.MapDNSNetwork = defaultTun.MapDNSNetwork
-		cfg.Tun.MapDNSNetmask = defaultTun.MapDNSNetmask
+	if t.SocksMark <= 0 {
+		t.SocksMark = defaultTun.SocksMark
 	}
-	if prevVersion < 5 && goos == "windows" && !cfg.Tun.Enabled && !cfg.Tun.BlockQUIC && cfg.Tun.MapDNSEnabled {
-		cfg.Tun.BlockQUIC = true
+	if t.RouteTable <= 0 {
+		t.RouteTable = defaultTun.RouteTable
 	}
-	if cfg.Tun.SocksUDP == "" {
-		cfg.Tun.SocksUDP = defaultTun.SocksUDP
+	if t.LogLevel == "" {
+		t.LogLevel = defaultTun.LogLevel
 	}
-	if cfg.Tun.SocksMark <= 0 {
-		cfg.Tun.SocksMark = defaultTun.SocksMark
+	if t.MapDNSAddress == "" {
+		t.MapDNSAddress = defaultTun.MapDNSAddress
 	}
-	if cfg.Tun.RouteTable <= 0 {
-		cfg.Tun.RouteTable = defaultTun.RouteTable
+	if t.MapDNSPort <= 0 {
+		t.MapDNSPort = defaultTun.MapDNSPort
 	}
-	if cfg.Tun.LogLevel == "" {
-		cfg.Tun.LogLevel = defaultTun.LogLevel
+	if t.MapDNSNetwork == "" {
+		t.MapDNSNetwork = defaultTun.MapDNSNetwork
 	}
-	if cfg.Tun.MapDNSAddress == "" {
-		cfg.Tun.MapDNSAddress = defaultTun.MapDNSAddress
+	if t.MapDNSNetmask == "" {
+		t.MapDNSNetmask = defaultTun.MapDNSNetmask
 	}
-	if cfg.Tun.MapDNSPort <= 0 {
-		cfg.Tun.MapDNSPort = defaultTun.MapDNSPort
+	if t.TaskStackSize <= 0 {
+		t.TaskStackSize = defaultTun.TaskStackSize
 	}
-	if cfg.Tun.MapDNSNetwork == "" {
-		cfg.Tun.MapDNSNetwork = defaultTun.MapDNSNetwork
+	if t.TCPBufferSize <= 0 {
+		t.TCPBufferSize = defaultTun.TCPBufferSize
 	}
-	if cfg.Tun.MapDNSNetmask == "" {
-		cfg.Tun.MapDNSNetmask = defaultTun.MapDNSNetmask
+	if t.ConnectTimeout <= 0 {
+		t.ConnectTimeout = defaultTun.ConnectTimeout
 	}
-	if cfg.Tun.TaskStackSize <= 0 {
-		cfg.Tun.TaskStackSize = defaultTun.TaskStackSize
+	// PAC over TUN depends on MapDNS (FakeIP) to route by domain.
+	if cfg.Routing.ProxyMode == "pac" {
+		t.MapDNSEnabled = true
 	}
-	if cfg.Tun.TCPBufferSize <= 0 {
-		cfg.Tun.TCPBufferSize = defaultTun.TCPBufferSize
-	}
-	if cfg.Tun.ConnectTimeout <= 0 {
-		cfg.Tun.ConnectTimeout = defaultTun.ConnectTimeout
-	}
-	if cfg.Core.LocalPort <= 0 {
-		cfg.Core.LocalPort = 1080
-	}
+
 	if strings.TrimSpace(cfg.Core.WorkingDir) == "" {
 		cfg.Core.WorkingDir = filepath.Join(runtimeDir, "workspace")
 	}
@@ -278,10 +239,18 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 	if cfg.Core.LogLevel == "" {
 		cfg.Core.LogLevel = "info"
 	}
+
+	if cfg.Controller.Port <= 0 || cfg.Controller.Port > 65535 || cfg.Controller.Port == ProxyPort {
+		cfg.Controller.Port = DefaultControllerPort
+	}
+	if strings.TrimSpace(cfg.Controller.Secret) == "" {
+		cfg.Controller.Secret = randomSecret()
+	}
+
 	if cfg.UI.Language == "" {
 		cfg.UI.Language = "auto"
 	}
-	if cfg.UI.Theme == "" || !isValidUITheme(cfg.UI.Theme) {
+	if !isValidUITheme(cfg.UI.Theme) {
 		cfg.UI.Theme = "auto"
 	}
 	for i := range cfg.PortForwards {
@@ -293,11 +262,26 @@ func normalizeConfigForOS(cfg *AppConfig, runtimeDir string, goos string) {
 		}
 	}
 	for i := range cfg.Nodes {
-		normalizeNode(&cfg.Nodes[i], cfg.Core.LocalPort)
+		normalizeNode(&cfg.Nodes[i])
 	}
-	if cfg.ActiveNodeID == "" && len(cfg.Nodes) > 0 {
-		cfg.ActiveNodeID = cfg.Nodes[0].ID
+	cfg.ActiveNodeID = resolveActiveNodeID(cfg)
+}
+
+// resolveActiveNodeID keeps the selection valid: an existing node, the balance pseudo-node
+// (needs >= 2 nodes) or the first node.
+func resolveActiveNodeID(cfg *AppConfig) string {
+	if cfg.ActiveNodeID == BalanceNodeID && len(cfg.Nodes) >= 2 {
+		return BalanceNodeID
 	}
+	for _, n := range cfg.Nodes {
+		if n.ID == cfg.ActiveNodeID {
+			return n.ID
+		}
+	}
+	if len(cfg.Nodes) > 0 {
+		return cfg.Nodes[0].ID
+	}
+	return ""
 }
 
 func isValidUITheme(theme string) bool {
@@ -312,11 +296,10 @@ func isValidUITheme(theme string) bool {
 func defaultTunSettings(goos string) TunSettings {
 	interfaceName := "sudoku0"
 	if goos == "darwin" {
-		// HEV's docs use "tun0" on macOS/FreeBSD; using a Linux-ish name breaks route setup.
+		// HEV uses "tun0" on macOS; a Linux-style name breaks route setup there.
 		interfaceName = "tun0"
 	}
 	return TunSettings{
-		Enabled:        false,
 		InterfaceName:  interfaceName,
 		MTU:            8500,
 		IPv4:           "198.18.0.1",
@@ -333,18 +316,16 @@ func defaultTunSettings(goos string) TunSettings {
 		MapDNSNetmask:  "255.254.0.0",
 		TaskStackSize:  86016,
 		TCPBufferSize:  65536,
-		MaxSession:     0,
 		ConnectTimeout: 10000,
 	}
 }
 
-func normalizeNode(node *NodeConfig, fallbackPort int) {
+func normalizeNode(node *NodeConfig) {
 	if node == nil {
 		return
 	}
-	node.Enabled = true
-	if node.LocalPort <= 0 {
-		node.LocalPort = fallbackPort
+	if strings.TrimSpace(node.ID) == "" {
+		node.ID = newID("node_")
 	}
 	if node.AEAD == "" {
 		node.AEAD = "chacha20-poly1305"
@@ -363,7 +344,6 @@ func normalizeNode(node *NodeConfig, fallbackPort int) {
 		node.HTTPMask.Mode = "legacy"
 	}
 	if node.Multiplex == "" {
-		// Migrate the legacy nested location without changing existing nodes.
 		node.Multiplex = strings.TrimSpace(node.HTTPMask.Multiplex)
 	}
 	if node.Multiplex == "" {
@@ -380,6 +360,45 @@ func defaultBinaryPath(runtimeDir string, baseName string) string {
 	if runtime.GOOS == "windows" {
 		n += ".exe"
 	}
-	platform := runtime.GOOS + "-" + runtime.GOARCH
-	return filepath.Join(runtimeDir, "bin", platform, n)
+	return filepath.Join(runtimeDir, "bin", runtime.GOOS+"-"+runtime.GOARCH, n)
+}
+
+func randomSecret() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return newID("s")
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// writeFileAtomic writes via a temp file + rename so a crash never leaves a torn file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil && runtime.GOOS != "windows" {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }

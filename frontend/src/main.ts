@@ -3,52 +3,40 @@ import './style.css'
 
 type AnyRecord = Record<string, any>
 const wailsRuntime = (window as unknown as AnyRecord).runtime as AnyRecord | undefined
-const wailsLogInfo = (message: string) => {
+const wailsLog = (level: 'LogInfo' | 'LogError', message: string) => {
   try {
-    wailsRuntime?.LogInfo?.(message)
-  } catch {
-    // ignore
-  }
-}
-const wailsLogError = (message: string) => {
-  try {
-    wailsRuntime?.LogError?.(message)
+    wailsRuntime?.[level]?.(message)
   } catch {
     // ignore
   }
 }
 
-const bootRoot = document.getElementById('app')
-if (bootRoot) {
-  bootRoot.innerHTML = `<div id="boot-marker" style="padding:16px;font-family:ui-monospace,Menlo,monospace;">Booting…</div>`
-}
-wailsLogInfo('frontend: boot')
+const describe = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}\n${err.stack || ''}` : String(err))
 
-const renderFatal = (err: unknown) => {
-  // Ensure we never end up with a blank window in production builds.
+// Before mount a thrown error would leave a blank window, so render it. After mount the
+// UI is already usable: a stray rejection (a failed probe, a closed dialog) must not wipe it.
+let mounted = false
+const onError = (err: unknown) => {
   // eslint-disable-next-line no-console
   console.error(err)
-  const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack || ''}` : String(err)
-  wailsLogError(`frontend: fatal\n${message}`)
-
+  const message = describe(err)
+  wailsLog('LogError', `frontend: ${mounted ? 'error' : 'fatal'}\n${message}`)
+  if (mounted) return
   const container = document.createElement('div')
-  container.style.padding = '16px'
-  container.style.fontFamily = 'ui-monospace, Menlo, monospace'
-  container.style.whiteSpace = 'pre-wrap'
+  container.style.cssText = 'padding:16px;font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap'
   container.textContent = message
-  document.body.innerHTML = ''
-  document.body.appendChild(container)
+  document.body.replaceChildren(container)
 }
 
-window.addEventListener('error', (e) => renderFatal((e as ErrorEvent).error || (e as any).message))
-window.addEventListener('unhandledrejection', (e) => renderFatal((e as PromiseRejectionEvent).reason))
+window.addEventListener('error', (e) => onError(e.error || e.message))
+window.addEventListener('unhandledrejection', (e) => onError(e.reason))
 
 import('./App.vue')
   .then(({ default: App }) => {
-    wailsLogInfo('frontend: App.vue loaded')
     const app = createApp(App)
-    app.config.errorHandler = (err) => renderFatal(err)
+    app.config.errorHandler = (err) => onError(err)
     app.mount('#app')
-    wailsLogInfo('frontend: mounted')
+    mounted = true
+    wailsLog('LogInfo', 'frontend: mounted')
   })
-  .catch(renderFatal)
+  .catch(onError)

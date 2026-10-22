@@ -34,19 +34,25 @@ export function CloseConnection(connectionID: string): $CancellablePromise<void>
     return $Call.ByID(2951556907, connectionID);
 }
 
+export function ControllerInfo(): $CancellablePromise<core$0.ControllerInfo> {
+    return $Call.ByID(2583630849).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
 export function DeleteNode(nodeID: string): $CancellablePromise<void> {
     return $Call.ByID(1080831774, nodeID);
 }
 
 export function DetectIPDirect(): $CancellablePromise<core$0.IPDetectResult> {
     return $Call.ByID(2579987290).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
 export function DetectIPProxy(): $CancellablePromise<core$0.IPDetectResult> {
     return $Call.ByID(3095933365).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -64,43 +70,43 @@ export function ExportShortLink(nodeID: string): $CancellablePromise<string> {
 
 export function GetConfig(): $CancellablePromise<core$0.AppConfig> {
     return $Call.ByID(1200034045).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType4($result);
     });
 }
 
 export function GetConnections(): $CancellablePromise<core$0.ActiveConnection[]> {
     return $Call.ByID(1541859132).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
 export function GetLANProxyInfo(): $CancellablePromise<core$0.LANProxyInfo> {
     return $Call.ByID(1588789326).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
 export function GetLogs(level: string, limit: number): $CancellablePromise<core$0.LogEntry[]> {
     return $Call.ByID(1743981476, level, limit).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
 export function GetState(): $CancellablePromise<core$0.RuntimeState> {
     return $Call.ByID(2490316256).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
 export function GetUsageHistory(limit: number): $CancellablePromise<core$0.UsageDay[]> {
     return $Call.ByID(3645314582, limit).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
 export function ImportShortLink(name: string, link: string): $CancellablePromise<core$0.NodeConfig> {
     return $Call.ByID(4069088750, name, link).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -112,9 +118,13 @@ export function OpenRuntimeDir(): $CancellablePromise<string> {
     return $Call.ByID(1333260438);
 }
 
+export function OpenURL(raw: string): $CancellablePromise<void> {
+    return $Call.ByID(3584934946, raw);
+}
+
 export function ProbeAllNodes(): $CancellablePromise<core$0.LatencyResult[]> {
     return $Call.ByID(3983201005).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType14($result);
     });
 }
 
@@ -122,6 +132,13 @@ export function ProbeNode(nodeID: string): $CancellablePromise<core$0.LatencyRes
     return $Call.ByID(2426717665, nodeID).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+/**
+ * RepairNetwork undoes tunnel routes/DNS overrides left behind by a crashed session.
+ */
+export function RepairNetwork(): $CancellablePromise<void> {
+    return $Call.ByID(1900127906);
 }
 
 export function RestartProxy(req: core$0.StartRequest): $CancellablePromise<void> {
@@ -173,23 +190,29 @@ export function SwitchNode(nodeID: string): $CancellablePromise<void> {
 }
 
 /**
- * TunAcquirePrivileges validates and caches the system password for sudo-backed TUN
- * operations. The password is stored in-memory only and never written to disk.
+ * TunAcquirePrivileges verifies the login password (kept in memory only) and resumes the
+ * action that was waiting for it.
  */
 export function TunAcquirePrivileges(password: string): $CancellablePromise<void> {
     return $Call.ByID(4221577784, password);
 }
 
 /**
- * TunDropPrivileges clears any cached admin credentials used for TUN operations.
+ * TunCancelPrivileges dismisses the password prompt.
+ */
+export function TunCancelPrivileges(): $CancellablePromise<void> {
+    return $Call.ByID(3379681014);
+}
+
+/**
+ * TunDropPrivileges forgets the password.
  */
 export function TunDropPrivileges(): $CancellablePromise<void> {
     return $Call.ByID(3464546521);
 }
 
 /**
- * TunHasPrivileges reports whether the app can perform privileged TUN operations
- * silently on the current platform (supported on macOS/Linux via in-app sudo caching).
+ * TunHasPrivileges reports whether the tunnel helper can start without the password prompt.
  */
 export function TunHasPrivileges(): $CancellablePromise<boolean> {
     return $Call.ByID(3950116500);
@@ -197,7 +220,7 @@ export function TunHasPrivileges(): $CancellablePromise<boolean> {
 
 export function UpsertNode(node: core$0.NodeConfig): $CancellablePromise<core$0.NodeConfig> {
     return $Call.ByID(2714662214, node).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -208,15 +231,16 @@ export function ValidateYAML(content: string): $CancellablePromise<void> {
 // Private type creation functions
 const $$createType0 = core$0.LatencyResult.createFrom;
 const $$createType1 = $Create.Map($Create.Any, $Create.Any);
-const $$createType2 = core$0.IPDetectResult.createFrom;
-const $$createType3 = core$0.AppConfig.createFrom;
-const $$createType4 = core$0.ActiveConnection.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = core$0.LANProxyInfo.createFrom;
-const $$createType7 = core$0.LogEntry.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = core$0.RuntimeState.createFrom;
-const $$createType10 = core$0.UsageDay.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = core$0.NodeConfig.createFrom;
-const $$createType13 = $Create.Array($$createType0);
+const $$createType2 = core$0.ControllerInfo.createFrom;
+const $$createType3 = core$0.IPDetectResult.createFrom;
+const $$createType4 = core$0.AppConfig.createFrom;
+const $$createType5 = core$0.ActiveConnection.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = core$0.LANProxyInfo.createFrom;
+const $$createType8 = core$0.LogEntry.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = core$0.RuntimeState.createFrom;
+const $$createType11 = core$0.UsageDay.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = core$0.NodeConfig.createFrom;
+const $$createType14 = $Create.Array($$createType0);

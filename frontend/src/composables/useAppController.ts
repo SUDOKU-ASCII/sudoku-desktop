@@ -4,8 +4,13 @@ import { backendApi } from '../api'
 import { confirmDestructiveAction } from '../dialogs'
 import { useI18n } from '../i18n'
 import { canonicalizeAsciiMode } from '../sudoku/asciiMode'
+import { BALANCE_NODE_ID, DEFAULT_PROXY_PORT } from '../types'
 import type {
+  ActiveConnection,
   AppConfig,
+  BandwidthSample,
+  ControllerBoard,
+  ControllerInfo,
   LANProxyInfo,
   IPDetectResult,
   LatencyResult,
@@ -14,6 +19,7 @@ import type {
   PortForwardRule,
   ProxyMode,
   RuntimeState,
+  TrafficTick,
   UsageDay,
 } from '../types'
 
@@ -34,33 +40,11 @@ const navItems = [
 ] as const
 
 type TabKey = (typeof navItems)[number]['key']
-const currentTab = ref<TabKey>('dashboard')
+const initialTab = location.hash.slice(1)
+const currentTab = ref<TabKey>(navItems.some((x) => x.key === initialTab) ? (initialTab as TabKey) : 'dashboard')
 const navMain = navItems.filter((x) => x.section === 'main')
 const navExtra = navItems.filter((x) => x.section === 'extra')
 
-const safeLocalStorageGet = (key: string): string | null => {
-  try {
-    return window.localStorage?.getItem(key) ?? null
-  } catch {
-    return null
-  }
-}
-const safeLocalStorageSet = (key: string, value: string) => {
-  try {
-    window.localStorage?.setItem(key, value)
-  } catch {
-    // ignore
-  }
-}
-
-const sidebarCollapsed = ref(false)
-onMounted(() => {
-  sidebarCollapsed.value = safeLocalStorageGet('ui.sidebarCollapsed') === '1'
-})
-watch(sidebarCollapsed, (v) => safeLocalStorageSet('ui.sidebarCollapsed', v ? '1' : '0'))
-const toggleSidebar = () => {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-}
 
 const busy = ref(false)
 const proxyOpBusy = ref(false)
@@ -78,13 +62,6 @@ const defaultPacRuleUrls = [
   'https://fastly.jsdelivr.net/gh/fernvenue/chn-cidr-list@master/ipv6.yaml',
   '!https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml',
 ]
-
-const tunAdminModalOpen = ref(false)
-const tunAdminPassword = ref('')
-const tunAdminBusy = ref(false)
-const tunAdminError = ref('')
-let tunAdminPromise: Promise<boolean> | null = null
-let tunAdminPromiseResolve: ((ok: boolean) => void) | null = null
 
 const emptyNode = (): NodeConfig => ({
   id: '',
@@ -106,8 +83,6 @@ const emptyNode = (): NodeConfig => ({
     host: '',
     pathRoot: '',
   },
-  localPort: 1080,
-  enabled: true,
 })
 
 const defaultTunConfig = (macLike: boolean, windowsLike: boolean) => ({
@@ -142,11 +117,11 @@ const config = reactive<AppConfig>({
     sudokuBinary: '',
     hevBinary: '',
     workingDir: '',
-    localPort: 1080,
-    allowLan: false,
     logLevel: 'info',
     autoStart: false,
+    allowLan: false,
   },
+  controller: { port: 9097, secret: '', allowLan: false },
   reverseClient: { clientId: '', routes: [] },
   reverseForward: { dialUrl: '', listenAddr: '127.0.0.1:2222', insecure: false },
   portForwards: [],
@@ -154,42 +129,38 @@ const config = reactive<AppConfig>({
   lastStartedNode: '',
 })
 
+const emptyTraffic = () => ({
+  totalTx: 0,
+  totalRx: 0,
+  estimatedDirectTx: 0,
+  estimatedDirectRx: 0,
+  estimatedProxyTx: 0,
+  estimatedProxyRx: 0,
+  directConns: 0,
+  proxyConns: 0,
+})
+
 const state = reactive<RuntimeState>({
+  phase: 'stopped',
   running: false,
   coreRunning: false,
   tunRunning: false,
+  tunRequested: false,
   reverseRunning: false,
+  systemProxyOn: false,
   startedAtUnix: 0,
   activeNodeId: '',
   activeNodeName: '',
+  mode: 'pac',
   lastError: '',
-  traffic: {
-    totalTx: 0,
-    totalRx: 0,
-    estimatedDirectTx: 0,
-    estimatedDirectRx: 0,
-    estimatedProxyTx: 0,
-    estimatedProxyRx: 0,
-    directConnDecisions: 0,
-    proxyConnDecisions: 0,
-    recentBandwidth: [],
-    interface: '',
-    interfaceFound: false,
-    lastSampleUnixMillis: 0,
-  },
-  kernel: {
-    version: '',
-    memoryBytes: 0,
-    latencyMs: -1,
-    latencyStatusCode: 0,
-    latencyCheckedAt: 0,
-    latencyError: '',
-  },
+  traffic: emptyTraffic(),
+  kernel: { version: '', memoryBytes: 0 },
   latencies: [],
-  connections: [],
-  recentLogs: [],
+  connectionCount: 0,
+  needsNetRepair: false,
+  proxyPort: DEFAULT_PROXY_PORT,
   needsAdmin: false,
-  routeSetupError: '',
+  adminError: '',
 })
 
 const cloneDeep = <T,>(input: T): T => JSON.parse(JSON.stringify(input)) as T
@@ -206,13 +177,18 @@ const logDisplayLimit = ref(600)
 const showTrafficLogs = ref(false)
 const logs = ref<LogEntry[]>([])
 const connectionOpBusy = ref(false)
+const connections = ref<ActiveConnection[]>([])
+const trafficSamples = ref<BandwidthSample[]>([])
+const TRAFFIC_WINDOW = 60
+const controllerInfo = ref<ControllerInfo | null>(null)
+const repairBusy = ref(false)
 let logQueue: LogEntry[] = []
 let logFlushTimer: number | null = null
 let pendingState: RuntimeState | null = null
 let stateFlushTimer: number | null = null
 const proxyIP = ref<IPDetectResult | null>(null)
 const directIP = ref<IPDetectResult | null>(null)
-const lanProxyInfo = ref<LANProxyInfo>({ port: 1080, ips: [], ready: false })
+const lanProxyInfo = ref<LANProxyInfo>({ port: DEFAULT_PROXY_PORT, ips: [], ready: false })
 const usageHistory = ref<UsageDay[]>([])
 let usageHistoryTimer: number | null = null
 let customRulesValidateTimer: number | null = null
@@ -221,7 +197,6 @@ const customRulesValidation = ref<{ status: 'idle' | 'checking' | 'ok' | 'error'
   message: '',
 })
 const tunAutoSaveLock = ref(true)
-const skipTunEnabledAutoSaveOnce = ref(false)
 
 const applyLocaleFromConfig = () => {
   if (config.ui.language === 'auto') {
@@ -247,8 +222,11 @@ const resolveThemeName = (): ResolvedThemeName => {
   }
 }
 
+const resolvedTheme = ref<ResolvedThemeName>(resolveThemeName())
+
 const applyDocumentTheme = () => {
   const theme = resolveThemeName()
+  resolvedTheme.value = theme
   document.documentElement.setAttribute('data-app-theme', theme)
   document.body?.setAttribute('data-app-theme', theme)
 }
@@ -263,57 +241,6 @@ const flash = (message: string, type: 'ok' | 'error' = 'ok') => {
   }, 2600)
 }
 
-const isAdminRequiredError = (e: any): boolean => {
-  const msg = String(e?.message || '').toLowerCase()
-  return msg.includes('administrator privileges required') || msg.includes('admin privileges required')
-}
-
-const openTunAdminModal = async (): Promise<boolean> => {
-  if (tunAdminPromise) return tunAdminPromise
-  tunAdminModalOpen.value = true
-  tunAdminPassword.value = ''
-  tunAdminError.value = ''
-  tunAdminBusy.value = false
-  tunAdminPromise = new Promise<boolean>((resolve) => {
-    tunAdminPromiseResolve = resolve
-  })
-  return tunAdminPromise
-}
-
-const closeTunAdminModal = (ok = false) => {
-  tunAdminModalOpen.value = false
-  tunAdminBusy.value = false
-  tunAdminError.value = ''
-  tunAdminPassword.value = ''
-  tunAdminPromiseResolve?.(ok)
-  tunAdminPromise = null
-  tunAdminPromiseResolve = null
-}
-
-const submitTunAdminModal = async () => {
-  if (tunAdminBusy.value) return
-  tunAdminBusy.value = true
-  tunAdminError.value = ''
-  try {
-    await backendApi.tunAcquirePrivileges(tunAdminPassword.value)
-    closeTunAdminModal(true)
-  } catch (e: any) {
-    tunAdminError.value = e?.message || t('tunAdminFailed')
-  } finally {
-    tunAdminBusy.value = false
-  }
-}
-
-const ensureTunAdmin = async (): Promise<boolean> => {
-  try {
-    const has = await backendApi.tunHasPrivileges()
-    if (has) return true
-  } catch {
-    // ignore
-  }
-  return await openTunAdminModal()
-}
-
 const assignConfig = (next: AppConfig) => {
   Object.assign(config, next)
   applyLocaleFromConfig()
@@ -321,20 +248,10 @@ const assignConfig = (next: AppConfig) => {
 
 const assignState = (next: RuntimeState) => {
   Object.assign(state, next)
-  if (!Array.isArray(state.connections)) state.connections = []
   if (!Array.isArray(state.latencies)) state.latencies = []
-  if (!Array.isArray(state.recentLogs)) state.recentLogs = []
-  if (!Array.isArray(state.traffic?.recentBandwidth)) state.traffic.recentBandwidth = []
-  if (!state.kernel || typeof state.kernel !== 'object') {
-    state.kernel = {
-      version: '',
-      memoryBytes: 0,
-      latencyMs: -1,
-      latencyStatusCode: 0,
-      latencyCheckedAt: 0,
-      latencyError: '',
-    }
-  }
+  if (!state.traffic || typeof state.traffic !== 'object') state.traffic = emptyTraffic()
+  if (!state.kernel || typeof state.kernel !== 'object') state.kernel = { version: '', memoryBytes: 0 }
+  if (!state.proxyPort) state.proxyPort = DEFAULT_PROXY_PORT
 }
 
 const sortedNodes = computed(() => {
@@ -375,39 +292,52 @@ const trafficProxyShare = computed(() => {
 const trafficDirectShare = computed(() => 100 - trafficProxyShare.value)
 
 const runtimeStatusLabel = computed(() => {
-  switch (proxyOpState.value) {
+  if (proxyOpState.value === 'restarting') return t('statusRestarting')
+  switch (state.phase) {
     case 'starting':
       return t('statusStarting')
     case 'stopping':
       return t('statusStopping')
-    case 'restarting':
-      return t('statusRestarting')
+    case 'running':
+      return t('statusRunning')
     default:
-      return state.running ? t('statusRunning') : t('statusStopped')
+      return t('statusStopped')
   }
 })
 
 const primaryProxyActionLabel = computed(() => {
-  switch (proxyOpState.value) {
+  switch (state.phase) {
     case 'starting':
-      return t('startInProgress')
+      return t('cancelStart')
     case 'stopping':
       return t('stopInProgress')
+    case 'running':
+      return t('stop')
     default:
-      return state.running ? t('stop') : t('start')
+      return t('start')
   }
 })
 
 const primaryProxyActionHint = computed(() => {
-  switch (proxyOpState.value) {
+  switch (state.phase) {
     case 'starting':
       return t('startSessionInProgress')
     case 'stopping':
       return t('stopSessionInProgress')
+    case 'running':
+      return t('stopSessionNow')
     default:
-      return state.running ? t('stopSessionNow') : t('startSessionNow')
+      return t('startSessionNow')
   }
 })
+
+const balanceAvailable = computed(() => config.nodes.length >= 2)
+
+const recentActivity = computed(() =>
+  logs.value
+    .filter((item) => !String(item.component || '').toLowerCase().includes('traffic'))
+    .slice(0, 5)
+)
 
 const humanBytes = (value: number): string => {
   if (!value) return '0 B'
@@ -419,11 +349,6 @@ const humanBytes = (value: number): string => {
     idx++
   }
   return `${v.toFixed(v < 10 && idx > 0 ? 2 : 1)} ${units[idx]}`
-}
-
-const humanTime = (unixMs: number): string => {
-  if (!unixMs) return '-'
-  return new Date(unixMs).toLocaleTimeString()
 }
 
 const formatLogTimestamp = (timestamp: string): string => {
@@ -468,37 +393,105 @@ const pushUiLog = (level: string, component: string, message: string) => {
   }
 }
 
-const stateErrorSnapshot: { lastError: string; routeSetupError: string } = {
-  lastError: '',
-  routeSetupError: '',
-}
+let lastSeenError = ''
 
 const ingestStateErrors = (next: RuntimeState) => {
   const nextLast = String(next.lastError || '').trim()
-  const nextRoute = String(next.routeSetupError || '').trim()
-  if (nextLast && nextLast !== stateErrorSnapshot.lastError) {
-    pushUiLog('error', 'runtime', nextLast)
+  if (nextLast && nextLast !== lastSeenError) pushUiLog('error', 'runtime', nextLast)
+  lastSeenError = nextLast
+}
+
+type I18nKey = Parameters<typeof t>[0]
+
+// Backend errors arrive as English text; translate the ones users actually meet.
+const errorPatterns: Array<[RegExp, I18nKey]> = [
+  [/incorrect administrator password/i, 'adminBadPassword'],
+  [/not allowed to use sudo/i, 'adminNotSudoer'],
+  [/password check timed out/i, 'adminTimeout'],
+  [/authorization was cancelled/i, 'adminCancelled'],
+  [/administrator privileges required/i, 'adminRequired'],
+  [/sudo or pkexec is required/i, 'errNoSudo'],
+  [/timed out waiting for the tunnel helper/i, 'errHelperTimeout'],
+  [/tunnel helper (disconnected|is not running)/i, 'errHelperGone'],
+  [/no nodes configured/i, 'errNoNode'],
+  [/address already in use/i, 'errPortInUse'],
+]
+
+const localizeError = (raw: unknown, fallback: I18nKey): string => {
+  let msg = String((raw as any)?.message ?? raw ?? '').trim()
+  if (!msg) return t(fallback)
+  let prefix = ''
+  const tun = /^TUN:\s*/i.exec(msg)
+  if (tun) {
+    prefix = `${t('tunFailed')}: `
+    msg = msg.slice(tun[0].length)
   }
-  if (nextRoute && nextRoute !== stateErrorSnapshot.routeSetupError) {
-    pushUiLog('error', 'route', nextRoute)
+  for (const [re, key] of errorPatterns) {
+    if (re.test(msg)) return prefix + t(key)
   }
-  stateErrorSnapshot.lastError = nextLast
-  stateErrorSnapshot.routeSetupError = nextRoute
+  return prefix + msg
+}
+
+// ---- administrator password (macOS / Linux sudo) ----
+const adminBusy = ref(false)
+const adminFormError = ref('')
+const hasAdminPrivileges = ref(true)
+
+const refreshAdminPrivileges = async () => {
+  try {
+    hasAdminPrivileges.value = await backendApi.tunHasPrivileges()
+  } catch {
+    hasAdminPrivileges.value = true
+  }
+}
+
+const submitAdminPassword = async (password: string) => {
+  if (adminBusy.value) return
+  adminBusy.value = true
+  adminFormError.value = ''
+  try {
+    await backendApi.tunAcquirePrivileges(password)
+    hasAdminPrivileges.value = true
+  } catch (e: any) {
+    adminFormError.value = localizeError(e, 'adminBadPassword')
+  } finally {
+    adminBusy.value = false
+  }
+}
+
+const cancelAdminPrompt = async () => {
+  adminFormError.value = ''
+  try {
+    await backendApi.tunCancelPrivileges()
+  } finally {
+    state.needsAdmin = false
+  }
+}
+
+const forgetAdminPassword = async () => {
+  await backendApi.tunDropPrivileges()
+  await refreshAdminPrivileges()
+  flash(t('adminForgotten'))
 }
 
 const refreshLANProxyInfo = async () => {
   try {
     const info = await backendApi.getLANProxyInfo()
     lanProxyInfo.value = {
-      port: Number(info?.port || 0) || config.core.localPort || 1080,
+      port: Number(info?.port || 0) || state.proxyPort || DEFAULT_PROXY_PORT,
       ips: Array.isArray(info?.ips) ? info.ips : [],
       ready: !!info?.ready,
     }
   } catch {
-    lanProxyInfo.value = {
-      ...lanProxyInfo.value,
-      port: config.core.localPort || 1080,
-    }
+    lanProxyInfo.value = { ...lanProxyInfo.value, port: state.proxyPort || DEFAULT_PROXY_PORT }
+  }
+}
+
+const refreshControllerInfo = async () => {
+  try {
+    controllerInfo.value = await backendApi.controllerInfo()
+  } catch {
+    controllerInfo.value = null
   }
 }
 
@@ -522,7 +515,6 @@ const pickNode = (node: NodeConfig) => {
 const resetEditableNode = () => {
   selectedNodeId.value = ''
   Object.assign(editableNode, emptyNode())
-  editableNode.localPort = config.core.localPort
 }
 
 const refreshBasics = async () => {
@@ -537,7 +529,7 @@ const refreshBasics = async () => {
     (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
   )
   ingestStateErrors(st)
-  await refreshLANProxyInfo()
+  await Promise.all([refreshLANProxyInfo(), refreshControllerInfo()])
   if (cfg.nodes.length > 0) {
     pickNode(cfg.nodes[0])
   } else {
@@ -561,41 +553,42 @@ const saveConfig = async (silentOrEvent: boolean | Event = false) => {
     await backendApi.saveConfig(cloneDeep(config))
     if (!silent) flash(t('saved'))
   } catch (e: any) {
-    flash(e?.message || t('saveFailed'), 'error')
+    flash(localizeError(e, 'saveFailed'), 'error')
   } finally {
     busy.value = false
   }
 }
 
-type I18nKey = Parameters<typeof t>[0]
+const syncState = async () => {
+  try {
+    const st = await backendApi.getState()
+    assignState(st)
+    ingestStateErrors(st)
+  } catch {
+    // the core:state event will catch up
+  }
+}
 
 const runProxyAction = async (
   opState: Exclude<ProxyOpState, 'idle'>,
   action: () => Promise<void>,
   successKey: I18nKey,
-  failKey: I18nKey
+  failKey: I18nKey,
+  expectRunning: boolean
 ) => {
   if (proxyOpBusy.value) return
   proxyOpBusy.value = true
   proxyOpState.value = opState
   try {
     await action()
-    flash(t(successKey))
+    await syncState()
+    // Waiting for the administrator password is not a failure; the prompt is up.
+    if (state.needsAdmin) return
+    // A start superseded by Stop resolves without error; do not announce it as success.
+    if (state.running === expectRunning) flash(t(successKey))
   } catch (e: any) {
-    if (isAdminRequiredError(e)) {
-      const ok = await ensureTunAdmin()
-      if (ok) {
-        try {
-          await action()
-          flash(t(successKey))
-          return
-        } catch (e2: any) {
-          flash(e2?.message || t(failKey), 'error')
-          return
-        }
-      }
-    }
-    flash(e?.message || t(failKey), 'error')
+    await syncState()
+    if (!state.needsAdmin) flash(localizeError(e, failKey), 'error')
   } finally {
     proxyOpState.value = 'idle'
     proxyOpBusy.value = false
@@ -603,15 +596,44 @@ const runProxyAction = async (
 }
 
 const startProxy = async () => {
-  await runProxyAction('starting', () => backendApi.startProxy({ withTun: config.tun.enabled }), 'started', 'startFailed')
+  await runProxyAction('starting', () => backendApi.startProxy({ withTun: config.tun.enabled }), 'started', 'startFailed', true)
 }
 
 const stopProxy = async () => {
-  await runProxyAction('stopping', () => backendApi.stopProxy(), 'stopped', 'stopFailed')
+  if (state.phase === 'starting') {
+    // Cancels the pending start; the start call resolves quietly.
+    try {
+      await backendApi.stopProxy()
+    } catch (e: any) {
+      flash(localizeError(e, 'stopFailed'), 'error')
+    }
+    return
+  }
+  await runProxyAction('stopping', () => backendApi.stopProxy(), 'stopped', 'stopFailed', false)
 }
 
 const restartProxy = async () => {
-  await runProxyAction('restarting', () => backendApi.restartProxy({ withTun: config.tun.enabled }), 'restarted', 'restartFailed')
+  await runProxyAction('restarting', () => backendApi.restartProxy({ withTun: config.tun.enabled }), 'restarted', 'restartFailed', true)
+}
+
+const toggleProxy = async () => {
+  if (state.phase === 'stopping') return
+  if (state.phase === 'running' || state.phase === 'starting') await stopProxy()
+  else await startProxy()
+}
+
+const repairNetwork = async () => {
+  if (repairBusy.value) return
+  repairBusy.value = true
+  try {
+    await backendApi.repairNetwork()
+    await syncState()
+    flash(t('repairDone'))
+  } catch (e: any) {
+    flash(localizeError(e, 'repairFailed'), 'error')
+  } finally {
+    repairBusy.value = false
+  }
 }
 
 const saveNode = async () => {
@@ -626,7 +648,7 @@ const saveNode = async () => {
     nodeEditorOpen.value = false
     flash(t('nodeSaved'))
   } catch (e: any) {
-    flash(e?.message || t('nodeSaveFailed'), 'error')
+    flash(localizeError(e, 'nodeSaveFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -646,20 +668,26 @@ const removeNode = async (id: string) => {
     await refreshBasics()
     flash(t('nodeDeleted'))
   } catch (e: any) {
-    flash(e?.message || t('deleteFailed'), 'error')
+    flash(localizeError(e, 'deleteFailed'), 'error')
   } finally {
     busy.value = false
   }
 }
 
 const switchNode = async (id: string) => {
+  if (id === BALANCE_NODE_ID && !balanceAvailable.value) {
+    flash(t('balanceNeedsTwo'), 'error')
+    return
+  }
+  const previous = config.activeNodeId
   busy.value = true
   try {
-    await backendApi.switchNode(id)
+    await backendApi.setActiveNode(id)
     config.activeNodeId = id
     flash(t('nodeSwitched'))
   } catch (e: any) {
-    flash(e?.message || t('switchFailed'), 'error')
+    config.activeNodeId = previous
+    flash(localizeError(e, 'switchFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -672,7 +700,7 @@ const exportShortlink = async (id: string) => {
     await Clipboard.SetText(link)
     flash(t('copied'))
   } catch (e: any) {
-    flash(e?.message || t('exportFailed'), 'error')
+    flash(localizeError(e, 'exportFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -685,7 +713,7 @@ const probeAll = async () => {
     state.latencies = results
     flash(t('latencyChecked'))
   } catch (e: any) {
-    flash(e?.message || t('probeFailed'), 'error')
+    flash(localizeError(e, 'probeFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -700,7 +728,7 @@ const probeNode = async (id: string) => {
     else state.latencies.push(result)
     flash(`${result.nodeName || t('node')} : ${result.connectOk ? `${result.latencyMs}ms` : result.error || t('failed')}`)
   } catch (e: any) {
-    flash(e?.message || t('probeFailed'), 'error')
+    flash(localizeError(e, 'probeFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -712,7 +740,7 @@ const autoBest = async () => {
     const best: LatencyResult = await backendApi.autoSelectLowestLatency()
     flash(`${t('switchedTo')} ${best.nodeName} (${best.latencyMs}ms)`)
   } catch (e: any) {
-    flash(e?.message || t('autoSelectFailed'), 'error')
+    flash(localizeError(e, 'autoSelectFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -741,7 +769,7 @@ const startReverse = async () => {
   try {
     await backendApi.startReverseForwarder()
   } catch (e: any) {
-    flash(e?.message || t('reverseStartFailed'), 'error')
+    flash(localizeError(e, 'reverseStartFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -752,9 +780,18 @@ const stopReverse = async () => {
   try {
     await backendApi.stopReverseForwarder()
   } catch (e: any) {
-    flash(e?.message || t('reverseStopFailed'), 'error')
+    flash(localizeError(e, 'reverseStopFailed'), 'error')
   } finally {
     busy.value = false
+  }
+}
+
+const refreshConnections = async () => {
+  try {
+    const items = await backendApi.getConnections()
+    connections.value = Array.isArray(items) ? items : []
+  } catch {
+    // transient while the core restarts
   }
 }
 
@@ -762,24 +799,10 @@ const closeConnection = async (id: string) => {
   connectionOpBusy.value = true
   try {
     await backendApi.closeConnection(id)
-    state.connections = state.connections.filter((x) => x.id !== id)
+    connections.value = connections.value.filter((x) => x.id !== id)
     flash(t('connectionClosed'))
   } catch (e: any) {
-    if (isAdminRequiredError(e)) {
-      const ok = await ensureTunAdmin()
-      if (ok) {
-        try {
-          await backendApi.closeConnection(id)
-          state.connections = state.connections.filter((x) => x.id !== id)
-          flash(t('connectionClosed'))
-          return
-        } catch (retryErr: any) {
-          flash(retryErr?.message || t('closeConnectionFailed'), 'error')
-          return
-        }
-      }
-    }
-    flash(e?.message || t('closeConnectionFailed'), 'error')
+    flash(localizeError(e, 'closeConnectionFailed'), 'error')
   } finally {
     connectionOpBusy.value = false
   }
@@ -789,13 +812,57 @@ const closeAllConnections = async () => {
   connectionOpBusy.value = true
   try {
     await backendApi.closeAllConnections()
-    state.connections = []
+    connections.value = []
     flash(t('allConnectionsClosed'))
   } catch (e: any) {
-    flash(e?.message || t('closeAllConnectionsFailed'), 'error')
+    flash(localizeError(e, 'closeAllConnectionsFailed'), 'error')
   } finally {
     connectionOpBusy.value = false
   }
+}
+
+const copyText = async (text: string) => {
+  try {
+    await Clipboard.SetText(text)
+    flash(t('copied'))
+  } catch (e: any) {
+    flash(localizeError(e, 'exportFailed'), 'error')
+  }
+}
+
+const copyControllerSecret = async () => {
+  const secret = controllerInfo.value?.secret || config.controller.secret
+  if (!secret) {
+    flash(t('controllerNoSecret'), 'error')
+    return
+  }
+  await copyText(secret)
+}
+
+const openBoard = async (board: ControllerBoard) => {
+  try {
+    await backendApi.openURL(board.url)
+  } catch (e: any) {
+    flash(localizeError(e, 'openFailed'), 'error')
+  }
+}
+
+const generateControllerSecret = () => {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  config.controller.secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const applyControllerSettings = async () => {
+  const port = Number(config.controller.port)
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === (state.proxyPort || DEFAULT_PROXY_PORT)) {
+    flash(t('controllerPortInvalid'), 'error')
+    return
+  }
+  config.controller.port = port
+  await saveConfig(true)
+  flash(t('controllerApplied'))
+  void refreshControllerInfo()
 }
 
 const addPortForward = () => {
@@ -852,7 +919,6 @@ type ShortlinkPayload = {
   k?: string
   a?: string
   e?: string
-  m?: number
   x?: boolean
   t?: string
   ts?: string[]
@@ -888,7 +954,6 @@ const applyShortlinkToEditable = (link: string, nameOverride = '', preferHostAsN
   editableNode.key = payload.k
   editableNode.aead = payload.e || 'chacha20-poly1305'
   editableNode.ascii = canonicalizeAsciiMode(payload.a || '')
-  editableNode.localPort = payload.m && payload.m > 0 ? payload.m : config.core.localPort
   editableNode.enablePureDownlink = !payload.x
   editableNode.customTable = ''
   editableNode.customTables = normalizedCustomTables(payload.ts, payload.t || '')
@@ -911,7 +976,7 @@ const parseShortlinkFromInput = () => {
     applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value)
     flash(t('shortlinkParsed'))
   } catch (e: any) {
-    flash(e?.message || t('shortlinkParseFailed'), 'error')
+    flash(localizeError(e, 'shortlinkParseFailed'), 'error')
   }
 }
 
@@ -926,7 +991,7 @@ const parseShortlinkFromClipboard = async () => {
     applyShortlinkToEditable(shortlinkInput.value, shortlinkName.value, true)
     flash(t('importedFromClipboard'))
   } catch (e: any) {
-    flash(e?.message || t('clipboardImportFailed'), 'error')
+    flash(localizeError(e, 'clipboardImportFailed'), 'error')
   }
 }
 
@@ -940,7 +1005,7 @@ const setRoutingMode = async (mode: ProxyMode) => {
     flash(t('routingApplied'))
   } catch (e: any) {
     config.routing.proxyMode = previous
-    flash(e?.message || t('saveFailed'), 'error')
+    flash(localizeError(e, 'saveFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -984,7 +1049,7 @@ const importNodeFromShortlink = async (rawText: string) => {
     }
     flash(t('importedFromClipboard'))
   } catch (e: any) {
-    flash(e?.message || t('clipboardImportFailed'), 'error')
+    flash(localizeError(e, 'clipboardImportFailed'), 'error')
   } finally {
     busy.value = false
   }
@@ -1045,31 +1110,10 @@ watch(
 
 watch(
   () => config.tun.enabled,
-  async (next, prev) => {
+  async () => {
     if (!loadReady.value || tunAutoSaveLock.value) return
-    if (skipTunEnabledAutoSaveOnce.value) {
-      skipTunEnabledAutoSaveOnce.value = false
-      return
-    }
-    if (next && !prev) {
-      const ok = await ensureTunAdmin()
-      if (!ok) {
-        skipTunEnabledAutoSaveOnce.value = true
-        config.tun.enabled = false
-        return
-      }
-    }
     await saveConfig(true)
     flash(t('tunAutoSaved'))
-  }
-)
-
-watch(
-  () => state.needsAdmin,
-  async (next) => {
-    if (!loadReady.value) return
-    if (!next) return
-    void ensureTunAdmin()
   }
 )
 
@@ -1087,20 +1131,76 @@ watch(
 )
 
 watch(
-  () => [state.running, config.core.localPort, config.activeNodeId],
+  () => [state.running, config.activeNodeId],
   () => {
     void refreshLANProxyInfo()
   }
 )
 
+watch(
+  () => state.phase,
+  (phase, prev) => {
+    if (phase === 'starting' && prev !== 'starting') {
+      trafficSamples.value = []
+      connections.value = []
+    }
+    if (phase === 'running') {
+      void refreshControllerInfo()
+      void refreshConnections()
+    }
+    if (phase === 'stopped') {
+      connections.value = []
+      void refreshControllerInfo()
+    }
+  }
+)
+
+let connectionsTimer: number | null = null
+const stopConnectionsPolling = () => {
+  if (connectionsTimer) {
+    window.clearInterval(connectionsTimer)
+    connectionsTimer = null
+  }
+}
+const syncConnectionsPolling = () => {
+  const wanted = currentTab.value === 'dashboard' && state.phase === 'running' && !document.hidden
+  if (!wanted) {
+    stopConnectionsPolling()
+    return
+  }
+  if (connectionsTimer) return
+  void refreshConnections()
+  connectionsTimer = window.setInterval(() => void refreshConnections(), 2000)
+}
+watch(() => [currentTab.value, state.phase], syncConnectionsPolling)
+
+const colorSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)')
+const onSystemSchemeChange = () => {
+  if (config.ui.theme === 'auto') applyDocumentTheme()
+}
+
 onMounted(async () => {
   applyDocumentTheme()
+  colorSchemeQuery?.addEventListener?.('change', onSystemSchemeChange)
   await refreshBasics()
-  await refreshUsage()
+  await Promise.all([refreshUsage(), refreshAdminPrivileges()])
   tunAutoSaveLock.value = false
   loadReady.value = true
   usageHistoryTimer = window.setInterval(() => refreshUsage(), 60_000)
   window.addEventListener('paste', onWindowPaste)
+  document.addEventListener('visibilitychange', syncConnectionsPolling)
+  syncConnectionsPolling()
+
+  Events.On('core:traffic', (event) => {
+    const tick = event.data as TrafficTick
+    if (!tick?.sample) return
+    const next = trafficSamples.value.length >= TRAFFIC_WINDOW ? trafficSamples.value.slice(1) : trafficSamples.value.slice()
+    next.push(tick.sample)
+    trafficSamples.value = next
+    state.traffic = tick.traffic
+    state.kernel.memoryBytes = tick.memoryBytes
+    state.connectionCount = tick.connectionCount
+  })
 
   Events.On('core:state', (event) => {
     pendingState = event.data as RuntimeState
@@ -1112,6 +1212,7 @@ onMounted(async () => {
       pendingState = null
       assignState(next)
       ingestStateErrors(next)
+      if (next.tunRunning) hasAdminPrivileges.value = true
     }, 80)
   })
 
@@ -1134,6 +1235,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   Events.Off('core:state')
+  Events.Off('core:traffic')
+  document.removeEventListener('visibilitychange', syncConnectionsPolling)
+  colorSchemeQuery?.removeEventListener?.('change', onSystemSchemeChange)
+  stopConnectionsPolling()
   Events.Off('core:log')
   window.removeEventListener('paste', onWindowPaste)
   if (stateFlushTimer) {
@@ -1163,22 +1268,31 @@ onUnmounted(() => {
     currentTab,
     navMain,
     navExtra,
-    sidebarCollapsed,
-    toggleSidebar,
+    localizeError,
+    flash,
+    adminBusy,
+    adminFormError,
+    hasAdminPrivileges,
+    submitAdminPassword,
+    cancelAdminPrompt,
+    forgetAdminPassword,
+    isMacLike,
+    isWindowsLike,
     busy,
     proxyOpBusy,
     proxyOpState,
     runtimeStatusLabel,
     primaryProxyActionLabel,
     primaryProxyActionHint,
+    balanceAvailable,
+    recentActivity,
+    trafficSamples,
+    connections,
+    controllerInfo,
+    repairBusy,
     notice,
     noticeType,
-    tunAdminModalOpen,
-    tunAdminPassword,
-    tunAdminBusy,
-    tunAdminError,
-    closeTunAdminModal,
-    submitTunAdminModal,
+    resolvedTheme,
     config,
     state,
     editableNode,
@@ -1200,14 +1314,20 @@ onUnmounted(() => {
     trafficProxyShare,
     trafficDirectShare,
     humanBytes,
-    humanTime,
     formatLogTimestamp,
     logLevelText,
     logComponentText,
     startProxy,
     stopProxy,
     restartProxy,
+    toggleProxy,
+    repairNetwork,
     switchNode,
+    copyText,
+    copyControllerSecret,
+    openBoard,
+    generateControllerSecret,
+    applyControllerSettings,
     detectDirectIP,
     detectProxyIP,
     closeConnection,

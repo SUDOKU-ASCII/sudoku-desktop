@@ -1,24 +1,72 @@
 package core
 
 import (
-	"context"
-	"errors"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"sync"
-	"syscall"
 	"time"
 )
 
+// lineWriter splits a byte stream into lines. Used as cmd.Stdout/Stderr so os/exec owns the
+// copying goroutines and cmd.Wait only returns once every byte has been delivered.
+type lineWriter struct {
+	mu     sync.Mutex
+	buf    []byte
+	onLine func(string)
+}
+
+const maxLineBytes = 64 * 1024
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		w.emit(w.buf[:i])
+		w.buf = w.buf[i+1:]
+	}
+	if len(w.buf) > maxLineBytes {
+		w.emit(w.buf)
+		w.buf = nil
+	} else if len(w.buf) == 0 {
+		w.buf = nil // release the backing array
+	}
+	return len(p), nil
+}
+
+func (w *lineWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.buf) > 0 {
+		w.emit(w.buf)
+		w.buf = nil
+	}
+}
+
+func (w *lineWriter) emit(b []byte) {
+	if w.onLine == nil {
+		return
+	}
+	line := string(bytes.TrimRight(b, "\r"))
+	if line != "" {
+		w.onLine(line)
+	}
+}
+
+// ManagedProcess supervises one child process.
 type ManagedProcess struct {
+	name string
+
 	mu      sync.RWMutex
-	name    string
 	cmd     *exec.Cmd
-	cancel  context.CancelFunc
-	running bool
-	done    chan error
+	done    chan struct{}
+	exitErr error
 }
 
 func NewManagedProcess(name string) *ManagedProcess {
@@ -28,115 +76,109 @@ func NewManagedProcess(name string) *ManagedProcess {
 func (p *ManagedProcess) Start(command string, args []string, env []string, workdir string, onLine func(string)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.running {
-		return fmt.Errorf("%s already running", p.name)
+	if p.done != nil {
+		select {
+		case <-p.done:
+		default:
+			return fmt.Errorf("%s already running", p.name)
+		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.Command(command, args...)
 	applyManagedProcessSysProcAttr(cmd)
 	cmd.Env = append(os.Environ(), env...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return fmt.Errorf("%s stdout pipe: %w", p.name, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return fmt.Errorf("%s stderr pipe: %w", p.name, err)
-	}
+	out := &lineWriter{onLine: onLine}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
-		cancel()
 		return fmt.Errorf("start %s: %w", p.name, err)
 	}
-	p.cmd = cmd
-	p.cancel = cancel
-	p.running = true
-	p.done = make(chan error, 1)
-	localDone := p.done
+	attachChildLifetime(cmd)
+	done := make(chan struct{})
+	p.cmd, p.done, p.exitErr = cmd, done, nil
 
 	go func() {
-		_ = readLinesPipe(ctx, stdout, onLine)
-	}()
-	go func() {
-		_ = readLinesPipe(ctx, stderr, onLine)
-	}()
-	go func() {
 		err := cmd.Wait()
-		localDone <- err
-		close(localDone)
+		out.flush()
 		p.mu.Lock()
-		defer p.mu.Unlock()
-		if p.cancel != nil {
-			p.cancel()
-		}
-		p.cancel = nil
-		p.cmd = nil
-		p.running = false
+		p.exitErr = err
+		p.mu.Unlock()
+		close(done)
 		if err != nil && onLine != nil {
 			onLine(fmt.Sprintf("%s exited: %v", p.name, err))
 		}
 	}()
-
 	return nil
 }
 
+// Stop asks the process to exit gracefully and kills it after timeout.
 func (p *ManagedProcess) Stop(timeout time.Duration) error {
-	p.mu.Lock()
-	if !p.running || p.cmd == nil {
-		p.mu.Unlock()
+	p.mu.RLock()
+	cmd, done := p.cmd, p.done
+	p.mu.RUnlock()
+	if cmd == nil || done == nil {
 		return nil
 	}
-	cmd := p.cmd
-	cancel := p.cancel
-	done := p.done
-	p.mu.Unlock()
-
-	if cmd.Process != nil {
-		if runtime.GOOS == "windows" {
-			_ = cmd.Process.Kill()
-		} else {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-		}
-	}
-
 	select {
-	case err, ok := <-done:
-		if cancel != nil {
-			cancel()
-		}
-		if !ok {
-			return nil
-		}
-		if err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return err
-		}
+	case <-done:
+		return nil
+	default:
+	}
+	terminateProcess(cmd)
+	select {
+	case <-done:
 		return nil
 	case <-time.After(timeout):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill()
+		select {
+		case <-done:
+			return nil
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("stop %s: timeout", p.name)
 		}
-		if cancel != nil {
-			cancel()
-		}
-		return fmt.Errorf("stop %s timeout", p.name)
 	}
 }
 
 func (p *ManagedProcess) IsRunning() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.running
+	if p.done == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// Done is closed when the current process exits. It is nil before the first Start.
+func (p *ManagedProcess) Done() <-chan struct{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.done
 }
 
 func (p *ManagedProcess) PID() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if p.cmd == nil || p.cmd.Process == nil {
+	if p.cmd == nil || p.cmd.Process == nil || !p.isRunningLocked() {
 		return 0
 	}
 	return p.cmd.Process.Pid
+}
+
+func (p *ManagedProcess) isRunningLocked() bool {
+	if p.done == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }

@@ -9,14 +9,29 @@ import { Create as $Create } from "@wailsio/runtime";
 // @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
+/**
+ * ActiveConnection is one live connection as reported by the core's /connections.
+ */
 export class ActiveConnection {
     "id": string;
     "network": string;
+    "type": string;
     "source": string;
     "destination": string;
+
+    /**
+     * "direct" | "proxy" | "reject"
+     */
     "direction": string;
-    "lastSeen": time$0.Time;
-    "hits": number;
+
+    /**
+     * outbound node name ("DIRECT" for direct)
+     */
+    "node": string;
+    "rule": string;
+    "upload": number;
+    "download": number;
+    "startedAt": time$0.Time;
 
     /** Creates a new ActiveConnection instance. */
     constructor($$source: Partial<ActiveConnection> = {}) {
@@ -25,6 +40,9 @@ export class ActiveConnection {
         }
         if (!("network" in $$source)) {
             this["network"] = "";
+        }
+        if (!("type" in $$source)) {
+            this["type"] = "";
         }
         if (!("source" in $$source)) {
             this["source"] = "";
@@ -35,11 +53,20 @@ export class ActiveConnection {
         if (!("direction" in $$source)) {
             this["direction"] = "";
         }
-        if (!("lastSeen" in $$source)) {
-            this["lastSeen"] = null;
+        if (!("node" in $$source)) {
+            this["node"] = "";
         }
-        if (!("hits" in $$source)) {
-            this["hits"] = 0;
+        if (!("rule" in $$source)) {
+            this["rule"] = "";
+        }
+        if (!("upload" in $$source)) {
+            this["upload"] = 0;
+        }
+        if (!("download" in $$source)) {
+            this["download"] = 0;
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = null;
         }
 
         Object.assign(this, $$source);
@@ -61,6 +88,7 @@ export class AppConfig {
     "routing": RoutingSettings;
     "tun": TunSettings;
     "core": CoreSettings;
+    "controller": ControllerSettings;
     "reverseClient": ReverseClientSettings;
     "reverseForward": ReverseForwarderSettings;
     "portForwards": PortForwardRule[];
@@ -86,6 +114,9 @@ export class AppConfig {
         }
         if (!("core" in $$source)) {
             this["core"] = (new CoreSettings());
+        }
+        if (!("controller" in $$source)) {
+            this["controller"] = (new ControllerSettings());
         }
         if (!("reverseClient" in $$source)) {
             this["reverseClient"] = (new ReverseClientSettings());
@@ -116,8 +147,9 @@ export class AppConfig {
         const $$createField5_0 = $$createType4;
         const $$createField6_0 = $$createType5;
         const $$createField7_0 = $$createType6;
-        const $$createField8_0 = $$createType8;
+        const $$createField8_0 = $$createType7;
         const $$createField9_0 = $$createType9;
+        const $$createField10_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("nodes" in $$parsedSource) {
             $$parsedSource["nodes"] = $$createField2_0($$parsedSource["nodes"]);
@@ -131,17 +163,20 @@ export class AppConfig {
         if ("core" in $$parsedSource) {
             $$parsedSource["core"] = $$createField5_0($$parsedSource["core"]);
         }
+        if ("controller" in $$parsedSource) {
+            $$parsedSource["controller"] = $$createField6_0($$parsedSource["controller"]);
+        }
         if ("reverseClient" in $$parsedSource) {
-            $$parsedSource["reverseClient"] = $$createField6_0($$parsedSource["reverseClient"]);
+            $$parsedSource["reverseClient"] = $$createField7_0($$parsedSource["reverseClient"]);
         }
         if ("reverseForward" in $$parsedSource) {
-            $$parsedSource["reverseForward"] = $$createField7_0($$parsedSource["reverseForward"]);
+            $$parsedSource["reverseForward"] = $$createField8_0($$parsedSource["reverseForward"]);
         }
         if ("portForwards" in $$parsedSource) {
-            $$parsedSource["portForwards"] = $$createField8_0($$parsedSource["portForwards"]);
+            $$parsedSource["portForwards"] = $$createField9_0($$parsedSource["portForwards"]);
         }
         if ("ui" in $$parsedSource) {
-            $$parsedSource["ui"] = $$createField9_0($$parsedSource["ui"]);
+            $$parsedSource["ui"] = $$createField10_0($$parsedSource["ui"]);
         }
         return new AppConfig($$parsedSource as Partial<AppConfig>);
     }
@@ -192,14 +227,171 @@ export class BandwidthSample {
     }
 }
 
+/**
+ * Board is a hosted web dashboard with the connection parameters pre-filled.
+ */
+export class Board {
+    "id": string;
+    "name": string;
+    "url": string;
+
+    /** Creates a new Board instance. */
+    constructor($$source: Partial<Board> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Board instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Board {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Board($$parsedSource as Partial<Board>);
+    }
+}
+
+/**
+ * ControllerInfo describes how to reach the external controller (for the web dashboard
+ * buttons and the "copy endpoint" helpers in the UI).
+ */
+export class ControllerInfo {
+    "ready": boolean;
+    "port": number;
+    "secret": string;
+    "allowLan": boolean;
+
+    /**
+     * http://127.0.0.1:9097
+     */
+    "url": string;
+
+    /**
+     * http://192.168.x.x:9097 (only when AllowLAN)
+     */
+    "lanUrls": string[];
+
+    /**
+     * ready-to-open dashboard links
+     */
+    "boards": Board[];
+
+    /**
+     * core version string reported by /version
+     */
+    "version": string;
+
+    /** Creates a new ControllerInfo instance. */
+    constructor($$source: Partial<ControllerInfo> = {}) {
+        if (!("ready" in $$source)) {
+            this["ready"] = false;
+        }
+        if (!("port" in $$source)) {
+            this["port"] = 0;
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = "";
+        }
+        if (!("allowLan" in $$source)) {
+            this["allowLan"] = false;
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("lanUrls" in $$source)) {
+            this["lanUrls"] = [];
+        }
+        if (!("boards" in $$source)) {
+            this["boards"] = [];
+        }
+        if (!("version" in $$source)) {
+            this["version"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ControllerInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ControllerInfo {
+        const $$createField5_0 = $$createType11;
+        const $$createField6_0 = $$createType13;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lanUrls" in $$parsedSource) {
+            $$parsedSource["lanUrls"] = $$createField5_0($$parsedSource["lanUrls"]);
+        }
+        if ("boards" in $$parsedSource) {
+            $$parsedSource["boards"] = $$createField6_0($$parsedSource["boards"]);
+        }
+        return new ControllerInfo($$parsedSource as Partial<ControllerInfo>);
+    }
+}
+
+/**
+ * ControllerSettings configures the Clash-compatible external controller that the
+ * Sudoku core exposes. The desktop app itself uses it for everything (mode/node
+ * switching, latency tests, traffic, connections) and web dashboards can connect too.
+ */
+export class ControllerSettings {
+    /**
+     * Port is the controller TCP port (1-65535).
+     */
+    "port": number;
+
+    /**
+     * Secret is the bearer token. Never empty: a random one is generated on first run.
+     */
+    "secret": string;
+
+    /**
+     * AllowLAN makes the controller listen on every interface instead of loopback only.
+     */
+    "allowLan": boolean;
+
+    /** Creates a new ControllerSettings instance. */
+    constructor($$source: Partial<ControllerSettings> = {}) {
+        if (!("port" in $$source)) {
+            this["port"] = 0;
+        }
+        if (!("secret" in $$source)) {
+            this["secret"] = "";
+        }
+        if (!("allowLan" in $$source)) {
+            this["allowLan"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ControllerSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ControllerSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ControllerSettings($$parsedSource as Partial<ControllerSettings>);
+    }
+}
+
 export class CoreSettings {
     "sudokuBinary": string;
     "hevBinary": string;
     "workingDir": string;
-    "localPort": number;
-    "allowLan": boolean;
     "logLevel": string;
     "autoStart": boolean;
+
+    /**
+     * AllowLAN lets other devices on the network use the local proxy port.
+     */
+    "allowLan": boolean;
 
     /** Creates a new CoreSettings instance. */
     constructor($$source: Partial<CoreSettings> = {}) {
@@ -212,17 +404,14 @@ export class CoreSettings {
         if (!("workingDir" in $$source)) {
             this["workingDir"] = "";
         }
-        if (!("localPort" in $$source)) {
-            this["localPort"] = 0;
-        }
-        if (!("allowLan" in $$source)) {
-            this["allowLan"] = false;
-        }
         if (!("logLevel" in $$source)) {
             this["logLevel"] = "";
         }
         if (!("autoStart" in $$source)) {
             this["autoStart"] = false;
+        }
+        if (!("allowLan" in $$source)) {
+            this["allowLan"] = false;
         }
 
         Object.assign(this, $$source);
@@ -331,10 +520,6 @@ export class IPDetectResult {
 export class KernelState {
     "version": string;
     "memoryBytes": number;
-    "latencyMs": number;
-    "latencyStatusCode": number;
-    "latencyCheckedAt": number;
-    "latencyError": string;
 
     /** Creates a new KernelState instance. */
     constructor($$source: Partial<KernelState> = {}) {
@@ -343,18 +528,6 @@ export class KernelState {
         }
         if (!("memoryBytes" in $$source)) {
             this["memoryBytes"] = 0;
-        }
-        if (!("latencyMs" in $$source)) {
-            this["latencyMs"] = 0;
-        }
-        if (!("latencyStatusCode" in $$source)) {
-            this["latencyStatusCode"] = 0;
-        }
-        if (!("latencyCheckedAt" in $$source)) {
-            this["latencyCheckedAt"] = 0;
-        }
-        if (!("latencyError" in $$source)) {
-            this["latencyError"] = "";
         }
 
         Object.assign(this, $$source);
@@ -393,7 +566,7 @@ export class LANProxyInfo {
      * Creates a new LANProxyInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): LANProxyInfo {
-        const $$createField1_0 = $$createType10;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ips" in $$parsedSource) {
             $$parsedSource["ips"] = $$createField1_0($$parsedSource["ips"]);
@@ -407,7 +580,6 @@ export class LatencyResult {
     "nodeName": string;
     "latencyMs": number;
     "connectOk": boolean;
-    "statusCode": number;
     "checkedAtUnix": number;
     "error": string;
 
@@ -424,9 +596,6 @@ export class LatencyResult {
         }
         if (!("connectOk" in $$source)) {
             this["connectOk"] = false;
-        }
-        if (!("statusCode" in $$source)) {
-            this["statusCode"] = 0;
         }
         if (!("checkedAtUnix" in $$source)) {
             this["checkedAtUnix"] = 0;
@@ -502,8 +671,6 @@ export class NodeConfig {
     "customTables": string[];
     "multiplex": string;
     "httpMask": HTTPMaskSettings;
-    "localPort": number;
-    "enabled": boolean;
 
     /** Creates a new NodeConfig instance. */
     constructor($$source: Partial<NodeConfig> = {}) {
@@ -546,12 +713,6 @@ export class NodeConfig {
         if (!("httpMask" in $$source)) {
             this["httpMask"] = (new HTTPMaskSettings());
         }
-        if (!("localPort" in $$source)) {
-            this["localPort"] = 0;
-        }
-        if (!("enabled" in $$source)) {
-            this["enabled"] = false;
-        }
 
         Object.assign(this, $$source);
     }
@@ -560,8 +721,8 @@ export class NodeConfig {
      * Creates a new NodeConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): NodeConfig {
-        const $$createField10_0 = $$createType10;
-        const $$createField12_0 = $$createType11;
+        const $$createField10_0 = $$createType11;
+        const $$createField12_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("customTables" in $$parsedSource) {
             $$parsedSource["customTables"] = $$createField10_0($$parsedSource["customTables"]);
@@ -572,6 +733,18 @@ export class NodeConfig {
         return new NodeConfig($$parsedSource as Partial<NodeConfig>);
     }
 }
+
+export enum Phase {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    PhaseStopped = "stopped",
+    PhaseStarting = "starting",
+    PhaseRunning = "running",
+    PhaseStopping = "stopping",
+};
 
 export class PortForwardRule {
     "id": string;
@@ -630,7 +803,7 @@ export class ReverseClientSettings {
      * Creates a new ReverseClientSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): ReverseClientSettings {
-        const $$createField1_0 = $$createType13;
+        const $$createField1_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("routes" in $$parsedSource) {
             $$parsedSource["routes"] = $$createField1_0($$parsedSource["routes"]);
@@ -726,7 +899,7 @@ export class RoutingSettings {
      * Creates a new RoutingSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): RoutingSettings {
-        const $$createField1_0 = $$createType10;
+        const $$createField1_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ruleUrls" in $$parsedSource) {
             $$parsedSource["ruleUrls"] = $$createField1_0($$parsedSource["ruleUrls"]);
@@ -736,24 +909,41 @@ export class RoutingSettings {
 }
 
 export class RuntimeState {
+    "phase": Phase;
     "running": boolean;
     "coreRunning": boolean;
     "tunRunning": boolean;
+    "tunRequested": boolean;
     "reverseRunning": boolean;
+    "systemProxyOn": boolean;
     "startedAtUnix": number;
     "activeNodeId": string;
     "activeNodeName": string;
+
+    /**
+     * Mode is the routing mode the core is using right now (pac|global|direct).
+     */
+    "mode": string;
     "lastError": string;
     "traffic": TrafficState;
     "kernel": KernelState;
     "latencies": LatencyResult[];
-    "connections": ActiveConnection[];
-    "recentLogs": LogEntry[];
+    "connectionCount": number;
+    "needsNetRepair": boolean;
+    "proxyPort": number;
+
+    /**
+     * NeedsAdmin asks the UI for the login password (macOS / Linux): an action that needs
+     * the tunnel helper is waiting for it. AdminError is set after a rejected password.
+     */
     "needsAdmin": boolean;
-    "routeSetupError": string;
+    "adminError": string;
 
     /** Creates a new RuntimeState instance. */
     constructor($$source: Partial<RuntimeState> = {}) {
+        if (!("phase" in $$source)) {
+            this["phase"] = Phase.$zero;
+        }
         if (!("running" in $$source)) {
             this["running"] = false;
         }
@@ -763,8 +953,14 @@ export class RuntimeState {
         if (!("tunRunning" in $$source)) {
             this["tunRunning"] = false;
         }
+        if (!("tunRequested" in $$source)) {
+            this["tunRequested"] = false;
+        }
         if (!("reverseRunning" in $$source)) {
             this["reverseRunning"] = false;
+        }
+        if (!("systemProxyOn" in $$source)) {
+            this["systemProxyOn"] = false;
         }
         if (!("startedAtUnix" in $$source)) {
             this["startedAtUnix"] = 0;
@@ -774,6 +970,9 @@ export class RuntimeState {
         }
         if (!("activeNodeName" in $$source)) {
             this["activeNodeName"] = "";
+        }
+        if (!("mode" in $$source)) {
+            this["mode"] = "";
         }
         if (!("lastError" in $$source)) {
             this["lastError"] = "";
@@ -787,17 +986,20 @@ export class RuntimeState {
         if (!("latencies" in $$source)) {
             this["latencies"] = [];
         }
-        if (!("connections" in $$source)) {
-            this["connections"] = [];
+        if (!("connectionCount" in $$source)) {
+            this["connectionCount"] = 0;
         }
-        if (!("recentLogs" in $$source)) {
-            this["recentLogs"] = [];
+        if (!("needsNetRepair" in $$source)) {
+            this["needsNetRepair"] = false;
+        }
+        if (!("proxyPort" in $$source)) {
+            this["proxyPort"] = 0;
         }
         if (!("needsAdmin" in $$source)) {
             this["needsAdmin"] = false;
         }
-        if (!("routeSetupError" in $$source)) {
-            this["routeSetupError"] = "";
+        if (!("adminError" in $$source)) {
+            this["adminError"] = "";
         }
 
         Object.assign(this, $$source);
@@ -807,26 +1009,18 @@ export class RuntimeState {
      * Creates a new RuntimeState instance from a string or object.
      */
     static createFrom($$source: any = {}): RuntimeState {
-        const $$createField8_0 = $$createType14;
-        const $$createField9_0 = $$createType15;
-        const $$createField10_0 = $$createType17;
-        const $$createField11_0 = $$createType19;
-        const $$createField12_0 = $$createType21;
+        const $$createField12_0 = $$createType17;
+        const $$createField13_0 = $$createType18;
+        const $$createField14_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("traffic" in $$parsedSource) {
-            $$parsedSource["traffic"] = $$createField8_0($$parsedSource["traffic"]);
+            $$parsedSource["traffic"] = $$createField12_0($$parsedSource["traffic"]);
         }
         if ("kernel" in $$parsedSource) {
-            $$parsedSource["kernel"] = $$createField9_0($$parsedSource["kernel"]);
+            $$parsedSource["kernel"] = $$createField13_0($$parsedSource["kernel"]);
         }
         if ("latencies" in $$parsedSource) {
-            $$parsedSource["latencies"] = $$createField10_0($$parsedSource["latencies"]);
-        }
-        if ("connections" in $$parsedSource) {
-            $$parsedSource["connections"] = $$createField11_0($$parsedSource["connections"]);
-        }
-        if ("recentLogs" in $$parsedSource) {
-            $$parsedSource["recentLogs"] = $$createField12_0($$parsedSource["recentLogs"]);
+            $$parsedSource["latencies"] = $$createField14_0($$parsedSource["latencies"]);
         }
         return new RuntimeState($$parsedSource as Partial<RuntimeState>);
     }
@@ -860,12 +1054,8 @@ export class TrafficState {
     "estimatedDirectRx": number;
     "estimatedProxyTx": number;
     "estimatedProxyRx": number;
-    "directConnDecisions": number;
-    "proxyConnDecisions": number;
-    "recentBandwidth": BandwidthSample[];
-    "interface": string;
-    "interfaceFound": boolean;
-    "lastSampleUnixMillis": number;
+    "directConns": number;
+    "proxyConns": number;
 
     /** Creates a new TrafficState instance. */
     constructor($$source: Partial<TrafficState> = {}) {
@@ -887,23 +1077,11 @@ export class TrafficState {
         if (!("estimatedProxyRx" in $$source)) {
             this["estimatedProxyRx"] = 0;
         }
-        if (!("directConnDecisions" in $$source)) {
-            this["directConnDecisions"] = 0;
+        if (!("directConns" in $$source)) {
+            this["directConns"] = 0;
         }
-        if (!("proxyConnDecisions" in $$source)) {
-            this["proxyConnDecisions"] = 0;
-        }
-        if (!("recentBandwidth" in $$source)) {
-            this["recentBandwidth"] = [];
-        }
-        if (!("interface" in $$source)) {
-            this["interface"] = "";
-        }
-        if (!("interfaceFound" in $$source)) {
-            this["interfaceFound"] = false;
-        }
-        if (!("lastSampleUnixMillis" in $$source)) {
-            this["lastSampleUnixMillis"] = 0;
+        if (!("proxyConns" in $$source)) {
+            this["proxyConns"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -913,12 +1091,52 @@ export class TrafficState {
      * Creates a new TrafficState instance from a string or object.
      */
     static createFrom($$source: any = {}): TrafficState {
-        const $$createField8_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("recentBandwidth" in $$parsedSource) {
-            $$parsedSource["recentBandwidth"] = $$createField8_0($$parsedSource["recentBandwidth"]);
-        }
         return new TrafficState($$parsedSource as Partial<TrafficState>);
+    }
+}
+
+/**
+ * TrafficTick is the once-per-second payload of the traffic event.
+ */
+export class TrafficTick {
+    "sample": BandwidthSample;
+    "traffic": TrafficState;
+    "memoryBytes": number;
+    "connectionCount": number;
+
+    /** Creates a new TrafficTick instance. */
+    constructor($$source: Partial<TrafficTick> = {}) {
+        if (!("sample" in $$source)) {
+            this["sample"] = (new BandwidthSample());
+        }
+        if (!("traffic" in $$source)) {
+            this["traffic"] = (new TrafficState());
+        }
+        if (!("memoryBytes" in $$source)) {
+            this["memoryBytes"] = 0;
+        }
+        if (!("connectionCount" in $$source)) {
+            this["connectionCount"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TrafficTick instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TrafficTick {
+        const $$createField0_0 = $$createType21;
+        const $$createField1_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("sample" in $$parsedSource) {
+            $$parsedSource["sample"] = $$createField0_0($$parsedSource["sample"]);
+        }
+        if ("traffic" in $$parsedSource) {
+            $$parsedSource["traffic"] = $$createField1_0($$parsedSource["traffic"]);
+        }
+        return new TrafficTick($$parsedSource as Partial<TrafficTick>);
     }
 }
 
@@ -1095,22 +1313,20 @@ const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = RoutingSettings.createFrom;
 const $$createType3 = TunSettings.createFrom;
 const $$createType4 = CoreSettings.createFrom;
-const $$createType5 = ReverseClientSettings.createFrom;
-const $$createType6 = ReverseForwarderSettings.createFrom;
-const $$createType7 = PortForwardRule.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = UISettings.createFrom;
-const $$createType10 = $Create.Array($Create.Any);
-const $$createType11 = HTTPMaskSettings.createFrom;
-const $$createType12 = ReverseRoute.createFrom;
+const $$createType5 = ControllerSettings.createFrom;
+const $$createType6 = ReverseClientSettings.createFrom;
+const $$createType7 = ReverseForwarderSettings.createFrom;
+const $$createType8 = PortForwardRule.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = UISettings.createFrom;
+const $$createType11 = $Create.Array($Create.Any);
+const $$createType12 = Board.createFrom;
 const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = TrafficState.createFrom;
-const $$createType15 = KernelState.createFrom;
-const $$createType16 = LatencyResult.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = ActiveConnection.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = LogEntry.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = BandwidthSample.createFrom;
-const $$createType23 = $Create.Array($$createType22);
+const $$createType14 = HTTPMaskSettings.createFrom;
+const $$createType15 = ReverseRoute.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = TrafficState.createFrom;
+const $$createType18 = KernelState.createFrom;
+const $$createType19 = LatencyResult.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = BandwidthSample.createFrom;

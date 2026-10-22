@@ -14,11 +14,13 @@ function configure() {
     Object.freeze(Object.assign($Create.Events, {
         "core:log": $$createType0,
         "core:state": $$createType1,
+        "core:traffic": $$createType2,
     }));
 }
 
 // Private type creation functions
 const $$createType0 = core$0.LogEntry.createFrom;
 const $$createType1 = core$0.RuntimeState.createFrom;
+const $$createType2 = core$0.TrafficTick.createFrom;
 
 configure();

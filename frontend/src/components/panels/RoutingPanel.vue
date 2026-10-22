@@ -1,158 +1,131 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { AppConfig, ProxyMode } from '../../types'
+import { ArrowDown, ArrowUp, CircleAlert, CircleCheck, LoaderCircle, Plus, Trash2 } from 'lucide-vue-next'
+import { useApp } from '../../composables/appContext'
+import type { ProxyMode } from '../../types'
 
-const props = defineProps<{
-  t: (key: any) => string
-  config: AppConfig
-  customRulesValidation: { status: 'idle' | 'checking' | 'ok' | 'error'; message: string }
-  setRoutingMode: (mode: ProxyMode) => void
-  addPacRule: () => void
-  removePacRule: (idx: number) => void
-  normalizePacRules: () => void
-  saveConfig: () => void
-}>()
+const { t, config, customRulesValidation, setRoutingMode, addPacRule, removePacRule, normalizePacRules, saveConfig } = useApp()
 
-const isRejectRule = (raw: string) => /^[!！]/.test(raw.trim())
-const isProxyRule = (raw: string) => /^[-_]/.test(raw.trim())
+type RuleKind = 'direct' | 'proxy' | 'reject'
 
-const enabledRuleCount = computed(() => props.config.routing.ruleUrls.length)
-const rejectRuleCount = computed(() => props.config.routing.ruleUrls.filter((rule) => isRejectRule(rule)).length)
-const proxyRuleCount = computed(() => props.config.routing.ruleUrls.filter((rule) => isProxyRule(rule)).length)
-const customRuleCount = computed(() => props.config.routing.customRules.split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith('#')).length)
+const modes: Array<{ value: ProxyMode; label: Parameters<typeof t>[0]; hint: Parameters<typeof t>[0] }> = [
+  { value: 'pac', label: 'modePac', hint: 'modePacHint' },
+  { value: 'global', label: 'modeGlobal', hint: 'modeGlobalHint' },
+  { value: 'direct', label: 'modeDirect', hint: 'modeDirectHint' },
+]
+const modeHint = computed(() => modes.find((m) => m.value === config.routing.proxyMode)?.hint ?? 'modePacHint')
 
-const ruleName = (raw: string) => {
-  const text = raw.replace(/^[!！\-_]/, '').trim()
-  try {
-    const url = new URL(text)
-    const last = url.pathname.split('/').filter(Boolean).pop() || url.hostname
-    return decodeURIComponent(last).replace(/\.(yaml|yml|list|txt)$/i, '')
-  } catch {
-    return text || props.t('pacRule')
-  }
+// A rule URL carries its action as a prefix: none = direct, "-" = proxy, "!" = reject.
+const kindOf = (raw: string): RuleKind => (/^\s*[!！]/.test(raw) ? 'reject' : /^\s*[-_]/.test(raw) ? 'proxy' : 'direct')
+const bodyOf = (raw: string) => raw.replace(/^\s*[!！\-_]\s*/, '')
+const prefix: Record<RuleKind, string> = { direct: '', proxy: '-', reject: '!' }
+
+const setKind = (idx: number, kind: RuleKind) => {
+  config.routing.ruleUrls[idx] = prefix[kind] + bodyOf(config.routing.ruleUrls[idx])
+}
+const setBody = (idx: number, value: string) => {
+  config.routing.ruleUrls[idx] = prefix[kindOf(config.routing.ruleUrls[idx])] + value
 }
 
-const ruleKindText = (raw: string) => isRejectRule(raw) ? props.t('rejectRule') : isProxyRule(raw) ? props.t('proxyRule') : props.t('directRule')
-const ruleKindClass = (raw: string) => isRejectRule(raw) ? 'reject' : isProxyRule(raw) ? 'proxy' : 'ok'
-
-const moveRule = (idx: number, delta: -1 | 1) => {
+const move = (idx: number, delta: -1 | 1) => {
+  const rows = config.routing.ruleUrls
   const next = idx + delta
-  if (next < 0 || next >= props.config.routing.ruleUrls.length) return
-  const rows = props.config.routing.ruleUrls
-  const item = rows[idx]
-  rows.splice(idx, 1)
+  if (next < 0 || next >= rows.length) return
+  const [item] = rows.splice(idx, 1)
   rows.splice(next, 0, item)
+}
+
+const apply = async () => {
+  normalizePacRules()
+  await saveConfig()
 }
 </script>
 
 <template>
-  <main class="panel routing-page">
-    <section class="routing-layout">
-      <section class="routing-main">
-        <article class="deck-card mode-card">
-          <div class="card-head">
-            <div>
-              <h3>{{ props.t('proxyMode') }}</h3>
-              <p>{{ props.t('proxyModeHint') }}</p>
-            </div>
-          </div>
-          <div class="mode-segment xl">
-            <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'global' }" @click="props.setRoutingMode('global')">{{ props.t('modeGlobal') }}</button>
-            <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'direct' }" @click="props.setRoutingMode('direct')">{{ props.t('modeDirect') }}</button>
-            <button class="mode-btn" :class="{ active: props.config.routing.proxyMode === 'pac' }" @click="props.setRoutingMode('pac')">{{ props.t('modePac') }}</button>
-          </div>
-        </article>
-
-        <article class="deck-card pac-card">
-          <div class="card-head">
-            <div>
-              <h3>{{ props.t('pacRules') }}</h3>
-              <p>{{ props.t('pacRulesHint') }}</p>
-            </div>
-            <button class="btn mini" @click="props.addPacRule">{{ props.t('addRule') }}</button>
-          </div>
-          <div class="pac-pro-list">
-            <div v-for="(rule, idx) in props.config.routing.ruleUrls" :key="idx" class="pac-pro-row" :class="{ reject: isRejectRule(rule), proxy: isProxyRule(rule) }">
-              <button class="order-btn" type="button" :disabled="idx === 0" :title="props.t('moveUp')" @click="moveRule(idx, -1)">↑</button>
-              <button class="order-btn" type="button" :disabled="idx === props.config.routing.ruleUrls.length - 1" :title="props.t('moveDown')" @click="moveRule(idx, 1)">↓</button>
-              <div class="pac-rule-copy">
-                <strong>{{ ruleName(rule) }}</strong>
-                <input
-                  v-model="props.config.routing.ruleUrls[idx]"
-                  placeholder="https://... (直连), -https://... (代理), !https://... (拒绝)"
-                />
-              </div>
-              <span class="rule-state" :class="ruleKindClass(rule)">{{ ruleKindText(rule) }}</span>
-              <button class="btn mini danger" @click="props.removePacRule(idx)">{{ props.t('delete') }}</button>
-            </div>
-            <p v-if="props.config.routing.ruleUrls.length === 0" class="empty-state">{{ props.t('noPacUrl') }}</p>
-          </div>
-        </article>
-
-        <article class="deck-card custom-rules-card">
-          <div class="card-head">
-            <div>
-              <h3>{{ props.t('customRules') }}</h3>
-              <p>{{ props.t('customRulesYamlHint') }}</p>
-            </div>
-            <label class="switch-row compact inline-switch">
-              <span>{{ props.t('customRulesEnabled') }}</span>
-              <span class="switch-control">
-                <input type="checkbox" v-model="props.config.routing.customRulesEnabled" />
-                <span class="switch-ui" />
-              </span>
-            </label>
-          </div>
-          <textarea
-            v-model="props.config.routing.customRules"
-            rows="14"
-            :disabled="!props.config.routing.customRulesEnabled"
-            :placeholder="props.t('customRulesPlaceholder')"
-            class="wide-editor code-editor"
-          />
-          <div class="editor-foot">
-            <p class="yaml-state" :class="props.customRulesValidation.status">
-              {{ props.customRulesValidation.message || props.t('customRulesYamlHint') }}
-            </p>
-            <button class="btn mini ghost" @click="props.normalizePacRules">{{ props.t('format') }}</button>
-          </div>
-        </article>
-      </section>
-
-      <aside class="routing-aside">
-        <article class="deck-card">
-          <div class="card-head">
-            <h3>{{ props.t('ruleOverview') }}</h3>
-          </div>
-          <dl class="status-list">
-            <div><dt>{{ props.t('pacRuleCount') }}</dt><dd>{{ props.config.routing.ruleUrls.length }}</dd></div>
-            <div><dt>{{ props.t('enabledRules') }}</dt><dd>{{ enabledRuleCount }}</dd></div>
-            <div><dt>{{ props.t('rejectRules') }}</dt><dd>{{ rejectRuleCount }}</dd></div>
-            <div><dt>{{ props.t('proxyRules') }}</dt><dd>{{ proxyRuleCount }}</dd></div>
-            <div><dt>{{ props.t('customRuleCount') }}</dt><dd>{{ customRuleCount }}</dd></div>
-            <div><dt>{{ props.t('proxyMode') }}</dt><dd>{{ props.config.routing.proxyMode.toUpperCase() }}</dd></div>
-          </dl>
-        </article>
-
-        <article class="deck-card">
-          <div class="card-head">
-            <h3>{{ props.t('tips') }}</h3>
-          </div>
-          <ul class="hint-list">
-            <li>{{ props.t('routingTipOrder') }}</li>
-            <li>{{ props.t('routingTipPriority') }}</li>
-            <li>{{ props.t('routingTipCustom') }}</li>
-          </ul>
-        </article>
-
-        <article class="deck-card quick-card">
-          <div class="card-head">
-            <h3>{{ props.t('quickActions') }}</h3>
-          </div>
-          <button class="btn ghost" @click="props.normalizePacRules">{{ props.t('format') }}</button>
-          <button class="btn" @click="props.normalizePacRules(); props.saveConfig()">{{ props.t('apply') }}</button>
-        </article>
-      </aside>
+  <div class="page routing">
+    <section class="card">
+      <div class="card-body pad-top">
+        <div class="segmented block" role="radiogroup" :aria-label="t('proxyMode')">
+          <button
+            v-for="m in modes"
+            :key="m.value"
+            type="button"
+            role="radio"
+            :aria-checked="config.routing.proxyMode === m.value"
+            :class="{ active: config.routing.proxyMode === m.value }"
+            @click="setRoutingMode(m.value)"
+          >
+            {{ t(m.label) }}
+          </button>
+        </div>
+        <p class="hint">{{ t(modeHint) }}</p>
+      </div>
     </section>
-  </main>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>{{ t('pacRules') }} <span class="count num">{{ config.routing.ruleUrls.length }}</span></h2>
+        <div class="actions">
+          <button class="icon-btn" :title="t('addRule')" @click="addPacRule"><Plus :size="16" aria-hidden="true" /></button>
+        </div>
+      </div>
+      <div v-if="config.routing.ruleUrls.length" class="list">
+        <div v-for="(rule, idx) in config.routing.ruleUrls" :key="idx" class="list-item rule-row">
+          <select
+            class="select rule-kind"
+            :class="kindOf(rule)"
+            :value="kindOf(rule)"
+            :aria-label="t('ruleAction')"
+            @change="setKind(idx, ($event.target as HTMLSelectElement).value as RuleKind)"
+          >
+            <option value="direct">{{ t('direct') }}</option>
+            <option value="proxy">{{ t('proxy') }}</option>
+            <option value="reject">{{ t('reject') }}</option>
+          </select>
+          <input
+            class="input mono"
+            :value="bodyOf(rule)"
+            placeholder="https://…"
+            spellcheck="false"
+            @input="setBody(idx, ($event.target as HTMLInputElement).value)"
+          />
+          <div class="list-actions">
+            <button class="icon-btn" :disabled="idx === 0" :title="t('moveUp')" @click="move(idx, -1)"><ArrowUp :size="14" aria-hidden="true" /></button>
+            <button class="icon-btn" :disabled="idx === config.routing.ruleUrls.length - 1" :title="t('moveDown')" @click="move(idx, 1)"><ArrowDown :size="14" aria-hidden="true" /></button>
+            <button class="icon-btn danger" :title="t('delete')" @click="removePacRule(idx)"><Trash2 :size="14" aria-hidden="true" /></button>
+          </div>
+        </div>
+      </div>
+      <p v-else class="empty">{{ t('noPacUrl') }}</p>
+      <p class="hint card-note">{{ t('pacRulesHint') }}</p>
+    </section>
+
+    <section class="card">
+      <label class="card-head">
+        <h2>{{ t('customRules') }}</h2>
+        <span class="actions"><span class="switch"><input v-model="config.routing.customRulesEnabled" type="checkbox" /><i /></span></span>
+      </label>
+      <div v-if="config.routing.customRulesEnabled" class="card-body">
+        <textarea
+          v-model="config.routing.customRules"
+          class="textarea mono"
+          wrap="off"
+          rows="9"
+          spellcheck="false"
+          :placeholder="t('customRulesPlaceholder')"
+        />
+        <p class="validation" :class="customRulesValidation.status">
+          <LoaderCircle v-if="customRulesValidation.status === 'checking'" :size="14" class="spin" aria-hidden="true" />
+          <CircleCheck v-else-if="customRulesValidation.status === 'ok'" :size="14" aria-hidden="true" />
+          <CircleAlert v-else-if="customRulesValidation.status === 'error'" :size="14" aria-hidden="true" />
+          <span>{{ customRulesValidation.message || t('customRulesYamlHint') }}</span>
+        </p>
+      </div>
+      <p v-else class="hint card-note">{{ t('customRulesYamlHint') }}</p>
+    </section>
+
+    <div class="page-actions">
+      <button class="btn primary" @click="apply">{{ t('apply') }}</button>
+    </div>
+  </div>
 </template>

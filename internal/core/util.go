@@ -1,13 +1,10 @@
 package core
 
 import (
-	"bufio"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,27 +72,7 @@ func writeJSONFile(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, buf, 0o644)
-}
-
-func readLinesPipe(ctx context.Context, r io.Reader, onLine func(string)) error {
-	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 1024), 1024*1024)
-	for s.Scan() {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-		line := strings.TrimRight(s.Text(), "\r\n")
-		if onLine != nil {
-			onLine(line)
-		}
-	}
-	if errors.Is(s.Err(), io.EOF) {
-		return nil
-	}
-	return s.Err()
+	return writeFileAtomic(path, buf, 0o600)
 }
 
 func levelFromLine(line string) string {
@@ -171,37 +148,7 @@ func trimComponentPrefix(message, component string) string {
 	return msg
 }
 
-func isLikelyPermissionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrAdminRequired) {
-		return true
-	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, "permission denied") ||
-		strings.Contains(msg, "operation not permitted") ||
-		strings.Contains(msg, "access is denied") ||
-		strings.Contains(msg, "requires elevation") ||
-		strings.Contains(msg, "administrator") ||
-		strings.Contains(msg, "not permitted")
-}
+// ErrAdminRequired reports that an operation needs administrator/root rights.
+var ErrAdminRequired = errors.New("administrator privileges required")
 
-func tailFile(path string, maxLines int) string {
-	if maxLines <= 0 {
-		maxLines = 30
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	if len(raw) > 32*1024 {
-		raw = raw[len(raw)-32*1024:]
-	}
-	lines := strings.Split(string(raw), "\n")
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	out := strings.TrimSpace(strings.Join(lines, "\n"))
-	return out
-}
+func strconvBase36(v int64) string { return strconv.FormatInt(v, 36) }

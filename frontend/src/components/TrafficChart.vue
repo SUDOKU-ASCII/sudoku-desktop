@@ -1,357 +1,235 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { BandwidthSample } from '../types'
+import { useI18n } from '../i18n'
 
-const props = defineProps<{
-  samples: BandwidthSample[]
-}>()
+const props = withDefaults(defineProps<{ samples: BandwidthSample[]; window?: number }>(), { window: 60 })
 
-const width = 700
-const height = 216
-const paddingX = 16
-const paddingY = 18
+const { t } = useI18n()
 
-const svgRef = ref<SVGSVGElement | null>(null)
-const hoverIndex = ref<number | null>(null)
+const W = 600
+const H = 120
+const PAD_TOP = 8
 
-const rawTotalSeries = computed(() => props.samples.map((s) => (s.txBps || 0) + (s.rxBps || 0)))
-const rawTxSeries = computed(() => props.samples.map((s) => s.txBps || 0))
-const rawRxSeries = computed(() => props.samples.map((s) => s.rxBps || 0))
-const rawDirectSeries = computed(() => props.samples.map((s) => s.directBps || 0))
-const rawProxySeries = computed(() => props.samples.map((s) => s.proxyBps || 0))
-
-const movingAverage = (arr: number[], windowSize = 4): number[] => {
-  if (arr.length <= 2) return [...arr]
-  const out = new Array<number>(arr.length)
-  for (let i = 0; i < arr.length; i++) {
-    const start = Math.max(0, i-windowSize + 1)
-    let sum = 0
-    let count = 0
-    for (let j = start; j <= i; j++) {
-      sum += arr[j]
-      count++
-    }
-    out[i] = count > 0 ? sum / count : arr[i]
+const rate = (bps: number) => {
+  if (!bps || bps < 1) return '0 B/s'
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let v = bps
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
   }
-  return out
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`
 }
 
-const totalSeries = computed(() => movingAverage(rawTotalSeries.value, 4))
-const directSeries = computed(() => movingAverage(rawDirectSeries.value, 3))
-const proxySeries = computed(() => movingAverage(rawProxySeries.value, 3))
-
-const maxValue = computed(() => Math.max(...totalSeries.value, ...directSeries.value, ...proxySeries.value, 1))
-const peakRaw = computed(() => Math.max(...rawTotalSeries.value, ...rawDirectSeries.value, ...rawProxySeries.value, 1))
-const peakTxRaw = computed(() => Math.max(...rawTxSeries.value, 0))
-const peakRxRaw = computed(() => Math.max(...rawRxSeries.value, 0))
-
-const toPoints = (arr: number[], max: number): Array<{ x: number; y: number }> => {
-  if (arr.length === 0) return []
-  const spanX = width - paddingX * 2
-  const spanY = height - paddingY * 2
-  const step = arr.length > 1 ? spanX / (arr.length - 1) : 0
-  const denom = Math.max(max, 1)
-  return arr.map((v, i) => ({
-    x: paddingX + i * step,
-    y: height - paddingY - (v / denom) * spanY,
-  }))
+// Round the scale up to a 1/2/5 step so the axis label reads cleanly.
+const niceMax = (v: number) => {
+  if (v <= 1024) return 1024
+  const exp = Math.pow(10, Math.floor(Math.log10(v)))
+  for (const m of [1, 2, 5, 10]) if (v <= m * exp) return m * exp
+  return 10 * exp
 }
 
-const smoothPath = (points: Array<{ x: number; y: number }>): string => {
-  if (points.length === 0) return ''
-  if (points.length === 1) return `M${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`
-  let d = `M${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] ?? points[i]
-    const p1 = points[i]
-    const p2 = points[i + 1]
-    const p3 = points[i + 2] ?? p2
-    const cp1x = p1.x + (p2.x - p0.x) / 6
-    const cp1y = p1.y + (p2.y - p0.y) / 6
-    const cp2x = p2.x - (p3.x - p1.x) / 6
-    const cp2y = p2.y - (p3.y - p1.y) / 6
-    d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`
+const points = computed(() => props.samples.slice(-props.window))
+const maxValue = computed(() => niceMax(Math.max(0, ...points.value.map((s) => Math.max(s.txBps, s.rxBps)))))
+
+const xAt = (i: number) => {
+  const offset = props.window - points.value.length
+  return ((offset + i) / (props.window - 1)) * W
+}
+const yAt = (v: number) => H - (Math.max(0, v) / maxValue.value) * (H - PAD_TOP)
+
+// Monotone cubic interpolation (Fritsch–Carlson): smooth without overshooting below zero.
+const monotonePath = (xs: number[], ys: number[]) => {
+  const n = xs.length
+  if (n === 0) return ''
+  if (n === 1) return `M${xs[0]},${ys[0]}`
+  const dx: number[] = []
+  const m: number[] = []
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(xs[i + 1] - xs[i])
+    m.push((ys[i + 1] - ys[i]) / dx[i])
+  }
+  const tan: number[] = [m[0]]
+  for (let i = 1; i < n - 1; i++) {
+    tan.push(m[i - 1] * m[i] <= 0 ? 0 : (3 * (dx[i - 1] + dx[i])) / ((2 * dx[i] + dx[i - 1]) / m[i - 1] + (dx[i] + 2 * dx[i - 1]) / m[i]))
+  }
+  tan.push(m[n - 2])
+  let d = `M${xs[0].toFixed(1)},${ys[0].toFixed(1)}`
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3
+    d += `C${(xs[i] + h).toFixed(1)},${(ys[i] + h * tan[i]).toFixed(1)} ${(xs[i + 1] - h).toFixed(1)},${(ys[i + 1] - h * tan[i + 1]).toFixed(1)} ${xs[i + 1].toFixed(1)},${ys[i + 1].toFixed(1)}`
   }
   return d
 }
 
-const totalPoints = computed(() => toPoints(totalSeries.value, maxValue.value))
-const directPoints = computed(() => toPoints(directSeries.value, maxValue.value))
-const proxyPoints = computed(() => toPoints(proxySeries.value, maxValue.value))
-
-const totalPath = computed(() => smoothPath(totalPoints.value))
-const directPath = computed(() => smoothPath(directPoints.value))
-const proxyPath = computed(() => smoothPath(proxyPoints.value))
-
-const totalFillPath = computed(() => {
-  if (!totalPoints.value.length || !totalPath.value) return ''
-  const first = totalPoints.value[0]
-  const last = totalPoints.value[totalPoints.value.length - 1]
-  const baselineY = height - paddingY
-  return `${totalPath.value} L${last.x.toFixed(1)},${baselineY.toFixed(1)} L${first.x.toFixed(1)},${baselineY.toFixed(1)} Z`
-})
-
-const gridLines = computed(() => {
-  const out: Array<{ y: number; label: string }> = []
-  const count = 4
-  for (let i = 0; i <= count; i++) {
-    const ratio = i / count
-    const y = height - paddingY - ratio * (height - paddingY * 2)
-    out.push({ y, label: formatRate(maxValue.value * ratio) })
-  }
-  return out
-})
-
-const clampIndex = (idx: number): number => {
-  if (props.samples.length === 0) return 0
-  return Math.min(props.samples.length - 1, Math.max(0, idx))
+const series = (pick: (s: BandwidthSample) => number) => {
+  const xs = points.value.map((_, i) => xAt(i))
+  const ys = points.value.map((s) => yAt(pick(s)))
+  return { xs, line: monotonePath(xs, ys) }
 }
 
-const onPointerMove = (event: MouseEvent) => {
-  if (!svgRef.value || props.samples.length === 0) {
-    hoverIndex.value = null
-    return
-  }
-  const rect = svgRef.value.getBoundingClientRect()
-  if (!rect.width) return
-  const ratio = (event.clientX - rect.left) / rect.width
-  const clampedRatio = Math.min(1, Math.max(0, ratio))
-  const idx = Math.round(clampedRatio * Math.max(0, props.samples.length - 1))
-  hoverIndex.value = clampIndex(idx)
+const up = computed(() => series((s) => s.txBps).line)
+const down = computed(() => series((s) => s.rxBps))
+const downArea = computed(() => {
+  const { xs, line } = down.value
+  if (xs.length < 2) return ''
+  return `${line}L${xs[xs.length - 1].toFixed(1)},${H}L${xs[0].toFixed(1)},${H}Z`
+})
+
+const latest = computed(() => points.value[points.value.length - 1])
+
+const hover = ref<number | null>(null)
+const onMove = (event: MouseEvent) => {
+  const el = event.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  const slot = Math.round(((event.clientX - rect.left) / rect.width) * (props.window - 1))
+  const idx = slot - (props.window - points.value.length)
+  hover.value = idx >= 0 && idx < points.value.length ? idx : null
 }
-
-const onPointerLeave = () => {
-  hoverIndex.value = null
-}
-
-const hoverSample = computed(() => {
-  if (hoverIndex.value === null) return null
-  return props.samples[hoverIndex.value] || null
-})
-
-const hoverTotalPoint = computed(() => {
-  if (hoverIndex.value === null) return null
-  return totalPoints.value[hoverIndex.value] || null
-})
-
-const hoverDirectPoint = computed(() => {
-  if (hoverIndex.value === null) return null
-  return directPoints.value[hoverIndex.value] || null
-})
-
-const hoverProxyPoint = computed(() => {
-  if (hoverIndex.value === null) return null
-  return proxyPoints.value[hoverIndex.value] || null
-})
-
-const formatRate = (value: number): string => {
-  if (!value) return '0 B/s'
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
-  let v = value
-  let idx = 0
-  while (v >= 1024 && idx < units.length - 1) {
-    v /= 1024
-    idx++
-  }
-  return `${v.toFixed(v < 10 && idx > 0 ? 2 : 1)} ${units[idx]}`
-}
-
-const formatTime = (raw: string): string => {
-  const d = new Date(raw)
-  if (Number.isNaN(d.getTime())) return '--:--:--'
-  return d.toLocaleTimeString([], { hour12: false })
-}
-
-const hoverTotalRate = computed(() => {
-  const item = hoverSample.value
-  if (!item) return '0 B/s'
-  return formatRate((item.txBps || 0) + (item.rxBps || 0))
-})
-
-const hoverTxRate = computed(() => {
-  const item = hoverSample.value
-  if (!item) return '0 B/s'
-  return formatRate(item.txBps || 0)
-})
-
-const hoverRxRate = computed(() => {
-  const item = hoverSample.value
-  if (!item) return '0 B/s'
-  return formatRate(item.rxBps || 0)
-})
-
-const hoverDirectRate = computed(() => {
-  const item = hoverSample.value
-  if (!item) return '0 B/s'
-  return formatRate(item.directBps || 0)
-})
-
-const hoverProxyRate = computed(() => {
-  const item = hoverSample.value
-  if (!item) return '0 B/s'
-  return formatRate(item.proxyBps || 0)
-})
+const hovered = computed(() => (hover.value == null ? null : points.value[hover.value]))
+const hoverLeft = computed(() => (hover.value == null ? 0 : (xAt(hover.value) / W) * 100))
 </script>
 
 <template>
-  <div class="chart-wrap">
-    <svg
-      ref="svgRef"
-      :viewBox="`0 0 ${width} ${height}`"
-      class="chart-svg"
-      preserveAspectRatio="none"
-      @mousemove="onPointerMove"
-      @mouseleave="onPointerLeave"
-    >
-      <defs>
-        <linearGradient id="traffic-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="color-mix(in srgb, var(--accent) 28%, transparent)" />
-          <stop offset="100%" stop-color="color-mix(in srgb, var(--accent) 3%, transparent)" />
-        </linearGradient>
-      </defs>
-
-      <rect x="0" y="0" :width="width" :height="height" class="chart-bg" />
-
-      <g class="chart-grid">
-        <line
-          v-for="line in gridLines"
-          :key="`grid-${line.y}`"
-          :x1="paddingX"
-          :x2="width - paddingX"
-          :y1="line.y"
-          :y2="line.y"
-          class="grid-line"
-        />
-      </g>
-
-      <path v-if="totalFillPath" :d="totalFillPath" class="area total" />
-      <path :d="totalPath" class="line total" />
-      <path :d="directPath" class="line direct" />
-      <path :d="proxyPath" class="line proxy" />
-
-      <line v-if="hoverTotalPoint" :x1="hoverTotalPoint.x" :x2="hoverTotalPoint.x" :y1="paddingY" :y2="height - paddingY" class="cursor" />
-      <circle v-if="hoverTotalPoint" :cx="hoverTotalPoint.x" :cy="hoverTotalPoint.y" r="3" class="hover-dot total" />
-      <circle v-if="hoverDirectPoint" :cx="hoverDirectPoint.x" :cy="hoverDirectPoint.y" r="3" class="hover-dot direct" />
-      <circle v-if="hoverProxyPoint" :cx="hoverProxyPoint.x" :cy="hoverProxyPoint.y" r="3" class="hover-dot proxy" />
-    </svg>
-
-    <div class="chart-meta">
-      <span>Peak down: {{ formatRate(peakRxRaw) }}</span>
-      <span>Peak up: {{ formatRate(peakTxRaw) }}</span>
-      <span>Peak total: {{ formatRate(peakRaw) }}</span>
-      <span>{{ samples.length }} samples</span>
+  <div class="tchart">
+    <div class="tchart-legend">
+      <span class="up"><i />{{ t('upload') }} <b class="num">{{ rate(latest?.txBps || 0) }}</b></span>
+      <span class="down"><i />{{ t('download') }} <b class="num">{{ rate(latest?.rxBps || 0) }}</b></span>
+      <span class="tchart-scale num">{{ rate(maxValue) }}</span>
     </div>
-
-    <div class="chart-hover">
-      <template v-if="hoverSample">
-        <span>{{ formatTime(hoverSample.at) }}</span>
-        <span>Download {{ hoverRxRate }}</span>
-        <span>Upload {{ hoverTxRate }}</span>
-        <span>Aggregate {{ hoverTotalRate }}</span>
-        <span>Direct {{ hoverDirectRate }}</span>
-        <span>Proxy {{ hoverProxyRate }}</span>
-      </template>
-      <span v-else>Move mouse on chart to inspect rate</span>
+    <div class="tchart-plot" @mousemove="onMove" @mouseleave="hover = null">
+      <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" aria-hidden="true">
+        <line v-for="g in 3" :key="g" class="grid" x1="0" :x2="W" :y1="PAD_TOP + ((H - PAD_TOP) / 4) * g" :y2="PAD_TOP + ((H - PAD_TOP) / 4) * g" />
+        <path v-if="downArea" class="area" :d="downArea" />
+        <path class="line down" :d="down.line" />
+        <path class="line up" :d="up" />
+      </svg>
+      <div v-if="hovered" class="tchart-cursor" :style="{ left: `${hoverLeft}%` }">
+        <div class="tchart-tip" :class="{ flip: hoverLeft > 60 }">
+          <span class="up">↑ {{ rate(hovered.txBps) }}</span>
+          <span class="down">↓ {{ rate(hovered.rxBps) }}</span>
+        </div>
+      </div>
+      <p v-if="points.length === 0" class="tchart-empty">{{ t('chartIdle') }}</p>
     </div>
   </div>
 </template>
 
 <style scoped>
-.chart-wrap {
+.tchart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tchart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tchart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tchart-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.tchart-legend b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.up i { background: var(--info); }
+.down i { background: var(--accent); }
+
+.tchart-scale {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.tchart-plot {
+  position: relative;
+  height: 120px;
+}
+
+svg {
+  display: block;
   width: 100%;
-  min-height: 250px;
+  height: 100%;
+  overflow: visible;
 }
 
-.chart-svg {
-  width: 100%;
-  height: 208px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-
-.chart-bg {
-  fill: color-mix(in srgb, var(--surface) 95%, var(--accent) 5%);
-}
-
-.grid-line {
-  stroke: color-mix(in srgb, var(--line) 78%, transparent);
-  stroke-width: 0.8;
-  stroke-dasharray: 2.5 4;
-}
-
-.area.total {
-  fill: url(#traffic-fill);
+.grid {
+  stroke: var(--line);
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
 }
 
 .line {
   fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  animation: reveal 0.45s ease;
-}
-
-.line.total {
-  stroke: color-mix(in srgb, var(--ink) 24%, var(--line) 76%);
   stroke-width: 1.8;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
-.line.direct {
-  stroke: var(--ok);
-  stroke-width: 2.3;
+.line.up { stroke: var(--info); }
+.line.down { stroke: var(--accent); }
+
+.area {
+  fill: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.line.proxy {
-  stroke: var(--accent-strong);
-  stroke-width: 2.3;
+.tchart-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+  pointer-events: none;
 }
 
-.cursor {
-  stroke: color-mix(in srgb, var(--ink) 60%, transparent);
-  stroke-width: 1;
-  stroke-dasharray: 3 4;
-}
-
-.hover-dot {
-  stroke: var(--surface);
-  stroke-width: 1;
-}
-
-.hover-dot.total {
-  fill: color-mix(in srgb, var(--ink) 45%, var(--surface) 55%);
-}
-
-.hover-dot.direct {
-  fill: var(--ok);
-}
-
-.hover-dot.proxy {
-  fill: var(--accent-strong);
-}
-
-.chart-meta,
-.chart-hover {
+.tchart-tip {
+  position: absolute;
+  top: 4px;
+  left: 8px;
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: 12px;
+  flex-direction: column;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tchart-tip.flip {
+  right: 8px;
+  left: auto;
+}
+
+.tchart-tip .up { color: var(--info); }
+.tchart-tip .down { color: var(--accent-strong); }
+
+.tchart-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   color: var(--muted);
-  flex-wrap: wrap;
-}
-
-.chart-hover {
-  margin-top: 4px;
-  color: color-mix(in srgb, var(--ink) 74%, var(--muted) 26%);
-}
-
-@keyframes reveal {
-  from {
-    opacity: 0.2;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  font-size: 12px;
 }
 </style>

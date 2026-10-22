@@ -4,86 +4,93 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-func runCommand(logf func(string), name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
-	return reportCommandResult(logf, false, name, args, string(output), err)
-}
+const (
+	linuxResolvConfBackupPath = "/run/sudoku4x4-resolv.conf.bak"
+	darwinPFAnchor            = "com.apple/sudoku4x4.tun"
+	windowsDNSBackupFile      = "sudoku4x4-dns.json"
+)
 
-func runCmdExec(logf func(string), name string, args ...string) error {
-	return runCommand(logf, name, args...)
-}
-
-func runDarwinAdminCommand(logf func(string), name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	output, err := darwinAdminRunShLC(ctx, shellJoin(append([]string{name}, args...)...))
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("run %s %s (admin): timeout", name, strings.Join(args, " "))
-	}
-	return reportCommandResult(logf, true, name, args, output, err)
-}
-
-func runCmdDarwinAdmin(logf func(string), name string, args ...string) error {
-	return runDarwinAdminCommand(logf, name, args...)
-}
-func reportCommandResult(logf func(string), admin bool, name string, args []string, output string, err error) error {
-	cleanOutput := strings.TrimSpace(output)
-	command := strings.TrimSpace(strings.Join(append([]string{name}, args...), " "))
-	logPrefix := "[route] "
-	errorSuffix := ""
-	if admin {
-		logPrefix += "sudo "
-		errorSuffix = " (admin)"
-	}
-	if logf != nil {
-		if cleanOutput == "" {
-			logf(logPrefix + command)
-		} else {
-			logf(fmt.Sprintf("%s%s => %s", logPrefix, command, cleanOutput))
-		}
-	}
-	if err == nil {
-		return nil
-	}
-	if cleanOutput == "" {
-		return fmt.Errorf("run %s%s: %w", command, errorSuffix, err)
-	}
-	return fmt.Errorf("run %s%s: %w: %s", command, errorSuffix, err, cleanOutput)
-}
-
-func runCmdsDarwinAdmin(logf func(string), cmdlines ...string) error {
+// runShellBatch runs shell snippets as one `sh` invocation. Callers are already privileged
+// (the TUN helper runs as root), so there is no elevation layer here.
+func runShellBatch(logf func(string), cmdlines ...string) error {
 	if len(cmdlines) == 0 {
 		return nil
 	}
-	shell := "set -e; " + strings.Join(cmdlines, "; ")
+	script := "set -e; PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH; " + strings.Join(cmdlines, "; ")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	output, err := darwinAdminRunShLC(ctx, shell)
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return errors.New("run (admin batch): timeout")
-	}
-	clean := strings.TrimSpace(output)
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	output, err := cmd.CombinedOutput()
+	clean := strings.TrimSpace(string(output))
 	if logf != nil {
 		if clean == "" {
-			logf("[route] sudo (batch)")
+			logf("[route] batch ok")
 		} else {
-			logf(fmt.Sprintf("[route] sudo (batch) => %s", clean))
+			logf("[route] batch => " + clean)
 		}
 	}
-	if err == nil {
-		return nil
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.New("route batch: timeout")
 	}
-	if clean == "" {
-		return fmt.Errorf("run (admin batch): %w", err)
+	if err != nil {
+		if clean == "" {
+			return fmt.Errorf("route batch: %w", err)
+		}
+		return fmt.Errorf("route batch: %w: %s", err, clean)
 	}
-	return fmt.Errorf("run (admin batch): %w: %s", err, clean)
+	return nil
+}
+
+// runPowerShellScript runs a script file under Windows PowerShell (already elevated).
+func runPowerShellScript(parent context.Context, logf func(string), body string, timeout time.Duration) error {
+	f, err := os.CreateTemp("", "sudoku-route-*.ps1")
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.WriteString("$ErrorActionPreference = 'Stop'\r\n" + body + "\r\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", path)
+	applyManagedProcessSysProcAttr(cmd)
+	output, err := cmd.CombinedOutput()
+	clean := strings.TrimSpace(string(output))
+	if logf != nil {
+		if clean == "" {
+			logf("[route] powershell ok")
+		} else {
+			logf("[route] powershell => " + clean)
+		}
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("powershell: %w", ctx.Err())
+	}
+	if err != nil {
+		if clean == "" {
+			return fmt.Errorf("powershell: %w", err)
+		}
+		return fmt.Errorf("powershell: %w: %s", err, clean)
+	}
+	return nil
 }
 
 func shellJoin(args ...string) string {

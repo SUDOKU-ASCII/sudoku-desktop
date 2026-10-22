@@ -30,9 +30,15 @@ xattr -cr "/Applications/sudoku4x4.app"
 If your app is not in `/Applications`, replace the path with the actual `.app` path.
 Tip: Type `xattr -cr ` first, then drag the `.app` file into Terminal to auto-fill the path.
 
-## TUN
+## Proxy, controller and TUN
 
-When enabling `TUN` on macOS / Linux, the app asks for your macOS / Linux login password **inside the app** (once per app session) to grant admin privileges needed for route/DNS updates. After that, TUN start/stop is silent (no extra system password dialog). The password stays in memory only and is never written to disk.
+- The app always listens on `127.0.0.1:10233` (mixed HTTP/SOCKS5) and uses it as the system proxy; the port is fixed. The proxy is loopback-only by default. **Allow LAN connections** in Settings opens it to other devices; this needs a Sudoku core with `local_address` support.
+- The bundled stock Sudoku core exposes a Clash/mihomo-compatible **external controller** (default `127.0.0.1:9097`, with a secret). Set the port, secret and LAN access in Settings, then open Zashboard / MetaCubeXD / Yacd from the app to control the core from a web dashboard.
+- Routing mode (PAC / Global / Direct) and node selection (including the `Balance` group) switch live through the controller, with no restart.
+- `TUN` runs in a separate elevated helper. On macOS and Linux the app asks for your administrator password in its own dialog. The password stays in memory only and no system prompt appears. Windows uses UAC. The GUI never runs as root.
+- If TUN fails to start, the whole session rolls back: the core stops and the system proxy is restored. When TUN is turned off, the helper exits immediately.
+- The helper tears routes, DNS and the tunnel down if the app quits, crashes or is killed, and a user-level guard restores the system proxy. If anything is ever left behind, use **Repair network** in the app.
+- On Windows the WinHTTP proxy is synced together with the system proxy whenever the app has administrator rights.
 
 ## License
 

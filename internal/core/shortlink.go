@@ -64,8 +64,6 @@ func ParseShortLink(link string) (*NodeConfig, error) {
 		CustomTable:        strings.TrimSpace(payload.CustomTable),
 		CustomTables:       append([]string(nil), payload.CustomTables...),
 		Multiplex:          strings.TrimSpace(payload.HTTPMaskMux),
-		LocalPort:          payload.MixPort,
-		Enabled:            true,
 		HTTPMask: HTTPMaskSettings{
 			Disable:  payload.DisableHTTPMask,
 			Mode:     payload.HTTPMaskMode,
@@ -73,9 +71,6 @@ func ParseShortLink(link string) (*NodeConfig, error) {
 			Host:     payload.HTTPMaskHost,
 			PathRoot: payload.HTTPMaskPath,
 		},
-	}
-	if node.LocalPort <= 0 {
-		node.LocalPort = 1080
 	}
 	if node.AEAD == "" {
 		node.AEAD = "chacha20-poly1305"
@@ -108,7 +103,7 @@ func BuildShortLink(node NodeConfig) (string, error) {
 		Key:             strings.TrimSpace(node.Key),
 		ASCII:           encodeASCII(node.ASCII),
 		AEAD:            strings.TrimSpace(node.AEAD),
-		MixPort:         node.LocalPort,
+		MixPort:         ProxyPort,
 		PackedDownlink:  !node.EnablePureDownlink,
 		CustomTable:     strings.TrimSpace(node.CustomTable),
 		CustomTables:    append([]string(nil), node.CustomTables...),

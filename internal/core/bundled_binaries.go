@@ -13,228 +13,162 @@ import (
 	"strings"
 )
 
-func (b *Backend) ensureCoreBinariesLocked() error {
-	if b.cfg == nil || b.store == nil {
-		return errors.New("backend not initialized")
+const defaultRuntimeRoot = "runtime/bin"
+
+// runtimeSource locates the bundled helper binaries: an embedded FS (release builds) or
+// a platform directory next to the executable (dev builds).
+type runtimeSource struct {
+	fsys fs.FS
+	root string
+}
+
+func (s runtimeSource) platformDir() string {
+	root := strings.Trim(strings.ReplaceAll(strings.TrimSpace(s.root), "\\", "/"), "/")
+	if root == "" {
+		root = defaultRuntimeRoot
 	}
-	if strings.TrimSpace(b.cfg.Core.SudokuBinary) == "" {
-		b.cfg.Core.SudokuBinary = defaultBinaryPath(b.store.RuntimeDir(), "sudoku")
-	}
-	if strings.TrimSpace(b.cfg.Core.HevBinary) == "" {
-		b.cfg.Core.HevBinary = defaultBinaryPath(b.store.RuntimeDir(), "hev-socks5-tunnel")
-	}
+	return path.Join(root, runtime.GOOS+"-"+runtime.GOARCH)
+}
 
-	sudokuBin := b.cfg.Core.SudokuBinary
-	hevBin := b.cfg.Core.HevBinary
-
-	sudokuMissing := fileMissing(sudokuBin)
-	hevMissing := fileMissing(hevBin)
-
-	hevDepMissing := missingHevRuntimeDeps(hevBin)
-
-	installed := map[string]bool{}
-	installDir := func(dir string) {
-		if dir == "" || installed[dir] {
-			return
+// installBundledRuntime copies the bundled files accepted by keep (nil = all) into destDir,
+// skipping files that are already identical.
+func installBundledRuntime(fsys fs.FS, root, destDir string, keep func(name string) bool) error {
+	src := runtimeSource{fsys: fsys, root: root}
+	if fsys != nil {
+		err := src.installFromFS(destDir, keep)
+		if err == nil {
+			return nil
 		}
-		installed[dir] = true
-		_ = b.installBundledRuntimeDir(dir)
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 	}
+	dir, err := findBundledRuntimePlatformDir()
+	if err != nil {
+		return err
+	}
+	return installFromDir(dir, destDir, keep)
+}
 
-	// If binaries live under the app runtime dir, keep them updated from bundled runtime.
-	// This is important in dev builds and when users upgrade without deleting their runtime dir.
-	if sudokuMissing || isWithinDir(sudokuBin, b.store.RuntimeDir()) {
-		installDir(filepath.Dir(sudokuBin))
+func (s runtimeSource) installFromFS(destDir string, keep func(string) bool) error {
+	srcDir := s.platformDir()
+	entries, err := fs.ReadDir(s.fsys, srcDir)
+	if err != nil {
+		return err
 	}
-	if hevMissing || len(hevDepMissing) > 0 || isWithinDir(hevBin, b.store.RuntimeDir()) {
-		installDir(filepath.Dir(hevBin))
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
 	}
-
-	if fileMissing(sudokuBin) {
-		return fmt.Errorf("sudoku binary not found: %s", sudokuBin)
-	}
-	if fileMissing(hevBin) {
-		return fmt.Errorf("hev binary not found: %s", hevBin)
-	}
-	if missing := missingHevRuntimeDeps(hevBin); len(missing) > 0 {
-		return fmt.Errorf("hev runtime dependencies missing in %s: %s", filepath.Dir(hevBin), strings.Join(missing, ", "))
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || (keep != nil && !keep(name)) {
+			continue
+		}
+		content, err := fs.ReadFile(s.fsys, path.Join(srcDir, name))
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(destDir, name)
+		if same, err := bytesLookIdentical(content, dst); err == nil && same {
+			continue
+		}
+		if err := writeFileAtomic(dst, content, bundledFileMode(name)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func isWithinDir(path string, dir string) bool {
-	path = strings.TrimSpace(path)
-	dir = strings.TrimSpace(dir)
-	if path == "" || dir == "" {
-		return false
-	}
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	rel = filepath.Clean(rel)
-	if rel == "." {
-		return true
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func fileMissing(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return true
-	}
-	_, err := os.Stat(path)
-	return err != nil
-}
-
-func (b *Backend) installBundledRuntimeDir(destDir string) error {
-	if err := b.installBundledRuntimeFromEmbeddedFS(destDir); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-
-	srcDir, err := findBundledRuntimePlatformDir()
-	if err != nil {
-		return err
-	}
-	if err := ensureDir(destDir); err != nil {
-		return err
-	}
+func installFromDir(srcDir, destDir string, keep func(string) bool) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
 	hostExe := currentExecutableBaseName()
 	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
 		name := ent.Name()
-		if hostExe != "" && strings.EqualFold(name, hostExe) {
+		if ent.IsDir() || (keep != nil && !keep(name)) || (hostExe != "" && strings.EqualFold(name, hostExe)) {
 			continue
 		}
-		srcPath := filepath.Join(srcDir, name)
-		dstPath := filepath.Join(destDir, name)
-		if !fileMissing(dstPath) {
-			same, err := filesLookIdentical(srcPath, dstPath)
-			if err == nil && same {
-				continue
-			}
-		}
-		mode := bundledFileMode(name)
-		if err := copyFileAtomic(srcPath, dstPath, mode); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *Backend) installBundledRuntimeFromEmbeddedFS(destDir string) error {
-	if b == nil || b.bundledRuntimeFS == nil {
-		return os.ErrNotExist
-	}
-	root := strings.TrimSpace(b.bundledRuntimeRoot)
-	if root == "" {
-		root = "runtime/bin"
-	}
-	root = strings.Trim(strings.ReplaceAll(root, "\\", "/"), "/")
-	platform := runtime.GOOS + "-" + runtime.GOARCH
-	srcDir := path.Join(root, platform)
-
-	entries, err := fs.ReadDir(b.bundledRuntimeFS, srcDir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return os.ErrNotExist
-		}
-		return err
-	}
-	if err := ensureDir(destDir); err != nil {
-		return err
-	}
-
-	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
-		name := ent.Name()
-		srcPath := path.Join(srcDir, name)
-		content, err := fs.ReadFile(b.bundledRuntimeFS, srcPath)
+		content, err := os.ReadFile(filepath.Join(srcDir, name))
 		if err != nil {
 			return err
 		}
-		dstPath := filepath.Join(destDir, name)
-		if !fileMissing(dstPath) {
-			same, err := bytesLookIdentical(content, dstPath)
-			if err == nil && same {
-				continue
-			}
+		dst := filepath.Join(destDir, name)
+		if same, err := bytesLookIdentical(content, dst); err == nil && same {
+			continue
 		}
-		mode := bundledFileMode(name)
-		if err := writeBytesAtomic(content, dstPath, mode); err != nil {
+		if err := writeFileAtomic(dst, content, bundledFileMode(name)); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
-func filesLookIdentical(srcPath, dstPath string) (bool, error) {
-	srcInfo, err := os.Stat(srcPath)
-	if err != nil {
-		return false, err
+// ensureSudokuBinary makes sure the core binary exists (refreshing it from the bundle when
+// it lives in the app's runtime dir) and returns its path. The TUN helper manages its own
+// copy of the tunnel binary, so the app only ever needs the core.
+func ensureSudokuBinary(core *CoreSettings, runtimeDir string, fsys fs.FS, root string) error {
+	if strings.TrimSpace(core.SudokuBinary) == "" {
+		core.SudokuBinary = defaultBinaryPath(runtimeDir, "sudoku")
 	}
-	dstInfo, err := os.Stat(dstPath)
-	if err != nil {
-		return false, err
+	bin := core.SudokuBinary
+	if fileMissing(bin) || isWithinDir(bin, runtimeDir) {
+		only := runtimeBinaryName("sudoku")
+		err := installBundledRuntime(fsys, root, filepath.Dir(bin), func(n string) bool { return strings.EqualFold(n, only) })
+		if err != nil && fileMissing(bin) {
+			return fmt.Errorf("sudoku binary not found (%s): %w", bin, err)
+		}
 	}
-	if srcInfo.Size() != dstInfo.Size() {
-		return false, nil
+	if fileMissing(bin) {
+		return fmt.Errorf("sudoku binary not found: %s", bin)
 	}
-	srcHash, err := fileSHA256(srcPath)
-	if err != nil {
-		return false, err
-	}
-	dstHash, err := fileSHA256(dstPath)
-	if err != nil {
-		return false, err
-	}
-	return srcHash == dstHash, nil
+	return nil
 }
 
-func bytesLookIdentical(srcContent []byte, dstPath string) (bool, error) {
-	dstInfo, err := os.Stat(dstPath)
+func isWithinDir(p, dir string) bool {
+	p, dir = strings.TrimSpace(p), strings.TrimSpace(dir)
+	if p == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(dir, p)
 	if err != nil {
-		return false, err
+		return false
 	}
-	if int64(len(srcContent)) != dstInfo.Size() {
-		return false, nil
-	}
-	srcHash := bytesSHA256(srcContent)
-	dstHash, err := fileSHA256(dstPath)
-	if err != nil {
-		return false, err
-	}
-	return srcHash == dstHash, nil
+	rel = filepath.Clean(rel)
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
+func fileMissing(p string) bool {
+	if strings.TrimSpace(p) == "" {
+		return true
+	}
+	_, err := os.Stat(p)
+	return err != nil
+}
+
+func bytesLookIdentical(content []byte, dstPath string) (bool, error) {
+	fi, err := os.Stat(dstPath)
 	if err != nil {
-		return "", err
+		return false, err
+	}
+	if int64(len(content)) != fi.Size() {
+		return false, nil
+	}
+	f, err := os.Open(dstPath)
+	if err != nil {
+		return false, err
 	}
 	defer f.Close()
-
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+		return false, err
 	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-func bytesSHA256(data []byte) string {
-	h := sha256.Sum256(data)
-	return fmt.Sprintf("%x", h[:])
+	want := sha256.Sum256(content)
+	return fmt.Sprintf("%x", h.Sum(nil)) == fmt.Sprintf("%x", want[:]), nil
 }
 
 func bundledFileMode(name string) os.FileMode {
@@ -252,14 +186,10 @@ func missingHevRuntimeDeps(hevBin string) []string {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	hevDir := filepath.Dir(hevBin)
-	if strings.TrimSpace(hevDir) == "" {
-		return []string{"wintun.dll", "msys-2.0.dll"}
-	}
-	deps := []string{"wintun.dll", "msys-2.0.dll"}
-	missing := make([]string, 0, len(deps))
-	for _, dep := range deps {
-		if fileMissing(filepath.Join(hevDir, dep)) {
+	dir := filepath.Dir(hevBin)
+	var missing []string
+	for _, dep := range []string{"wintun.dll", "msys-2.0.dll"} {
+		if fileMissing(filepath.Join(dir, dep)) {
 			missing = append(missing, dep)
 		}
 	}
@@ -268,46 +198,27 @@ func missingHevRuntimeDeps(hevBin string) []string {
 
 func findBundledRuntimePlatformDir() (string, error) {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
-	candidates := make([]string, 0, 6)
-
-	exe, err := os.Executable()
-	if err == nil && exe != "" {
+	var candidates []string
+	if exe, err := os.Executable(); err == nil && exe != "" {
 		exeDir := filepath.Dir(exe)
 		if runtime.GOOS == "darwin" {
 			candidates = append(candidates, filepath.Join(exeDir, "..", "Resources", "runtime", "bin", platform))
 		}
-		candidates = append(candidates, exeDir)
-		candidates = append(candidates, filepath.Join(exeDir, "runtime", "bin", platform))
+		candidates = append(candidates, exeDir, filepath.Join(exeDir, "runtime", "bin", platform))
 	}
-
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		candidates = append(candidates, filepath.Join(wd, "runtime", "bin", platform))
 	}
-
 	for _, dir := range candidates {
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			continue
 		}
-		if !hasBundledRuntimeFiles(dir) {
+		if fileMissing(filepath.Join(dir, runtimeBinaryName("sudoku"))) || fileMissing(filepath.Join(dir, runtimeBinaryName("hev-socks5-tunnel"))) {
 			continue
 		}
 		return dir, nil
 	}
 	return "", os.ErrNotExist
-}
-
-func hasBundledRuntimeFiles(dir string) bool {
-	required := []string{
-		runtimeBinaryName("sudoku"),
-		runtimeBinaryName("hev-socks5-tunnel"),
-	}
-	for _, name := range required {
-		if fileMissing(filepath.Join(dir, name)) {
-			return false
-		}
-	}
-	return true
 }
 
 func runtimeBinaryName(base string) string {
@@ -323,76 +234,4 @@ func currentExecutableBaseName() string {
 		return ""
 	}
 	return filepath.Base(exe)
-}
-
-func copyFileAtomic(srcPath, dstPath string, mode os.FileMode) error {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	if err := ensureDir(filepath.Dir(dstPath)); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dstPath), filepath.Base(dstPath)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	if _, err := io.Copy(tmp, src); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if mode != 0 {
-		_ = os.Chmod(tmpPath, mode)
-	}
-	_ = os.Remove(dstPath)
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
-}
-
-func writeBytesAtomic(content []byte, dstPath string, mode os.FileMode) error {
-	if err := ensureDir(filepath.Dir(dstPath)); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dstPath), filepath.Base(dstPath)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	if _, err := tmp.Write(content); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if mode != 0 {
-		_ = os.Chmod(tmpPath, mode)
-	}
-	_ = os.Remove(dstPath)
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
 }

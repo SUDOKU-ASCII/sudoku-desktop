@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku-desktop/internal/core"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -19,38 +22,25 @@ import (
 type App struct {
 	backend      *core.Backend
 	shutdownOnce sync.Once
-
-	runtimeFS   fs.FS
-	runtimeRoot string
 }
 
 // NewApp creates a new App application struct
 func NewApp(runtimeFS fs.FS, runtimeRoot string) *App {
-	backend, _ := core.NewBackendWithRuntimeFS(runtimeFS, runtimeRoot)
-	return &App{
-		backend:     backend,
-		runtimeFS:   runtimeFS,
-		runtimeRoot: runtimeRoot,
+	backend, err := core.NewBackendWithRuntimeFS(runtimeFS, runtimeRoot)
+	if err != nil {
+		logx.Errorf("Desktop", "backend init failed: %v", err)
+		os.Exit(1)
 	}
+	return &App{backend: backend}
 }
 
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
-	if a.backend == nil {
-		b, err := core.NewBackendWithRuntimeFS(a.runtimeFS, a.runtimeRoot)
-		if err != nil {
-			return err
+	a.backend.SetEventEmitter(func(name string, payload any) {
+		if app := application.Get(); app != nil {
+			app.Event.Emit(name, payload)
 		}
-		a.backend = b
-	}
-	if a.backend != nil {
-		app := application.Get()
-		a.backend.SetEventEmitter(func(name string, payload any) {
-			if app != nil {
-				app.Event.Emit(name, payload)
-			}
-		})
-		a.backend.Startup(ctx)
-	}
+	})
+	a.backend.Startup(ctx)
 	return nil
 }
 
@@ -60,11 +50,7 @@ func (a *App) ServiceShutdown() error {
 }
 
 func (a *App) shutdownBackend() {
-	a.shutdownOnce.Do(func() {
-		if a.backend != nil {
-			a.backend.Shutdown()
-		}
-	})
+	a.shutdownOnce.Do(a.backend.Shutdown)
 }
 
 func (a *App) ShutdownNow() {
@@ -73,7 +59,7 @@ func (a *App) ShutdownNow() {
 
 func (a *App) trayIsRunning() bool {
 	state := a.GetState()
-	return state.Running
+	return state.Phase != core.PhaseStopped
 }
 
 func (a *App) trayToggleProxy() error {
@@ -106,170 +92,98 @@ func (a *App) trayCurrentProxyMode() string {
 }
 
 func (a *App) GetConfig() core.AppConfig {
-	if a.backend == nil {
-		return core.AppConfig{}
-	}
 	return a.backend.GetConfig()
 }
 
 func (a *App) SaveConfig(cfg core.AppConfig) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SaveConfig(cfg)
 }
 
 func (a *App) SetRoutingMode(mode string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SetRoutingMode(mode)
 }
 
 func (a *App) GetState() core.RuntimeState {
-	if a.backend == nil {
-		return core.RuntimeState{}
-	}
 	return a.backend.GetState()
 }
 
 func (a *App) StartProxy(req core.StartRequest) error {
-	if a.backend == nil {
-		return nil
-	}
-	return a.backend.StartProxy(req)
+	return swallowCancel(a.backend.StartProxy(req))
 }
 
 func (a *App) StopProxy() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.StopProxy()
 }
 
 func (a *App) RestartProxy(req core.StartRequest) error {
-	if a.backend == nil {
-		return nil
-	}
-	return a.backend.RestartProxy(req)
+	return swallowCancel(a.backend.RestartProxy(req))
 }
 
 func (a *App) UpsertNode(node core.NodeConfig) (core.NodeConfig, error) {
-	if a.backend == nil {
-		return core.NodeConfig{}, nil
-	}
 	return a.backend.UpsertNode(node)
 }
 
 func (a *App) DeleteNode(nodeID string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.DeleteNode(nodeID)
 }
 
 func (a *App) SetActiveNode(nodeID string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SetActiveNode(nodeID)
 }
 
 func (a *App) SwitchNode(nodeID string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SwitchNode(nodeID)
 }
 
 func (a *App) ImportShortLink(name string, link string) (core.NodeConfig, error) {
-	if a.backend == nil {
-		return core.NodeConfig{}, nil
-	}
 	return a.backend.ImportShortLink(name, link)
 }
 
 func (a *App) ExportShortLink(nodeID string) (string, error) {
-	if a.backend == nil {
-		return "", nil
-	}
 	return a.backend.ExportShortLink(nodeID)
 }
 
 func (a *App) ProbeNode(nodeID string) (core.LatencyResult, error) {
-	if a.backend == nil {
-		return core.LatencyResult{}, nil
-	}
 	return a.backend.ProbeNode(nodeID)
 }
 
 func (a *App) ProbeAllNodes() []core.LatencyResult {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.ProbeAllNodes()
 }
 
 func (a *App) AutoSelectLowestLatency() (core.LatencyResult, error) {
-	if a.backend == nil {
-		return core.LatencyResult{}, nil
-	}
 	return a.backend.AutoSelectLowestLatency()
 }
 
 func (a *App) SortNodesByName() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SortNodesByName()
 }
 
 func (a *App) SortNodesByLatency() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.SortNodesByLatency()
 }
 
 func (a *App) DetectIPDirect() core.IPDetectResult {
-	if a.backend == nil {
-		return core.IPDetectResult{}
-	}
 	return a.backend.DetectIPDirect()
 }
 
 func (a *App) DetectIPProxy() core.IPDetectResult {
-	if a.backend == nil {
-		return core.IPDetectResult{}
-	}
 	return a.backend.DetectIPProxy()
 }
 
 func (a *App) GetLANProxyInfo() core.LANProxyInfo {
-	if a.backend == nil {
-		return core.LANProxyInfo{}
-	}
 	return a.backend.GetLANProxyInfo()
 }
 
 func (a *App) StartReverseForwarder() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.StartReverseForwarder()
 }
 
 func (a *App) StopReverseForwarder() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.StopReverseForwarder()
 }
 
 func (a *App) GetLogs(level string, limit int) []core.LogEntry {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.GetLogs(level, limit)
 }
 
@@ -330,90 +244,78 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *App) GetConnections() []core.ActiveConnection {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.GetConnections()
 }
 
 func (a *App) CloseConnection(connectionID string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.CloseConnection(connectionID)
 }
 
 func (a *App) CloseAllConnections() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.CloseAllConnections()
 }
 
 func (a *App) GetUsageHistory(limit int) []core.UsageDay {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.GetUsageHistory(limit)
 }
 
 func (a *App) EnsureCoreBinaries() error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.EnsureCoreBinaries()
 }
 
 func (a *App) BuildInfo() map[string]string {
-	if a.backend == nil {
-		return map[string]string{}
-	}
 	return a.backend.BuildInfo()
 }
 
 func (a *App) ValidateYAML(content string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.ValidateYAML(content)
 }
 
 func (a *App) OpenRuntimeDir() string {
-	if a.backend == nil {
-		return ""
-	}
 	return a.backend.OpenRuntimeDir()
 }
 
 func (a *App) OpenConfigPath() string {
-	if a.backend == nil {
-		return ""
-	}
 	return a.backend.OpenConfigPath()
 }
 
-// TunHasPrivileges reports whether the app can perform privileged TUN operations
-// silently on the current platform (supported on macOS/Linux via in-app sudo caching).
-func (a *App) TunHasPrivileges() bool {
-	if a.backend == nil {
-		return false
-	}
-	return a.backend.TunHasPrivileges()
-}
+func (a *App) ControllerInfo() core.ControllerInfo { return a.backend.ControllerInfo() }
 
-// TunAcquirePrivileges validates and caches the system password for sudo-backed TUN
-// operations. The password is stored in-memory only and never written to disk.
+// RepairNetwork undoes tunnel routes/DNS overrides left behind by a crashed session.
+func (a *App) RepairNetwork() error { return swallowCancel(a.backend.RepairNetwork()) }
+
+// TunHasPrivileges reports whether the tunnel helper can start without the password prompt.
+func (a *App) TunHasPrivileges() bool { return a.backend.TunHasPrivileges() }
+
+// TunAcquirePrivileges verifies the login password (kept in memory only) and resumes the
+// action that was waiting for it.
 func (a *App) TunAcquirePrivileges(password string) error {
-	if a.backend == nil {
-		return nil
-	}
 	return a.backend.TunAcquirePrivileges(password)
 }
 
-// TunDropPrivileges clears any cached admin credentials used for TUN operations.
-func (a *App) TunDropPrivileges() error {
-	if a.backend == nil {
+// TunCancelPrivileges dismisses the password prompt.
+func (a *App) TunCancelPrivileges() { a.backend.TunCancelPrivileges() }
+
+// TunDropPrivileges forgets the password.
+func (a *App) TunDropPrivileges() { a.backend.TunDropPrivileges() }
+
+func (a *App) OpenURL(raw string) error {
+	app := application.Get()
+	if app == nil {
+		return fmt.Errorf("application is not ready")
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("refusing to open %q", raw)
+	}
+	return app.Browser.OpenURL(u.String())
+}
+
+// swallowCancel hides outcomes the UI learns from the runtime state instead: a start that
+// was superseded by stop/restart, and an action parked behind the password prompt.
+func swallowCancel(err error) error {
+	if errors.Is(err, core.ErrStartCancelled) || errors.Is(err, core.ErrAdminRequired) {
 		return nil
 	}
-	return a.backend.TunDropPrivileges()
+	return err
 }

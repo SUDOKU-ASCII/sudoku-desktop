@@ -45,15 +45,7 @@ func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {
 		t.Fatalf("expected exported short link to keep split private key")
 	}
 
-	appCfg := &AppConfig{
-		Core: CoreSettings{
-			LocalPort: 1080,
-		},
-		Routing: RoutingSettings{
-			ProxyMode: "global",
-		},
-	}
-	runtimeCfg, err := buildSudokuClientConfig(appCfg, *node, "", false)
+	runtimeCfg, err := buildSudokuClientConfig(*node)
 	if err != nil {
 		t.Fatalf("build runtime config: %v", err)
 	}
@@ -61,7 +53,7 @@ func TestEasyInstallShortLinkSplitPrivateKeyInterop(t *testing.T) {
 		t.Fatalf("expected runtime config to keep split private key, got %q", runtimeCfg.Key)
 	}
 
-	probeCfg, err := buildSudokuClientConfig(appCfg, *node, "", true)
+	probeCfg, err := buildSudokuClientConfig(*node)
 	if err != nil {
 		t.Fatalf("build probe config: %v", err)
 	}
@@ -81,8 +73,6 @@ func TestDirectionalASCIIModeRoundTrip(t *testing.T) {
 		PaddingMin:         5,
 		PaddingMax:         15,
 		EnablePureDownlink: true,
-		LocalPort:          1080,
-		Enabled:            true,
 		HTTPMask: HTTPMaskSettings{
 			Mode: "auto",
 			TLS:  true,
@@ -107,13 +97,7 @@ func TestDirectionalASCIIModeRoundTrip(t *testing.T) {
 		t.Fatalf("expected parsed directional ascii, got %q", parsed.ASCII)
 	}
 
-	appCfg := &AppConfig{
-		Core: CoreSettings{LocalPort: 1080},
-		Routing: RoutingSettings{
-			ProxyMode: "global",
-		},
-	}
-	runtimeCfg, err := buildSudokuClientConfig(appCfg, *parsed, "", false)
+	runtimeCfg, err := buildSudokuClientConfig(*parsed)
 	if err != nil {
 		t.Fatalf("build runtime config: %v", err)
 	}

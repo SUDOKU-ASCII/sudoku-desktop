@@ -18,11 +18,14 @@ import (
 )
 
 type dnsProxyConfig struct {
-	CNRules    *cnRuleSet
-	MapDNSAddr string
-	PreferIPv4 bool
-	DirectDial func(ctx context.Context, network, addr string) (net.Conn, error)
-	Logf       func(string)
+	// DirectMatch reports whether host should be resolved by the real (direct) resolvers
+	// instead of getting a FakeIP; nil means "never".
+	DirectMatch func(host string) bool
+	ListenPort  int
+	MapDNSAddr  string
+	PreferIPv4  bool
+	DirectDial  func(ctx context.Context, network, addr string) (net.Conn, error)
+	Logf        func(string)
 }
 
 type dnsProxyServer struct {
@@ -62,7 +65,11 @@ func (s *dnsProxyServer) Start() error {
 	if s == nil {
 		return errors.New("nil dns proxy")
 	}
-	addr := net.JoinHostPort(localLoopbackIPv4, fmt.Sprintf("%d", localDNSProxyListenPort()))
+	port := s.cfg.ListenPort
+	if port <= 0 {
+		port = localDNSProxyListenPort()
+	}
+	addr := net.JoinHostPort(localLoopbackIPv4, fmt.Sprintf("%d", port))
 	udpConn, err := net.ListenPacket("udp4", addr)
 	if err != nil {
 		return err
@@ -204,7 +211,7 @@ func (s *dnsProxyServer) handleQuery(req []byte) []byte {
 }
 
 func (s *dnsProxyServer) shouldDirect(host string) bool {
-	host = normalizeLookupHost(host)
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" {
 		return false
 	}
@@ -214,7 +221,7 @@ func (s *dnsProxyServer) shouldDirect(host string) bool {
 	if isLikelyLocalHostname(host) {
 		return true
 	}
-	return s.cfg.CNRules != nil && s.cfg.CNRules.matchDomain(host)
+	return s.cfg.DirectMatch != nil && s.cfg.DirectMatch(host)
 }
 
 func (s *dnsProxyServer) forwardMapDNS(req []byte) []byte {

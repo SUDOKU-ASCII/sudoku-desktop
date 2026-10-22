@@ -1,72 +1,102 @@
 <script setup lang="ts">
-import type { AppConfig } from '../../types'
+import { computed } from 'vue'
+import { ChevronDown, ShieldCheck } from 'lucide-vue-next'
+import { useApp } from '../../composables/appContext'
 
-const props = defineProps<{
-  t: (key: any) => string
-  config: AppConfig
-  resetTunFactory: () => void
-  saveConfig: () => void
-}>()
+const { t, config, state, isWindowsLike, hasAdminPrivileges, forgetAdminPassword, resetTunFactory, saveConfig } = useApp()
+
+const tunStatus = computed(() => {
+  if (state.tunRunning) return { tone: 'ok', text: t('statusRunning') }
+  if (config.tun.enabled && state.phase === 'running') return { tone: 'warn', text: t('tunNotActive') }
+  return null
+})
 </script>
 
 <template>
-  <main class="panel">
-    <section class="group-card warn">
-      <h3>{{ props.t('tunAdvancedTitle') }}</h3>
-      <p>{{ props.t('tunAdvancedHint') }}</p>
-      <div class="row">
-        <button class="btn ghost" @click="props.resetTunFactory">{{ props.t('restoreTunDefaults') }}</button>
-        <button class="btn" @click="props.saveConfig">{{ props.t('apply') }}</button>
-      </div>
-    </section>
-
-    <section class="tun-grid">
-      <article class="group-card">
-        <h3>{{ props.t('toggleOptions') }}</h3>
-        <div class="switch-stack">
-          <label class="switch-row"><span>{{ props.t('tunEnabled') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.enabled" /><span class="switch-ui" /></span></label>
-          <label class="switch-row"><span>{{ props.t('blockQuic') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.blockQuic" /><span class="switch-ui" /></span></label>
-          <label class="switch-row"><span>{{ props.t('mapDns') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.tun.mapDnsEnabled" /><span class="switch-ui" /></span></label>
-          <label class="switch-row"><span>{{ props.t('autoStart') }}</span><span class="switch-control"><input type="checkbox" v-model="props.config.core.autoStart" /><span class="switch-ui" /></span></label>
+  <div class="page tun">
+    <section class="card">
+      <div class="rows">
+        <label class="row">
+          <div class="row-text">
+            <strong>{{ t('tunEnabled') }} <span v-if="tunStatus" class="badge" :class="tunStatus.tone">{{ tunStatus.text }}</span></strong>
+            <small>{{ t('tunHint') }}</small>
+          </div>
+          <span class="switch"><input v-model="config.tun.enabled" type="checkbox" /><i /></span>
+        </label>
+        <div class="row">
+          <ShieldCheck :size="17" class="row-icon" aria-hidden="true" />
+          <div class="row-text">
+            <strong>{{ t('adminRights') }}</strong>
+            <small>{{ isWindowsLike ? t('tunElevationHintWindows') : t('tunElevationHint') }}</small>
+          </div>
+          <button v-if="!isWindowsLike && hasAdminPrivileges && !state.tunRunning" class="btn sm" @click="forgetAdminPassword">
+            {{ t('adminForget') }}
+          </button>
         </div>
-      </article>
-
-      <article class="group-card">
-        <h3>{{ props.t('enumOptions') }}</h3>
-        <label class="field"><span>{{ props.t('socksUdp') }}</span><select v-model="props.config.tun.socksUdp"><option value="udp">udp</option><option value="tcp">tcp</option></select></label>
-        <label class="field"><span>{{ props.t('tunLogLevel') }}</span><select v-model="props.config.tun.logLevel"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></label>
-        <label class="field"><span>{{ props.t('coreLogLevel') }}</span><select v-model="props.config.core.logLevel"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></label>
-      </article>
-    </section>
-
-    <section class="group-card">
-      <h3>{{ props.t('networkOptions') }}</h3>
-      <div class="form-grid">
-        <label class="field"><span>{{ props.t('interface') }}</span><input v-model="props.config.tun.interfaceName" /></label>
-        <label class="field"><span>MTU</span><input v-model.number="props.config.tun.mtu" type="number" /></label>
-        <label class="field"><span>IPv4</span><input v-model="props.config.tun.ipv4" /></label>
-        <label class="field"><span>IPv6</span><input v-model="props.config.tun.ipv6" /></label>
-        <label class="field"><span>{{ props.t('socksMark') }}</span><input v-model.number="props.config.tun.socksMark" type="number" /></label>
-        <label class="field"><span>{{ props.t('routeTable') }}</span><input v-model.number="props.config.tun.routeTable" type="number" /></label>
-        <label class="field"><span>{{ props.t('mapDnsAddress') }}</span><input v-model="props.config.tun.mapDnsAddress" :disabled="!props.config.tun.mapDnsEnabled" /></label>
-        <label class="field"><span>{{ props.t('mapDnsPort') }}</span><input v-model.number="props.config.tun.mapDnsPort" type="number" :disabled="!props.config.tun.mapDnsEnabled" /></label>
-        <label class="field"><span>{{ props.t('mapDnsNetwork') }}</span><input v-model="props.config.tun.mapDnsNetwork" :disabled="!props.config.tun.mapDnsEnabled" /></label>
-        <label class="field"><span>{{ props.t('mapDnsNetmask') }}</span><input v-model="props.config.tun.mapDnsNetmask" :disabled="!props.config.tun.mapDnsEnabled" /></label>
       </div>
     </section>
 
-    <section class="group-card">
-      <h3>{{ props.t('runtimeOptions') }}</h3>
-      <div class="form-grid">
-        <label class="field"><span>{{ props.t('taskStackSize') }}</span><input v-model.number="props.config.tun.taskStackSize" type="number" /></label>
-        <label class="field"><span>{{ props.t('tcpBufferSize') }}</span><input v-model.number="props.config.tun.tcpBufferSize" type="number" /></label>
-        <label class="field"><span>{{ props.t('maxSession') }}</span><input v-model.number="props.config.tun.maxSession" type="number" /></label>
-        <label class="field"><span>{{ props.t('connectTimeoutMs') }}</span><input v-model.number="props.config.tun.connectTimeout" type="number" /></label>
-        <label class="field"><span>{{ props.t('corePort') }}</span><input v-model.number="props.config.core.localPort" type="number" /></label>
-        <label class="field"><span>{{ props.t('sudokuBinary') }}</span><input v-model="props.config.core.sudokuBinary" /></label>
-        <label class="field"><span>{{ props.t('hevBinary') }}</span><input v-model="props.config.core.hevBinary" /></label>
-        <label class="field"><span>{{ props.t('workDir') }}</span><input v-model="props.config.core.workingDir" /></label>
+    <section class="card">
+      <div class="rows">
+        <label class="row">
+          <div class="row-text">
+            <strong>{{ t('blockQuic') }}</strong>
+            <small>{{ t('blockQuicHint') }}</small>
+          </div>
+          <span class="switch"><input v-model="config.tun.blockQuic" type="checkbox" /><i /></span>
+        </label>
+        <label class="row">
+          <div class="row-text">
+            <strong>{{ t('mapDns') }}</strong>
+            <small>{{ t('mapDnsHint') }}</small>
+          </div>
+          <span class="switch"><input v-model="config.tun.mapDnsEnabled" type="checkbox" /><i /></span>
+        </label>
       </div>
     </section>
-  </main>
+
+    <details class="card">
+      <summary>{{ t('advancedOptions') }}<ChevronDown :size="16" aria-hidden="true" /></summary>
+      <div class="card-body">
+        <p class="hint">{{ t('tunAdvancedHint') }}</p>
+        <div class="fields">
+          <label class="field"><span>{{ t('interface') }}</span><input v-model="config.tun.interfaceName" class="input mono" spellcheck="false" /></label>
+          <label class="field"><span>MTU</span><input v-model.number="config.tun.mtu" class="input num" type="number" /></label>
+          <label class="field"><span>IPv4</span><input v-model="config.tun.ipv4" class="input mono" spellcheck="false" /></label>
+          <label class="field"><span>IPv6</span><input v-model="config.tun.ipv6" class="input mono" spellcheck="false" /></label>
+          <label class="field"><span>{{ t('socksUdp') }}</span>
+            <select v-model="config.tun.socksUdp" class="select"><option value="udp">udp</option><option value="tcp">tcp</option></select>
+          </label>
+          <label class="field"><span>{{ t('tunLogLevel') }}</span>
+            <select v-model="config.tun.logLevel" class="select"><option>debug</option><option>info</option><option>warn</option><option>error</option></select>
+          </label>
+          <label class="field"><span>{{ t('socksMark') }}</span><input v-model.number="config.tun.socksMark" class="input num" type="number" /></label>
+          <label class="field"><span>{{ t('routeTable') }}</span><input v-model.number="config.tun.routeTable" class="input num" type="number" /></label>
+        </div>
+        <template v-if="config.tun.mapDnsEnabled">
+          <div class="section-title">{{ t('mapDns') }}</div>
+          <div class="fields">
+            <label class="field"><span>{{ t('mapDnsAddress') }}</span><input v-model="config.tun.mapDnsAddress" class="input mono" spellcheck="false" /></label>
+            <label class="field"><span>{{ t('mapDnsPort') }}</span><input v-model.number="config.tun.mapDnsPort" class="input num" type="number" /></label>
+            <label class="field"><span>{{ t('mapDnsNetwork') }}</span><input v-model="config.tun.mapDnsNetwork" class="input mono" spellcheck="false" /></label>
+            <label class="field"><span>{{ t('mapDnsNetmask') }}</span><input v-model="config.tun.mapDnsNetmask" class="input mono" spellcheck="false" /></label>
+          </div>
+        </template>
+        <div class="section-title">{{ t('runtimeOptions') }}</div>
+        <div class="fields">
+          <label class="field"><span>{{ t('taskStackSize') }}</span><input v-model.number="config.tun.taskStackSize" class="input num" type="number" /></label>
+          <label class="field"><span>{{ t('tcpBufferSize') }}</span><input v-model.number="config.tun.tcpBufferSize" class="input num" type="number" /></label>
+          <label class="field"><span>{{ t('maxSession') }}</span><input v-model.number="config.tun.maxSession" class="input num" type="number" /></label>
+          <label class="field"><span>{{ t('connectTimeoutMs') }}</span><input v-model.number="config.tun.connectTimeout" class="input num" type="number" /></label>
+        </div>
+      </div>
+      <div class="card-foot">
+        <button class="btn" @click="resetTunFactory">{{ t('restoreTunDefaults') }}</button>
+      </div>
+    </details>
+
+    <div class="page-actions">
+      <button class="btn primary" @click="saveConfig()">{{ t('apply') }}</button>
+    </div>
+  </div>
 </template>
