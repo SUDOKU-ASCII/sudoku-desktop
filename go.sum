@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-github.com/SUDOKU-ASCII/sudoku v0.5.2-0.20261022110113-56ce6f1aeea1 h1:Dy8Cmx7Uz1C1rMu6ZPJBdV5TxPxrZV3eojN25pzU3no=
-github.com/SUDOKU-ASCII/sudoku v0.5.2-0.20261022110113-56ce6f1aeea1/go.mod h1:Eqbi4S5FRZUMyW2WDB6HdnztknFC/H/52a1ymt266ww=
+github.com/SUDOKU-ASCII/sudoku v0.5.2 h1:POOTJnbOHV2pHQ02lgGUkSUB7gTbsCqDGljT959ensI=
+github.com/SUDOKU-ASCII/sudoku v0.5.2/go.mod h1:Eqbi4S5FRZUMyW2WDB6HdnztknFC/H/52a1ymt266ww=
 github.com/adrg/xdg v0.5.3 h1:xRnxJXne7+oWDatRhR1JLnvuccuIeCoBu2rtuLqQB78=
 github.com/adrg/xdg v0.5.3/go.mod h1:nlTsY+NNiCBGCK2tpm09vRqfVzrc2fLmXGpBLF0zlTQ=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
