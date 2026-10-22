@@ -28,7 +28,7 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
-      - wails3 generate bindings -clean=true -ts
+      - wails3 generate bindings -clean=true -ts -f "-tags=gtk3"
 
   build:frontend:
     summary: Build frontend assets
