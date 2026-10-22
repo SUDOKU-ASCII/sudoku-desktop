@@ -1,4 +1,4 @@
-import * as App from '../bindings/github.com/SUDOKU-ASCII/sudoku-desktop/app'
+import * as App from '../bindings/github.com/SUDOKU-ASCII/sudoku-desktop/internal/desktop/app'
 import type {
   ActiveConnection,
   AppConfig,

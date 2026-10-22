@@ -12,124 +12,124 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as core$0 from "./internal/core/models.js";
+import * as core$0 from "../core/models.js";
 
 export function AutoSelectLowestLatency(): $CancellablePromise<core$0.LatencyResult> {
-    return $Call.ByID(1766018366).then(($result: any) => {
+    return $Call.ByID(3646498183).then(($result: any) => {
         return $$createType0($result);
     });
 }
 
 export function BuildInfo(): $CancellablePromise<{ [_ in string]?: string }> {
-    return $Call.ByID(2153119103).then(($result: any) => {
+    return $Call.ByID(936660342).then(($result: any) => {
         return $$createType1($result);
     });
 }
 
 export function CloseAllConnections(): $CancellablePromise<void> {
-    return $Call.ByID(55232683);
+    return $Call.ByID(857151994);
 }
 
 export function CloseConnection(connectionID: string): $CancellablePromise<void> {
-    return $Call.ByID(2951556907, connectionID);
+    return $Call.ByID(2979617934, connectionID);
 }
 
 export function ControllerInfo(): $CancellablePromise<core$0.ControllerInfo> {
-    return $Call.ByID(2583630849).then(($result: any) => {
+    return $Call.ByID(194167806).then(($result: any) => {
         return $$createType2($result);
     });
 }
 
 export function DeleteNode(nodeID: string): $CancellablePromise<void> {
-    return $Call.ByID(1080831774, nodeID);
+    return $Call.ByID(319879569, nodeID);
 }
 
 export function DetectIPDirect(): $CancellablePromise<core$0.IPDetectResult> {
-    return $Call.ByID(2579987290).then(($result: any) => {
+    return $Call.ByID(2865845889).then(($result: any) => {
         return $$createType3($result);
     });
 }
 
 export function DetectIPProxy(): $CancellablePromise<core$0.IPDetectResult> {
-    return $Call.ByID(3095933365).then(($result: any) => {
+    return $Call.ByID(3274585392).then(($result: any) => {
         return $$createType3($result);
     });
 }
 
 export function EnsureCoreBinaries(): $CancellablePromise<void> {
-    return $Call.ByID(2644454621);
+    return $Call.ByID(2238932426);
 }
 
 export function ExportLogs(entries: core$0.LogEntry[]): $CancellablePromise<string> {
-    return $Call.ByID(2380865800, entries);
+    return $Call.ByID(1819880063, entries);
 }
 
 export function ExportShortLink(nodeID: string): $CancellablePromise<string> {
-    return $Call.ByID(2556485087, nodeID);
+    return $Call.ByID(2527524406, nodeID);
 }
 
 export function GetConfig(): $CancellablePromise<core$0.AppConfig> {
-    return $Call.ByID(1200034045).then(($result: any) => {
+    return $Call.ByID(1797250820).then(($result: any) => {
         return $$createType4($result);
     });
 }
 
 export function GetConnections(): $CancellablePromise<core$0.ActiveConnection[]> {
-    return $Call.ByID(1541859132).then(($result: any) => {
+    return $Call.ByID(4195352519).then(($result: any) => {
         return $$createType6($result);
     });
 }
 
 export function GetLANProxyInfo(): $CancellablePromise<core$0.LANProxyInfo> {
-    return $Call.ByID(1588789326).then(($result: any) => {
+    return $Call.ByID(2394266047).then(($result: any) => {
         return $$createType7($result);
     });
 }
 
 export function GetLogs(level: string, limit: number): $CancellablePromise<core$0.LogEntry[]> {
-    return $Call.ByID(1743981476, level, limit).then(($result: any) => {
+    return $Call.ByID(115441065, level, limit).then(($result: any) => {
         return $$createType9($result);
     });
 }
 
 export function GetState(): $CancellablePromise<core$0.RuntimeState> {
-    return $Call.ByID(2490316256).then(($result: any) => {
+    return $Call.ByID(854233343).then(($result: any) => {
         return $$createType10($result);
     });
 }
 
 export function GetUsageHistory(limit: number): $CancellablePromise<core$0.UsageDay[]> {
-    return $Call.ByID(3645314582, limit).then(($result: any) => {
+    return $Call.ByID(2198670127, limit).then(($result: any) => {
         return $$createType12($result);
     });
 }
 
 export function ImportShortLink(name: string, link: string): $CancellablePromise<core$0.NodeConfig> {
-    return $Call.ByID(4069088750, name, link).then(($result: any) => {
+    return $Call.ByID(3792756327, name, link).then(($result: any) => {
         return $$createType13($result);
     });
 }
 
 export function OpenConfigPath(): $CancellablePromise<string> {
-    return $Call.ByID(2392342484);
+    return $Call.ByID(1065357183);
 }
 
 export function OpenRuntimeDir(): $CancellablePromise<string> {
-    return $Call.ByID(1333260438);
+    return $Call.ByID(3104842749);
 }
 
 export function OpenURL(raw: string): $CancellablePromise<void> {
-    return $Call.ByID(3584934946, raw);
+    return $Call.ByID(3941198895, raw);
 }
 
 export function ProbeAllNodes(): $CancellablePromise<core$0.LatencyResult[]> {
-    return $Call.ByID(3983201005).then(($result: any) => {
+    return $Call.ByID(3590365968).then(($result: any) => {
         return $$createType14($result);
     });
 }
 
 export function ProbeNode(nodeID: string): $CancellablePromise<core$0.LatencyResult> {
-    return $Call.ByID(2426717665, nodeID).then(($result: any) => {
+    return $Call.ByID(3986673068, nodeID).then(($result: any) => {
         return $$createType0($result);
     });
 }
@@ -138,55 +138,55 @@ export function ProbeNode(nodeID: string): $CancellablePromise<core$0.LatencyRes
  * RepairNetwork undoes tunnel routes/DNS overrides left behind by a crashed session.
  */
 export function RepairNetwork(): $CancellablePromise<void> {
-    return $Call.ByID(1900127906);
+    return $Call.ByID(3469582363);
 }
 
 export function RestartProxy(req: core$0.StartRequest): $CancellablePromise<void> {
-    return $Call.ByID(1240580212, req);
+    return $Call.ByID(3378946359, req);
 }
 
 export function SaveConfig(cfg: core$0.AppConfig): $CancellablePromise<void> {
-    return $Call.ByID(3442292638, cfg);
+    return $Call.ByID(2731910441, cfg);
 }
 
 export function SetActiveNode(nodeID: string): $CancellablePromise<void> {
-    return $Call.ByID(1112636605, nodeID);
+    return $Call.ByID(1757502556, nodeID);
 }
 
 export function SetRoutingMode(mode: string): $CancellablePromise<void> {
-    return $Call.ByID(1686574732, mode);
+    return $Call.ByID(1862494363, mode);
 }
 
 export function ShutdownNow(): $CancellablePromise<void> {
-    return $Call.ByID(1694833773);
+    return $Call.ByID(928278936);
 }
 
 export function SortNodesByLatency(): $CancellablePromise<void> {
-    return $Call.ByID(1730788671);
+    return $Call.ByID(3496965644);
 }
 
 export function SortNodesByName(): $CancellablePromise<void> {
-    return $Call.ByID(3041695020);
+    return $Call.ByID(83019797);
 }
 
 export function StartProxy(req: core$0.StartRequest): $CancellablePromise<void> {
-    return $Call.ByID(2835838209, req);
+    return $Call.ByID(2752403754, req);
 }
 
 export function StartReverseForwarder(): $CancellablePromise<void> {
-    return $Call.ByID(2642317999);
+    return $Call.ByID(2804064334);
 }
 
 export function StopProxy(): $CancellablePromise<void> {
-    return $Call.ByID(3345047379);
+    return $Call.ByID(4118583890);
 }
 
 export function StopReverseForwarder(): $CancellablePromise<void> {
-    return $Call.ByID(2275417685);
+    return $Call.ByID(894913414);
 }
 
 export function SwitchNode(nodeID: string): $CancellablePromise<void> {
-    return $Call.ByID(1881690177, nodeID);
+    return $Call.ByID(1986303666, nodeID);
 }
 
 /**
@@ -194,38 +194,38 @@ export function SwitchNode(nodeID: string): $CancellablePromise<void> {
  * action that was waiting for it.
  */
 export function TunAcquirePrivileges(password: string): $CancellablePromise<void> {
-    return $Call.ByID(4221577784, password);
+    return $Call.ByID(1551232019, password);
 }
 
 /**
  * TunCancelPrivileges dismisses the password prompt.
  */
 export function TunCancelPrivileges(): $CancellablePromise<void> {
-    return $Call.ByID(3379681014);
+    return $Call.ByID(2478824075);
 }
 
 /**
  * TunDropPrivileges forgets the password.
  */
 export function TunDropPrivileges(): $CancellablePromise<void> {
-    return $Call.ByID(3464546521);
+    return $Call.ByID(2597165788);
 }
 
 /**
  * TunHasPrivileges reports whether the tunnel helper can start without the password prompt.
  */
 export function TunHasPrivileges(): $CancellablePromise<boolean> {
-    return $Call.ByID(3950116500);
+    return $Call.ByID(2270579043);
 }
 
 export function UpsertNode(node: core$0.NodeConfig): $CancellablePromise<core$0.NodeConfig> {
-    return $Call.ByID(2714662214, node).then(($result: any) => {
+    return $Call.ByID(1365922401, node).then(($result: any) => {
         return $$createType13($result);
     });
 }
 
 export function ValidateYAML(content: string): $CancellablePromise<void> {
-    return $Call.ByID(1358246116, content);
+    return $Call.ByID(3086710815, content);
 }
 
 // Private type creation functions

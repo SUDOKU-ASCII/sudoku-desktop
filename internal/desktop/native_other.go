@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package desktop
 
 var windowsWndProcInterceptor func(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, bool)
 

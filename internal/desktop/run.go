@@ -1,8 +1,8 @@
-package main
+package desktop
 
 import (
-	"embed"
 	"errors"
+	"io/fs"
 	"os"
 	"os/signal"
 	"runtime"
@@ -18,25 +18,23 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
-//go:embed all:runtime/bin
-var bundledRuntime embed.FS
-
-//go:embed build/appicon.png
-var trayIcon []byte
-
-//go:embed build/tray/logo-monochrome.svg
-var trayTemplateIcon []byte
-
 func init() {
 	application.RegisterEvent[core.RuntimeState](core.EventStateUpdated)
 	application.RegisterEvent[core.LogEntry](core.EventLogAdded)
 	application.RegisterEvent[core.TrafficTick](core.EventTrafficUpdated)
 }
 
-func main() {
+// Resources are the files the executable embeds; they live next to main because go:embed
+// paths cannot leave the package directory.
+type Resources struct {
+	Frontend         fs.FS
+	Runtime          fs.FS
+	TrayIcon         []byte
+	TrayTemplateIcon []byte
+}
+
+// Run starts the desktop application (or one of its helper roles) and blocks until it exits.
+func Run(res Resources) {
 	// Helper roles are second instances of this executable and must run before any GUI
 	// initialisation (and before the single-instance lock).
 	if len(os.Args) > 1 {
@@ -47,7 +45,7 @@ func main() {
 			}
 			return
 		case "--tun-helper":
-			os.Exit(core.RunTunHelper(os.Args[2:], bundledRuntime, "runtime/bin"))
+			os.Exit(core.RunTunHelper(os.Args[2:], res.Runtime, "runtime/bin"))
 		}
 	}
 
@@ -59,7 +57,7 @@ func main() {
 		}
 	}
 
-	appService := NewApp(bundledRuntime, "runtime/bin")
+	appService := NewApp(res.Runtime, "runtime/bin")
 	var quitting atomic.Bool
 	var shutdownDone atomic.Bool
 	var shutdownOnce sync.Once
@@ -94,12 +92,12 @@ func main() {
 	app = application.New(application.Options{
 		Name:        "sudoku4x4",
 		Description: "4x4 sudoku desktop client",
-		Icon:        trayIcon,
+		Icon:        res.TrayIcon,
 		Services: []application.Service{
 			application.NewService(appService),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.BundledAssetFileServer(assets),
+			Handler: application.BundledAssetFileServer(res.Frontend),
 		},
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "com.sudokuascii.sudoku4x4",
@@ -188,7 +186,7 @@ func main() {
 			WebView2CompositionHosting: true,
 		},
 		Linux: application.LinuxWindow{
-			Icon:                trayIcon,
+			Icon:                res.TrayIcon,
 			WindowIsTranslucent: true,
 		},
 		KeyBindings: map[string]func(window application.Window){
@@ -225,13 +223,13 @@ func main() {
 		WindowDebounce(160 * time.Millisecond)
 	tray.SetTooltip("4x4 sudoku")
 	if runtime.GOOS == "darwin" {
-		if len(trayTemplateIcon) > 0 {
-			tray.SetTemplateIcon(trayTemplateIcon)
-		} else if len(trayIcon) > 0 {
-			tray.SetTemplateIcon(trayIcon)
+		if len(res.TrayTemplateIcon) > 0 {
+			tray.SetTemplateIcon(res.TrayTemplateIcon)
+		} else if len(res.TrayIcon) > 0 {
+			tray.SetTemplateIcon(res.TrayIcon)
 		}
-	} else if len(trayIcon) > 0 {
-		tray.SetIcon(trayIcon)
+	} else if len(res.TrayIcon) > 0 {
+		tray.SetIcon(res.TrayIcon)
 	}
 	showMainWindow := func() {
 		if mainWindow.IsMinimised() {

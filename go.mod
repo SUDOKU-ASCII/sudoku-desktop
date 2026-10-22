@@ -3,7 +3,7 @@ module github.com/SUDOKU-ASCII/sudoku-desktop
 go 1.27.2
 
 require (
-	github.com/SUDOKU-ASCII/sudoku v0.5.2-0.20261018140605-aee67aca20f9
+	github.com/SUDOKU-ASCII/sudoku v0.5.2-0.20261022110113-56ce6f1aeea1
 	github.com/wailsapp/wails/v3 v3.0.0-beta.34
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-HEV_VERSION="${HEV_VERSION:-2.17.1}"
+HEV_VERSION="${HEV_VERSION:-2.19.1}"
 GOOS="${GOOS:-$(go env GOOS)}"
 GOARCH="${GOARCH:-$(go env GOARCH)}"
 PLATFORM_DIR="${GOOS}-${GOARCH}"
