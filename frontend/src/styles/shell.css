@@ -296,6 +296,18 @@
   padding: 14px 12px 22px 16px;
 }
 
+/* Windows resizes the frameless window by hit-testing a few pixels along its edges in JS;
+   a native scrollbar there swallows the press, so keep it clear of the right edge and the
+   bottom-right corner. */
+.app-shell.win .page-scroll {
+  margin: 0 7px 14px 0;
+}
+
+.app-shell.win .page {
+  padding-right: 6px;
+  padding-bottom: 8px;
+}
+
 .page.fill {
   height: 100%;
 }

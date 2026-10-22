@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -60,8 +61,11 @@ func main() {
 
 	appService := NewApp(bundledRuntime, "runtime/bin")
 	var quitting atomic.Bool
+	var shutdownDone atomic.Bool
+	var shutdownOnce sync.Once
 	var app *application.App
 	var mainWindow application.Window
+	var requestQuit, shutdown func()
 
 	showExistingInstance := func() {
 		application.InvokeAsync(func() {
@@ -106,6 +110,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
+			WndProcInterceptor:            windowsWndProcInterceptor,
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
@@ -114,20 +119,50 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
+		// ShouldQuit runs on the UI thread. On Windows tearing down the core, TUN and system
+		// proxy there froze the message loop (window and tray stopped responding), so the first
+		// request starts the shutdown in the background and re-issues the quit once it is done.
+		// macOS keeps the synchronous path: cancelling applicationShouldTerminate would also
+		// cancel a logout or shutdown.
 		ShouldQuit: func() bool {
-			quitting.Store(true)
-			appService.ShutdownNow()
-			return true
+			if shutdownDone.Load() {
+				return true
+			}
+			if runtime.GOOS == "darwin" {
+				quitting.Store(true)
+				shutdown()
+				return true
+			}
+			requestQuit()
+			return false
 		},
 	})
 
-	requestQuit := func() {
+	shutdown = func() {
+		shutdownOnce.Do(func() {
+			appService.ShutdownNow()
+			shutdownDone.Store(true)
+		})
+	}
+	requestQuit = func() {
 		if !quitting.CompareAndSwap(false, true) {
 			return
 		}
-		appService.ShutdownNow()
-		app.Quit()
+		go func() {
+			// Backend teardown is bounded (it kills the core after its own deadline); this
+			// only guards against a wedged UI thread keeping a dead process alive.
+			time.AfterFunc(45*time.Second, func() { os.Exit(0) })
+			if mainWindow != nil {
+				mainWindow.Hide()
+			}
+			shutdown()
+			app.Quit()
+		}()
 	}
+	onSessionEnd(func() {
+		quitting.Store(true)
+		shutdown()
+	})
 
 	backgroundType, backgroundColour := mainWindowBackground()
 	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -173,6 +208,8 @@ func main() {
 		},
 	})
 
+	enforceNativeMinSize(mainWindow, 390, 560)
+
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if quitting.Load() {
 			return
@@ -195,9 +232,14 @@ func main() {
 	} else if len(trayIcon) > 0 {
 		tray.SetIcon(trayIcon)
 	}
-	tray.OnClick(func() {
+	showMainWindow := func() {
+		if mainWindow.IsMinimised() {
+			mainWindow.UnMinimise()
+		}
 		mainWindow.Show().Focus()
-	})
+	}
+	tray.OnClick(showMainWindow)
+	tray.OnDoubleClick(showMainWindow)
 
 	trayMenu := application.NewMenu()
 	openItem := trayMenu.Add("Open Window")
@@ -223,7 +265,7 @@ func main() {
 	}
 
 	openItem.OnClick(func(_ *application.Context) {
-		mainWindow.Show().Focus()
+		showMainWindow()
 	})
 	proxyToggleItem.OnClick(func(_ *application.Context) {
 		if err := appService.trayToggleProxy(); err != nil && !errors.Is(err, core.ErrStartCancelled) {

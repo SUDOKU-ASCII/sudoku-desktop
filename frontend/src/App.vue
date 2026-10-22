@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Application, System, Window } from '@wailsio/runtime'
+import { System, Window } from '@wailsio/runtime'
 import {
   ArrowLeftRight,
   CircleAlert,
@@ -95,14 +95,8 @@ watch(currentTab, (next, prev) => {
   })
 })
 
-const closeWindow = () => {
-  if (isWindows) {
-    void Window.Hide()
-    void Application.Quit()
-    return
-  }
-  void Window.Hide()
-}
+// Closing hides to the tray on every platform; quitting is the tray menu or Ctrl/Cmd+Q.
+const closeWindow = () => void Window.Hide()
 const minimiseWindow = () => void Window.Minimise()
 const toggleMaximiseWindow = () => void Window.ToggleMaximise()
 
@@ -118,7 +112,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 </script>
 
 <template>
-  <div class="app-shell" :class="{ rounded: !isWindows }" :data-theme="resolvedTheme">
+  <div class="app-shell" :class="{ rounded: !isWindows, win: isWindows }" :data-theme="resolvedTheme">
     <aside class="sidebar" @dblclick.self="toggleMaximiseWindow">
       <div v-if="isMac" class="window-dots">
         <button class="close" type="button" aria-label="Close" @click="closeWindow" />
