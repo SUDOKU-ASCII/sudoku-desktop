@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Events, System, Window } from '@wailsio/runtime'
+import { System, Window } from '@wailsio/runtime'
 import {
   ArrowLeftRight,
   CircleAlert,
@@ -70,11 +70,6 @@ const panels = {
 const isMac = System.IsMac()
 const isWindows = System.IsWindows()
 const isLinux = System.IsLinux()
-const resizeEdges = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
-
-const startResize = (edge: string) => {
-  void Events.Emit('app:resize-edge', edge)
-}
 
 const statusTone = computed(() => {
   if (state.phase === 'running') return 'ok'
@@ -118,7 +113,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 </script>
 
 <template>
-  <div class="app-shell" :class="{ rounded: !isWindows, win: isWindows }" :data-theme="resolvedTheme">
+  <div class="app-shell" :class="{ rounded: !isWindows, win: isWindows, inset: isWindows || isLinux }" :data-theme="resolvedTheme">
     <aside class="sidebar" @dblclick.self="toggleMaximiseWindow">
       <div v-if="isMac" class="window-dots">
         <button class="close" type="button" aria-label="Close" @click="closeWindow" />
@@ -208,27 +203,5 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
     <Transition name="toast">
       <div v-if="notice" class="toast" :class="noticeType" role="status">{{ notice }}</div>
     </Transition>
-
-    <!-- The frameless window is resized by hit-testing the page edges in JS, but the page never
-         sees pointer events that land on a native scrollbar. These invisible strips sit above
-         everything along the right/bottom edges so those events always reach the page. -->
-    <template v-if="isWindows">
-      <i class="grip grip-right" aria-hidden="true" />
-      <i class="grip grip-bottom" aria-hidden="true" />
-      <i class="grip grip-corner" aria-hidden="true" />
-    </template>
-
-    <!-- Wails has no edge resizing for frameless windows on Linux; the window manager does it
-         once the Go side is told which edge was grabbed. -->
-    <template v-if="isLinux">
-      <i
-        v-for="edge in resizeEdges"
-        :key="edge"
-        class="rz"
-        :class="`rz-${edge}`"
-        aria-hidden="true"
-        @mousedown.left.prevent="startResize(edge)"
-      />
-    </template>
   </div>
 </template>

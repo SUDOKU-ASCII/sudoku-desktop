@@ -44,8 +44,8 @@ const latencyText = (l?: LatencyResult) => {
 const latencyTone = (l?: LatencyResult) => {
   if (!l) return ''
   if (!l.connectOk) return 'bad'
-  if (l.latencyMs <= 150) return 'ok'
-  if (l.latencyMs <= 350) return 'warn'
+  if (l.latencyMs <= 400) return 'ok'
+  if (l.latencyMs <= 800) return 'warn'
   return 'bad'
 }
 

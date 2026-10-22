@@ -183,6 +183,9 @@ func main() {
 		},
 		Windows: application.WindowsWindow{
 			DisableFramelessWindowDecorations: false,
+			// Visual hosting lets the host window hit-test its own resize borders natively, so
+			// edge resizing no longer depends on page JS that a scrollbar can swallow.
+			WebView2CompositionHosting: true,
 		},
 		Linux: application.LinuxWindow{
 			Icon:                trayIcon,
@@ -207,9 +210,6 @@ func main() {
 			},
 		},
 	})
-
-	enforceNativeMinSize(mainWindow, 390, 560)
-	registerWindowResize(app, mainWindow)
 
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if quitting.Load() {

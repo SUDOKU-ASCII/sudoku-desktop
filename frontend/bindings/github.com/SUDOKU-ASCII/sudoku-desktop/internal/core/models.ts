@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * ActiveConnection is one live connection as reported by the core's /connections.
  */
@@ -31,7 +27,7 @@ export class ActiveConnection {
     "rule": string;
     "upload": number;
     "download": number;
-    "startedAt": time$0.Time;
+    "startedAt": string;
 
     /** Creates a new ActiveConnection instance. */
     constructor($$source: Partial<ActiveConnection> = {}) {
@@ -66,7 +62,7 @@ export class ActiveConnection {
             this["download"] = 0;
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -183,7 +179,7 @@ export class AppConfig {
 }
 
 export class BandwidthSample {
-    "at": time$0.Time;
+    "at": string;
     "txBps": number;
     "rxBps": number;
     "directBps": number;
@@ -194,7 +190,7 @@ export class BandwidthSample {
     /** Creates a new BandwidthSample instance. */
     constructor($$source: Partial<BandwidthSample> = {}) {
         if (!("at" in $$source)) {
-            this["at"] = null;
+            this["at"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("txBps" in $$source)) {
             this["txBps"] = 0;
@@ -618,7 +614,7 @@ export class LatencyResult {
 
 export class LogEntry {
     "id": string;
-    "timestamp": time$0.Time;
+    "timestamp": string;
     "level": string;
     "component": string;
     "message": string;
@@ -630,7 +626,7 @@ export class LogEntry {
             this["id"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = null;
+            this["timestamp"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("level" in $$source)) {
             this["level"] = "";
