@@ -209,6 +209,7 @@ func main() {
 	})
 
 	enforceNativeMinSize(mainWindow, 390, 560)
+	registerWindowResize(app, mainWindow)
 
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if quitting.Load() {

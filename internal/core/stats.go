@@ -43,6 +43,7 @@ func (b *Backend) startSession(k *kernel) {
 		})
 	})
 	run(func() { b.connLoop(ctx, k) })
+	run(func() { b.syncLoop(ctx, k) })
 }
 
 func retryLoop(ctx context.Context, fn func() error) {

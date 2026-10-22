@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { generateSudokuPuzzle, type SudokuDifficulty, type SudokuSize } from '../sudoku/engine'
+import { Check, Eraser, Lightbulb, Pencil, Redo2, RefreshCw, RotateCcw, Undo2 } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 
 type Action = {
@@ -138,16 +139,24 @@ const redo = () => {
   historyPtr.value++
 }
 
+// One line between neighbouring cells (the cell's own top/left edge); box borders are
+// heavier and the board's outer right/bottom edge closes the grid.
 const cellBorderStyle = (idx: number) => {
   const n = size.value
   const bs = boxSize.value
   const r = Math.floor(idx / n)
   const c = idx % n
+  const boxTop = r % bs === 0
+  const boxLeft = c % bs === 0
   return {
-    borderTopWidth: r % bs === 0 ? '4px' : '2px',
-    borderLeftWidth: c % bs === 0 ? '4px' : '2px',
-    borderRightWidth: c === n - 1 ? '4px' : '2px',
-    borderBottomWidth: r === n - 1 ? '4px' : '2px',
+    borderTopWidth: boxTop ? '2px' : '1px',
+    borderLeftWidth: boxLeft ? '2px' : '1px',
+    borderRightWidth: c === n - 1 ? '2px' : '0',
+    borderBottomWidth: r === n - 1 ? '2px' : '0',
+    borderTopColor: boxTop ? 'var(--grid-strong)' : 'var(--grid-thin)',
+    borderLeftColor: boxLeft ? 'var(--grid-strong)' : 'var(--grid-thin)',
+    borderRightColor: 'var(--grid-strong)',
+    borderBottomColor: 'var(--grid-strong)',
   }
 }
 
@@ -391,57 +400,38 @@ const noteColumns = computed(() => boxSize.value)
 </script>
 
 <template>
-  <div class="game-root">
-    <header class="game-head">
+  <div class="page game" :style="{ '--n': size }">
+    <section class="card game-bar">
       <div class="game-title">
-        <h3>{{ t('sudokuGame') }}</h3>
-        <p>{{ t('sudokuGameSubtitle') }}</p>
+        <h2>{{ t('sudokuGame') }}</h2>
+        <small>{{ t('sudokuGameSubtitle') }}</small>
       </div>
-
-      <div class="game-toolbar">
-        <label class="select">
+      <div class="game-controls">
+        <label class="game-field">
           <span>{{ t('gameSize') }}</span>
-          <select v-model.number="size">
+          <select v-model.number="size" class="select">
             <option :value="4">4×4</option>
             <option :value="9">9×9</option>
           </select>
         </label>
-        <label class="select">
+        <label class="game-field">
           <span>{{ t('difficulty') }}</span>
-          <select v-model="difficulty">
+          <select v-model="difficulty" class="select">
             <option value="easy">{{ t('easy') }}</option>
             <option value="normal">{{ t('normal') }}</option>
             <option value="hard">{{ t('hard') }}</option>
             <option value="expert">{{ t('expert') }}</option>
           </select>
         </label>
-
-        <button class="btn" :disabled="generating" @click="newGame">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M20 12a8 8 0 0 1-14.9 4M4 12A8 8 0 0 1 18.9 8"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.6"
-              stroke-linecap="round"
-            />
-            <path
-              d="M18 3v5h-5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <span>{{ t('newGame') }}</span>
+        <button class="btn primary" :disabled="generating" @click="newGame">
+          <RefreshCw :size="14" aria-hidden="true" /><span>{{ t('newGame') }}</span>
         </button>
       </div>
-    </header>
+    </section>
 
     <section class="game-layout">
-      <div class="board brutal-card">
-        <div class="grid" :style="{ '--n': size }">
+      <div class="card board">
+        <div class="grid">
           <button
             v-for="(_, idx) in cells"
             :key="idx"
@@ -461,168 +451,58 @@ const noteColumns = computed(() => boxSize.value)
         </div>
 
         <div v-if="generating" class="overlay">
-          <div class="overlay-card brutal-card">
+          <div class="overlay-card">
             <div class="spinner" aria-hidden="true"></div>
             <strong>{{ t('generating') }}</strong>
             <small>{{ t('generatingHint') }}</small>
           </div>
         </div>
 
-        <div v-if="generationError" class="overlay error">
-          <div class="overlay-card brutal-card">
+        <div v-if="generationError" class="overlay">
+          <div class="overlay-card">
             <strong>{{ t('generationFailed') }}</strong>
             <small>{{ generationError }}</small>
-            <button class="btn mini" @click="newGame">{{ t('tryAgain') }}</button>
+            <button class="btn sm" @click="newGame">{{ t('tryAgain') }}</button>
           </div>
         </div>
 
-        <div v-if="solvedOverlayVisible" class="overlay success" @click.self="newGame">
-          <div class="overlay-card brutal-card win">
-            <svg class="check" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M5 13l4 4L19 7"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+        <div v-if="solvedOverlayVisible" class="overlay" @click.self="newGame">
+          <div class="overlay-card">
+            <span class="win-mark"><Check :size="22" :stroke-width="3" aria-hidden="true" /></span>
             <strong>{{ t('completed') }}</strong>
             <small>{{ t('time') }}: {{ elapsedText }} · {{ t('hintsUsed') }}: {{ hintsUsed }}</small>
-            <div class="row">
-              <button class="btn mini" @click="resetPuzzle">{{ t('playAgain') }}</button>
-              <button class="btn mini" @click="newGame">{{ t('newGame') }}</button>
+            <div class="overlay-actions">
+              <button class="btn sm" @click="resetPuzzle">{{ t('playAgain') }}</button>
+              <button class="btn sm primary" @click="newGame">{{ t('newGame') }}</button>
             </div>
           </div>
         </div>
       </div>
 
-      <aside class="side brutal-card">
+      <aside class="card side">
         <div class="stats">
-          <div class="stat">
-            <small>{{ t('time') }}</small>
-            <strong>{{ elapsedText }}</strong>
-          </div>
-          <div class="stat">
-            <small>{{ t('hintsUsed') }}</small>
-            <strong>{{ hintsUsed }}</strong>
-          </div>
-          <div class="stat">
-            <small>{{ t('mode') }}</small>
-            <strong>{{ notesMode ? t('notes') : t('value') }}</strong>
-          </div>
+          <div class="stat"><small>{{ t('time') }}</small><strong class="num">{{ elapsedText }}</strong></div>
+          <div class="stat"><small>{{ t('hintsUsed') }}</small><strong class="num">{{ hintsUsed }}</strong></div>
+          <div class="stat"><small>{{ t('mode') }}</small><strong>{{ notesMode ? t('notes') : t('value') }}</strong></div>
+        </div>
+
+        <div class="keypad" :class="{ four: size === 4 }">
+          <button v-for="d in digits" :key="d" class="key" :disabled="generating" @click="pressDigit(d)">{{ d }}</button>
         </div>
 
         <div class="tools">
-          <button class="btn mini" :class="{ active: notesMode }" @click="notesMode = !notesMode">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M3 17.5V21h3.5L19 8.5 15.5 5 3 17.5Z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.4"
-                stroke-linejoin="round"
-              />
-              <path d="M14.5 6L18 9.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-            </svg>
-            <span>{{ t('notes') }}</span>
+          <button class="btn" :class="{ active: notesMode }" :aria-pressed="notesMode" @click="notesMode = !notesMode">
+            <Pencil :size="14" aria-hidden="true" /><span>{{ t('notes') }}</span>
           </button>
-
-          <button class="btn mini" :disabled="!canUndo" @click="undo">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M9 14L4 9l5-5"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M20 20v-5a7 7 0 0 0-7-7H4"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <span>{{ t('undo') }}</span>
-          </button>
-
-          <button class="btn mini" :disabled="!canRedo" @click="redo">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M15 4l5 5-5 5"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M4 20v-5a7 7 0 0 1 7-7h9"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <span>{{ t('redo') }}</span>
-          </button>
+          <button class="btn" :disabled="generating" @click="erase"><Eraser :size="14" aria-hidden="true" /><span>{{ t('erase') }}</span></button>
+          <button class="btn" :disabled="generating || !!solvedAt" @click="hint"><Lightbulb :size="14" aria-hidden="true" /><span>{{ t('hint') }}</span></button>
+          <button class="btn" :disabled="!canUndo" @click="undo"><Undo2 :size="14" aria-hidden="true" /><span>{{ t('undo') }}</span></button>
+          <button class="btn" :disabled="!canRedo" @click="redo"><Redo2 :size="14" aria-hidden="true" /><span>{{ t('redo') }}</span></button>
+          <button class="btn" :disabled="generating" @click="resetPuzzle"><RotateCcw :size="14" aria-hidden="true" /><span>{{ t('reset') }}</span></button>
         </div>
 
-        <div class="keypad">
-          <button v-for="d in digits" :key="d" class="key" :disabled="generating" @click="pressDigit(d)">
-            {{ d }}
-          </button>
-
-          <button class="key wide" :disabled="generating" @click="erase">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M6 19h12M7 7l10 10M17 7 7 17"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-              />
-            </svg>
-            <span>{{ t('erase') }}</span>
-          </button>
-
-          <button class="key wide" :disabled="generating || !!solvedAt" @click="hint">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M12 2a7 7 0 0 0-4 12v3h8v-3a7 7 0 0 0-4-12Z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linejoin="round"
-              />
-              <path d="M9 22h6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
-            </svg>
-            <span>{{ t('hint') }}</span>
-          </button>
-
-          <button class="key wide" :disabled="generating" @click="resetPuzzle">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M20 12a8 8 0 0 1-8 8 8 8 0 0 1-7.1-4.3"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.6"
-                stroke-linecap="round"
-              />
-              <path d="M6 16H3v3" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-            <span>{{ t('reset') }}</span>
-          </button>
-        </div>
-
-        <div class="kbd brutal-card">
-          <div class="kbd-title">{{ t('shortcuts') }}</div>
+        <details class="kbd">
+          <summary>{{ t('shortcuts') }}</summary>
           <div class="kbd-grid">
             <div class="kbd-row"><span>1-{{ size }}</span><span>{{ t('shortcutInput') }}</span></div>
             <div class="kbd-row"><span>Backspace</span><span>{{ t('shortcutErase') }}</span></div>
@@ -631,177 +511,137 @@ const noteColumns = computed(() => boxSize.value)
             <div class="kbd-row"><span>Ctrl/⌘+Z</span><span>{{ t('shortcutUndo') }}</span></div>
             <div class="kbd-row"><span>Ctrl/⌘+Shift+Z</span><span>{{ t('shortcutRedo') }}</span></div>
           </div>
-        </div>
+        </details>
       </aside>
     </section>
   </div>
 </template>
 
 <style scoped>
-.game-root {
-  display: grid;
-  gap: 14px;
+.game {
+  --grid-strong: color-mix(in srgb, var(--ink) 70%, var(--surface));
+  --grid-thin: var(--line-strong);
 }
 
-.game-head {
-  display: grid;
-  grid-template-columns: 1.1fr auto;
-  gap: 12px;
-  align-items: start;
-}
-
-.game-title h3 {
-  margin: 0;
-  font-size: 18px;
-  letter-spacing: 0.2px;
-}
-
-.game-title p {
-  margin: 6px 0 0;
-  color: var(--ink-soft);
-}
-
-.game-toolbar {
+.game-bar {
   display: flex;
-  gap: 10px;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: flex-end;
-}
-
-.select {
-  display: grid;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.select span {
-  opacity: 0.8;
-}
-
-.select select {
-  border: 3px solid var(--ink);
-  border-radius: 10px;
-  background: var(--paper);
-  padding: 6px 10px;
-  font-weight: 800;
-}
-
-.btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.btn {
-  display: inline-flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 14px;
+}
+
+.game-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.game-title h2 {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.game-title small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.game-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 8px;
 }
 
-.btn.active {
-  background: var(--ink);
-  color: var(--paper);
+.game-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .game-layout {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) minmax(280px, 360px);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
 }
 
-@media (max-width: 1100px) {
-  .game-head {
-    grid-template-columns: 1fr;
-  }
-  .game-toolbar {
-    justify-content: flex-start;
-  }
+@media (min-width: 880px) {
   .game-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) 300px;
   }
 }
 
 .board {
   position: relative;
-  padding: 14px;
-  min-height: 520px;
+  padding: 12px;
   overflow: hidden;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(var(--n), 1fr);
-  grid-template-rows: repeat(var(--n), minmax(0, 1fr));
-  width: min(560px, 100%);
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  width: min(540px, 100%);
   aspect-ratio: 1;
   margin: 0 auto;
-  background: var(--paper);
-  border-radius: 16px;
-  box-shadow: inset 0 0 0 3px var(--ink);
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 0 0 2px var(--grid-strong);
 }
 
 .cell {
-  appearance: none;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  aspect-ratio: 1;
-  border-style: solid;
-  border-color: var(--ink);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  padding: 0;
+  position: relative;
   display: grid;
   place-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
   overflow: hidden;
-  transition:
-    transform 0.12s ease,
-    background-color 0.12s ease,
-    color 0.12s ease,
-    box-shadow 0.12s ease;
-}
-
-.cell:hover {
-  transform: translateY(-1px);
+  border-style: solid;
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 0.12s;
 }
 
 .cell:disabled {
-  cursor: not-allowed;
+  cursor: default;
 }
 
 .cell.peer {
-  background: color-mix(in srgb, var(--accent-b) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
 .cell.same {
-  background: color-mix(in srgb, var(--accent-c) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .cell.selected {
-  background: color-mix(in srgb, var(--accent-a) 20%, transparent);
-  box-shadow: inset 0 0 0 3px var(--ink);
-}
-
-.cell.fixed .digit {
-  font-weight: 900;
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .cell.conflict {
-  background: color-mix(in srgb, var(--bad) 22%, transparent);
   color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 16%, transparent);
 }
 
-.cell.hinted {
-  animation: pop 0.16s ease;
+.cell.hinted .digit {
+  animation: pop 0.18s ease;
 }
 
 @keyframes pop {
   from {
-    transform: scale(0.92);
+    transform: scale(0.7);
   }
   to {
     transform: scale(1);
@@ -809,39 +649,41 @@ const noteColumns = computed(() => boxSize.value)
 }
 
 .digit {
-  font-weight: 900;
-  font-size: clamp(18px, 2.2vw, 28px);
+  font-size: clamp(16px, calc(min(540px, 100vw - 140px) / var(--n) * 0.52), 30px);
+  font-weight: 650;
   line-height: 1;
 }
 
+.cell.filled:not(.fixed):not(.conflict) .digit {
+  color: var(--accent-strong);
+  font-weight: 550;
+}
+
+.cell.fixed .digit {
+  font-weight: 750;
+}
+
 .notes {
-  width: 100%;
-  height: 100%;
   display: grid;
   grid-template-columns: repeat(var(--cols), 1fr);
   grid-template-rows: repeat(var(--cols), 1fr);
-  padding: 6px;
-  gap: 2px;
-  align-items: center;
-  justify-items: center;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--ink-soft);
+  width: 100%;
+  height: 100%;
+  padding: 2px;
+  color: var(--muted);
+  font-size: clamp(7px, calc(min(540px, 100vw - 140px) / var(--n) * 0.2), 11px);
+  font-weight: 600;
+  line-height: 1;
   user-select: none;
 }
 
 .note {
-  width: 100%;
-  height: 100%;
   display: grid;
   place-items: center;
-  border-radius: 6px;
-  transition: background-color 0.12s ease;
 }
 
 .note.on {
-  background: color-mix(in srgb, var(--accent-d) 22%, transparent);
-  color: var(--ink);
+  color: var(--ink-soft);
 }
 
 .overlay {
@@ -849,166 +691,171 @@ const noteColumns = computed(() => boxSize.value)
   inset: 0;
   display: grid;
   place-items: center;
-  background: color-mix(in srgb, var(--paper-soft) 50%, transparent);
-  backdrop-filter: blur(6px);
-  animation: fade 0.18s ease;
-}
-
-.overlay.error {
-  background: color-mix(in srgb, #ffe0dc 55%, transparent);
-}
-
-.overlay.success {
-  background: color-mix(in srgb, #dffbe9 55%, transparent);
-}
-
-@keyframes fade {
-  from {
-    opacity: 0.2;
-  }
-  to {
-    opacity: 1;
-  }
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
 }
 
 .overlay-card {
-  padding: 14px 16px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 8px;
+  max-width: 320px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
   text-align: center;
-  max-width: 360px;
-}
-
-.overlay-card.win {
-  max-width: 420px;
 }
 
 .overlay-card small {
-  color: var(--ink-soft);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .spinner {
   width: 22px;
   height: 22px;
-  border: 3px solid var(--ink);
-  border-right-color: transparent;
-  border-radius: 999px;
-  margin: 0 auto;
+  border: 2.5px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
   to {
     transform: rotate(360deg);
   }
 }
 
-.check {
-  width: 34px;
-  height: 34px;
-  margin: 0 auto;
+.win-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: var(--ok);
 }
 
 .side {
-  padding: 14px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+  padding: 12px;
 }
 
 .stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.stat {
-  border: 3px solid var(--ink);
-  border-radius: 12px;
-  background: var(--paper);
-  padding: 10px;
-}
-
-.stat small {
-  display: block;
-  opacity: 0.75;
-  font-weight: 900;
-  letter-spacing: 0.2px;
-  font-size: 11px;
-}
-
-.stat strong {
-  display: block;
-  margin-top: 6px;
-  font-weight: 900;
-  font-size: 16px;
-}
-
-.tools {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.keypad {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.key {
-  border: 3px solid var(--ink);
-  border-radius: 12px;
-  background: var(--paper);
-  padding: 10px 10px;
-  font-weight: 900;
-  cursor: pointer;
-  transition: transform 0.12s ease;
+.stat {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
 }
 
-.key svg {
-  width: 18px;
-  height: 18px;
+.stat small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.key:hover {
-  transform: translateY(-2px);
+.stat strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.keypad.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.key {
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 16px;
+  font-weight: 600;
+  transition: background-color 0.12s;
+}
+
+.key:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.key:active:not(:disabled) {
+  background: var(--accent-soft);
 }
 
 .key:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
+  opacity: 0.45;
 }
 
-.wide {
-  grid-column: span 3;
-  justify-content: center;
+.tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
+}
+
+.tools .btn {
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.tools .btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools .btn.active {
+  border-color: transparent;
+  color: var(--accent-ink);
+  background: var(--accent);
 }
 
 .kbd {
-  padding: 12px;
-  box-shadow: none;
-  border-width: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 12px;
 }
 
-.kbd-title {
-  font-weight: 900;
-  font-size: 12px;
-  letter-spacing: 0.3px;
-  margin-bottom: 8px;
+.kbd summary {
+  color: var(--muted);
+  cursor: pointer;
 }
 
 .kbd-grid {
   display: grid;
   gap: 6px;
-  font-size: 12px;
+  margin-top: 8px;
 }
 
 .kbd-row {
@@ -1018,10 +865,7 @@ const noteColumns = computed(() => boxSize.value)
 }
 
 .kbd-row span:first-child {
-  font-weight: 900;
-}
-
-.kbd-row span:last-child {
-  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 </style>

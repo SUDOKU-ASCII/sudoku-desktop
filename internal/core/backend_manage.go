@@ -81,6 +81,10 @@ func (b *Backend) detect(useProxy bool) IPDetectResult {
 	if !useProxy && b.GetState().TunRunning {
 		// Go around the tunnel so the real uplink address is reported.
 		if d, err := newBypassDialer(b.cfgClone().Tun); err == nil {
+			// The system resolver is the tunnel's split DNS, which answers non-direct names
+			// with MapDNS fake addresses that only exist inside the tunnel. Resolve on the
+			// uplink as well, otherwise every probe dials a fake IP and fails.
+			d.Resolver = bypassResolver(d)
 			dial = d.DialContext
 		}
 	}
@@ -144,4 +148,23 @@ func (b *Backend) CloseAllConnections() error {
 	ctx, cancel := contextTimeout(3 * time.Second)
 	defer cancel()
 	return k.ctl.CloseAllConnections(ctx)
+}
+
+// bypassResolver resolves names over plain DNS sent out through d, never through the tunnel.
+func bypassResolver(d *net.Dialer) *net.Resolver {
+	servers := []string{"223.5.5.5:53", "119.29.29.29:53"}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var last error
+			for _, server := range servers {
+				conn, err := d.DialContext(ctx, network, server)
+				if err == nil {
+					return conn, nil
+				}
+				last = err
+			}
+			return nil, last
+		},
+	}
 }

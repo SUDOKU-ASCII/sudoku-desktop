@@ -254,6 +254,14 @@ const assignState = (next: RuntimeState) => {
   if (!state.proxyPort) state.proxyPort = DEFAULT_PROXY_PORT
 }
 
+// The node and routing mode can also be changed from the core's web panel; the backend
+// reports them in the state, so mirror them unless a switch of our own is in flight.
+const adoptBackendSelection = (next: RuntimeState) => {
+  if (busy.value) return
+  if (next.activeNodeId && next.activeNodeId !== config.activeNodeId) config.activeNodeId = next.activeNodeId
+  if (next.mode && next.mode !== config.routing.proxyMode) config.routing.proxyMode = next.mode as ProxyMode
+}
+
 const sortedNodes = computed(() => {
   const latencyMap = new Map(state.latencies.map((x) => [x.nodeId, x]))
   return [...config.nodes].map((node) => ({
@@ -1211,6 +1219,7 @@ onMounted(async () => {
       const next = pendingState
       pendingState = null
       assignState(next)
+      adoptBackendSelection(next)
       ingestStateErrors(next)
       if (next.tunRunning) hasAdminPrivileges.value = true
     }, 80)
